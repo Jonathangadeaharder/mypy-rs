@@ -241,6 +241,11 @@ from mypy.semanal_shared import (
     set_callable_name as set_callable_name,
 )
 from mypy.semanal_typeddict import TypedDictAnalyzer
+from mypy.symtable_access import (
+    delete_names_entry as _delete_names_entry,
+    delete_names_entry_safe as _delete_names_entry_safe,
+    put_names_entry as _put_names_entry,
+)
 from mypy.tvar_scope import TypeVarLikeScope
 from mypy.typeanal import (
     SELF_TYPE_NAMES,
@@ -1070,7 +1075,9 @@ class SemanticAnalyzer(
     def prepare_file(self, file_node: MypyFile) -> None:
         """Prepare a freshly parsed file for semantic analysis."""
         if "builtins" in self.modules:
-            file_node.names["__builtins__"] = SymbolTableNode(GDEF, self.modules["builtins"])
+            _put_names_entry(
+                file_node.names, "__builtins__", SymbolTableNode(GDEF, self.modules["builtins"])
+            )
         if file_node.fullname == "builtins":
             self.prepare_builtins_namespace(file_node)
         if file_node.fullname == "typing":
@@ -1125,7 +1132,7 @@ class SemanticAnalyzer(
             cdef = ClassDef(name, Block([]))  # Dummy ClassDef, will be replaced later
             info = TypeInfo(SymbolTable(), cdef, "builtins")
             info._fullname = f"builtins.{name}"
-            names[name] = SymbolTableNode(GDEF, info)
+            _put_names_entry(names, name, SymbolTableNode(GDEF, info))
 
         bool_info = names["bool"].node
         assert isinstance(bool_info, TypeInfo)
@@ -1147,7 +1154,7 @@ class SemanticAnalyzer(
         for name, typ in special_var_types:
             v = Var(name, typ)
             v._fullname = f"builtins.{name}"
-            file_node.names[name] = SymbolTableNode(GDEF, v)
+            _put_names_entry(file_node.names, name, SymbolTableNode(GDEF, v))
 
     #
     # Analyzing a target
@@ -1320,7 +1327,7 @@ class SemanticAnalyzer(
                 continue  # Do not reset TypeAliases on the second pass.
 
             # We need to remove any node that is there at the moment. It is invalid.
-            tree.names.pop(name, None)
+            _delete_names_entry_safe(tree.names, name)
 
             # Now, create a new alias.
             self.create_alias(tree, target_name, alias, name)
@@ -1357,7 +1364,7 @@ class SemanticAnalyzer(
             # Kill the placeholder if there is one.
             if name in tree.names:
                 assert isinstance(tree.names[name].node, PlaceholderNode)
-                del tree.names[name]
+                _delete_names_entry(tree.names, name)
 
     def adjust_public_exports(self) -> None:
         """Adjust the module visibility of globals due to __all__."""
@@ -5976,7 +5983,9 @@ class SemanticAnalyzer(
                     lval.def_var = v
                     lval.node = v
                     # TODO: should we also set lval.kind = MDEF?
-                    self.type.names[lval.name] = SymbolTableNode(MDEF, v, implicit=True)
+                    _put_names_entry(
+                        self.type.names, lval.name, SymbolTableNode(MDEF, v, implicit=True)
+                    )
                     for func in self.scope.functions:
                         func.def_or_infer_vars = True
             if (
@@ -8743,7 +8752,9 @@ class SemanticAnalyzer(
         This method can be used to add such classes to an enclosing,
         serialized symbol table.
         """
-        self.globals[func_scoped_name(name, ctx.line)] = SymbolTableNode(GDEF, node)
+        _put_names_entry(
+            self.globals, func_scoped_name(name, ctx.line), SymbolTableNode(GDEF, node)
+        )
 
     def add_symbol_table_node(
         self,
@@ -8814,7 +8825,10 @@ class SemanticAnalyzer(
         elif type_param or (
             name not in self.missing_names[-1] and "*" not in self.missing_names[-1]
         ):
-            names[name] = symbol
+            # G3.0a (#1581): committed put goes through the namespace
+            # accessor; refusals above never reach it, so they leave no
+            # shadow trace by construction.
+            _put_names_entry(names, name, symbol)
             if not no_progress:
                 self.progress = True
             return True
@@ -8845,7 +8859,8 @@ class SemanticAnalyzer(
                 new_name = f"{name}-redefinition{i}"
             existing = names.get(new_name)
             if existing is None:
-                names[new_name] = symbol
+                # G3.0a (#1581): redefinition puts are committed writes.
+                _put_names_entry(names, new_name, symbol)
                 return
             elif existing.node is symbol.node:
                 # Already there
