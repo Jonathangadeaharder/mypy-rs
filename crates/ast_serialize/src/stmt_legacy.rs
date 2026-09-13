@@ -201,17 +201,17 @@ fn serialize_import(serializer: &mut Serializer<'_>, import: &ast::StmtImport) -
     write_import_metadata_tail(&mut serializer.writer, &loc, flags);
     serializer.writer.tag(END_TAG);
 
-    for (name, asname) in names {
-        serializer.imports.push(ImportMetadata {
-            tag: IMPORT_METADATA,
-            module: name,
-            relative: 0,
-            asname,
-            names: Vec::new(),
-            loc: loc.clone(),
-            flags,
-        });
-    }
+    // v6 exception: the import wire is one record per statement with
+    // the alias list (#1551), so the reference mirrors production; the
+    // old shape stays pinned by the nativeparse differentials.
+    serializer.imports.push(ImportMetadata {
+        tag: IMPORT_METADATA,
+        module: String::new(),
+        relative: 0,
+        names: names.clone(),
+        loc: loc.clone(),
+        flags,
+    });
     Ok(())
 }
 
@@ -239,7 +239,6 @@ fn serialize_import_from(
             tag: IMPORTALL_METADATA,
             module: raw_module,
             relative,
-            asname: None,
             names: Vec::new(),
             loc,
             flags,
@@ -264,7 +263,6 @@ fn serialize_import_from(
         tag: IMPORTFROM_METADATA,
         module,
         relative,
-        asname: None,
         names,
         loc,
         flags,
