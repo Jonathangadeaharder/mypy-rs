@@ -296,6 +296,22 @@ def _node_setattr(self: Any, name: str, value: Any) -> None:
 # store; object values become class/fullname markers (`InstanceType`,
 # `NameExpr:mod.x`) and are never serialized.
 
+_G2_FUNC_BASE: Final[frozenset[str]] = frozenset(
+    {
+        "type",
+        "unanalyzed_type",
+        "info",
+        "is_property",
+        "is_class",
+        "is_static",
+        "is_final",
+        "is_explicit_override",
+        "is_type_check_only",
+        "def_or_infer_vars",
+        "_fullname",
+    }
+)
+
 _G2_FUNC_FLAGS: Final[frozenset[str]] = frozenset(
     {
         "is_property",
@@ -320,7 +336,8 @@ _G2_FUNC_FLAGS: Final[frozenset[str]] = frozenset(
 )
 
 _G2_FUNC_DEF: Final[frozenset[str]] = (
-    frozenset({"type", "unanalyzed_type", "_fullname", "abstract_status", "deprecated"})
+    frozenset({"abstract_status", "deprecated"})
+    | _G2_FUNC_BASE
     | _G2_FUNC_FLAGS
 )
 
@@ -384,13 +401,26 @@ _G2_TRACKED: Final[dict[type, frozenset[str]]] = {
     WithStmt: frozenset({"analyzed_types"}),
     IfStmt: frozenset({"unreachable_else"}),
     MatchStmt: frozenset({"subject_dummy"}),
-    TypeAliasStmt: frozenset({"alias_node"}),
+    TypeAliasStmt: frozenset({"alias_node", "invalid_recursive_alias"}),
     FuncDef: _G2_FUNC_DEF,
     OverloadedFuncDef: frozenset(
-        {"items", "unanalyzed_items", "impl", "deprecated", "setter_index"}
+        {"items", "unanalyzed_items", "impl", "deprecated", "setter_index", "_is_trivial_self"}
+    )
+    | _G2_FUNC_BASE,
+    Decorator: frozenset(
+        {"func", "var", "is_overload", "decorators", "original_decorators"}
     ),
-    Decorator: frozenset({"func", "var", "is_overload", "decorators"}),
-    ClassDef: frozenset({"info", "analyzed", "has_incompatible_baseclass", "metaclass"}),
+    ClassDef: frozenset(
+        {
+            "info",
+            "analyzed",
+            "has_incompatible_baseclass",
+            "metaclass",
+            "_fullname",
+            "removed_base_type_exprs",
+            "type_vars",
+        }
+    ),
     Var: _G2_VAR,
 }
 
