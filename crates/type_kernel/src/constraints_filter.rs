@@ -36,7 +36,7 @@
 
 use pyo3::prelude::*;
 
-use crate::constraints::{neg_op, SUBTYPE_OF};
+use crate::constraints::{neg_op, write_ffi_constraint, SUBTYPE_OF};
 use crate::wire::{read_type, write_type, ReadBuffer, Type, WireError, WriteBuffer};
 
 // ---------------------------------------------------------------------------
@@ -338,7 +338,8 @@ pub(crate) fn unwrap_type_type_inner(tp: &Type) -> Option<Type> {
 /// inverted direction (argument contravariance).
 ///
 /// Wire layout in: left Type | right Type | direction int.
-/// Wire layout out: count (bare int) + N× [origin Type | op int | target Type].
+/// Wire layout out: count (bare int) + N× `write_ffi_constraint` blobs
+/// (origin Type | op int | target Type | extras count | extras).
 ///
 /// Returns `None` on decode failure or when the inner inference defers.
 #[pyfunction]
@@ -381,18 +382,13 @@ pub(crate) fn rust_infer_directed_arg_constraints(
         // Python `infer_constraints` wrapper default (constraints.py:802).
         true,
     )?;
-    // The write loop is 3-field: extras would be lost in serialization.
-    // Defensive: no mode is installed on this FFI, so extras cannot arise.
-    if constraints.iter().any(|c| !c.extra_tvars.is_empty()) {
-        return None;
-    }
-
+    // Extras (*if* a mode ever leaks into this FFI) ride the blob section;
+    // the Python reader consumes it. No mode is installed on this entry
+    // today, so the reverse gate defers before extras can attach.
     let mut output = WriteBuffer::new();
     write_size(&mut output, constraints.len() as i64).ok()?;
     for c in &constraints {
-        write_type(&mut output, &c.origin_type_var).ok()?;
-        crate::wire::write_int(&mut output, c.op).ok()?;
-        write_type(&mut output, &c.target).ok()?;
+        write_ffi_constraint(&mut output, c).ok()?;
     }
     Some(output.into_bytes())
 }
