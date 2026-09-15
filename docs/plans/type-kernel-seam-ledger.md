@@ -4697,3 +4697,154 @@ bounded by 7,121 invocations on a 66.8s self-check, ~0.02-0.05% wall).
   non-wire interfaces; dispatched after the four Phase-1 merges;
   entry appended here on landing.
 
+#### Wave 5 (started 2026-09-15) — tiered feedback + ledger archive
+
+Starting position `main = 506aa7e4c`. Eight lanes in parallel; the wave's
+process change is the tiered feedback protocol and the weighted heavy-op
+pool, both recorded in `AGENTS.md` (issue `#1679`).
+
+The tiers classify work by blast radius (T1 docs/test-only, T2 gated seam
+with the Python fallback intact, T3 default-ON flip or wire/identity
+change, T4 wave level). Local corpora are now a T4 wave-level step, not a
+per-lane step: CI runs the full corpus on every production PR, so lanes
+restore only their own suite file, the gate-off/on differential, and
+engagement counters. The heavy-op layer is the weighted pool
+`/private/tmp/mypy-rs-sem.sh` (3 slots; build = 1, corpus = 2), which
+replaced the flat `/private/tmp/mypy-rs-heavy.lock`; under the flat mutex a
+release kernel build queued behind an entire corpus run (measured: 1m14s
+build at load 86 versus a corpus of many minutes). Per-lane tier and
+measurements are appended below as the coordinator reports each landing.
+
+- `#1676` (`271175175`, PR #1676) — docs: archive this ledger out of
+  `AGENTS.md`. Tier T1. `AGENTS.md` 4,937 -> 232 lines: 4,764 removed,
+  59 inserted. Lossless audit before commit: of 4,708 nonblank removed
+  lines, 4,628 are byte-identical in
+  `docs/plans/type-kernel-seam-ledger.md`, 80 are preserved in
+  `docs/native-build-reference.md` (the rationale/history behind the
+  build and parity rules), 0 unaccounted; the two large removed blocks
+  (`AGENTS.md` old lines 274-1485 and 1486-4930) are contiguous
+  byte-identical substrings of the archive. The same commit lands four
+  plan docs that were untracked (`2026-09-15-wave3-mass-migration.md`,
+  `2026-09-15-wave3-perf-sweep-audit.md`,
+  `2026-09-15-wave4-mass-migration.md`,
+  `2026-09-15-solve-pass1-split-spike.md`). Gates: CI `pr-gate` pass
+  (run 35022390403, 266s), `ocr-review` skipped; local
+  `ocr review --from origin/main --to docs/ledger-archive-wave5` selected
+  0 items (docs-only diff), 0 blocking.
+- `#1668` (`618c2b196`, PR #1669) — perf: retire residual scalar-only wire
+  seams (slice of `#1624`, from the `#1637` sweep audit). Tier T3 by the
+  table (seams that answered in production were deleted). Five gates
+  deleted: `rust_descriptor_has_get_set` (`checkmember.py`, 22,809 calls /
+  512,396 bytes -> 0/0), `rust_is_singleton_identity_type` (7,550 / 41,796
+  -> 0/0), `rust_is_singleton_equality_type` (10,577 / 277,110 -> 0/0),
+  `rust_is_recursive_pair` (1,972 / 118,288 -> 0/0),
+  `rust_analyze_none_member_access` (1,001 / 4,004 -> 0/0); total
+  43,909 calls / 953,594 bytes -> 0. Figures are as reported by that lane
+  on PR #1669, measured on the cold self-check with an env-gated
+  sitecustomize wrapper, and are not re-derived here. Gates reported:
+  testtypes 3,905/7 (`TEST_NATIVE_TYPE_KERNEL=1`), testcheck 8,144/69/7
+  (`-n2`), cold self-check 0 errors / 353 files,
+  `cargo test -p mypy-type-kernel` 2,838/0/11, `cargo fmt --check` and
+  `clippy -D warnings` clean.
+- `#1678` (`3329850ac`, PR #1681) — CI tier. `native-kernel-parity.yml` gains
+  a dependency-free `changes` job that diffs the PR `base..head`;
+  `parity-ast` consumes it via `needs` + `if`, so a kernel-only PR no longer
+  pays the AST suite (its own x86 `ast_serialize` build plus
+  `test_nativeparse` / `testparse` / `teststubgen`). The filter is a
+  deliberate superset (`mypy/semanal*.py`, `mypy/nodes.py`, `mypy/errors.py`,
+  `mypy/options.py`, `mypy/stubgen.py`, `mypy/stubutil.py`) because
+  `teststubgen` runs full semantic analysis. Fail-open: no PR SHAs or an
+  unavailable diff publishes `ast=true`, so the worst case is the status quo.
+  Redundancy recorded on that PR, deliberately not fixed: `parity` and
+  `parity-typeops` are the same testcheck corpus (both install the TYPEOPS and
+  CHECKER_STMTS resolvers; `parity-typeops` differs only by
+  `MYPY_NATIVE_TYPE_KERNEL_REQUIRED=1`), and `parity` runs testcheck twice
+  inside itself (bare, then with `testtypes`), so the corpus gate is roughly
+  3x redundant. Merging or deleting a gate is a CI-tier decision about what CI
+  verifies, not tidying.
+- `#1680` (`e9017bf46`, PR #1683) — dev tier. Reusable worktree pool
+  `scripts/worktree_pool.sh` (`init` / `claim` / `release` / `status` /
+  `prune`); `claim` does `checkout -B <branch> origin/main` plus `clean -xdf`
+  excluding `target` and `.venv`, so a slot resets in seconds with a warm
+  `target/`. Compile-unit counts as reported: a fresh worktree with an empty
+  `target/` compiles 25 units; after `release` then `claim` with one source
+  file touched, 1 unit. So the pool removes 24 of 25 compiled units but only
+  about a quarter of the wall clock, because the release compile and link of
+  `mypy-type-kernel` itself is ~59s and is not cacheable across a source
+  change. Wall numbers there are provisional as quoted here (no `uptime`
+  recorded alongside them); the load-invariant evidence is the unit counts.
+  Per-slot `target/` is deliberate, not an oversight: a shared
+  `CARGO_TARGET_DIR` is last-writer-wins on `target/release/libtype_kernel.dylib`,
+  so a lane can copy a kernel it did not build.
+- `#1679` (`a0f6150a7`, PR #1684) — docs tier. Evidence-artifact convention
+  (`docs/plans/wave<N>-evidence/<lane>.json`) plus the wave-5 measurements it
+  seeds: local testcheck 8,144 against CI `parity` 8,198 on the same commit
+  (the spread is platform skips), one release kernel build 1m14s at load 86
+  (provisional; load recorded, `uptime` not), and one local `ocr review`
+  sample at 9m37s / ~761k tokens for 3 files. **That OCR figure is a floor,
+  not a bound**, and the range supersedes it: a second pass (5 files, branch
+  `feature/h1d-checker-decision-heads`) cost ~2.4M tokens (input ~2,370,798,
+  output ~67,778, cache-read ~2,120,448) in 6m56s for 3 `low` findings.
+  Roughly 3x the tokens for under 2x the files, so the wave-level batched
+  pass must be budgeted from the top of the range. The same pass logged three
+  internal `file_read failed: invalid line range` errors (e.g.
+  `start_line 1190 is greater than end_line 560`) before reporting its
+  findings, so an OCR pass can review with its own reads failing and still
+  emit confident findings: treat findings as leads to verify against the
+  code, not as authoritative.
+  **Part of that file is falsified.** Its `rust_refers_to_different_scope`
+  row records 0 calls and calls the seam a retirement candidate. Lane A4's
+  re-run against its own worktree source shows the seam live: suite-level
+  `calls=16 / decided=15 / deferred=1`, alongside
+  `rust_should_report_unreachable_issues` 13/12/1, `rust_flatten_lvalues`
+  22/21/1, `rust_literal_int_expr` 41/29/12, 72 tests passed. The zero was a
+  sample-coverage artifact of the 6-file probe, not a dead seam. Corrected in
+  the file itself by `#1686` (`e531197d3`, PR #1686), tier T1, which leaves
+  the wrong row visible because the lesson is the point: a zero-call reading
+  from a sampled probe says something about the sample's coverage, not about
+  the seam, and only a whole-corpus count licenses "retire". That PR also
+  records the two same-hour hazards it was entangled with, the run resolving
+  `import mypy` to the main checkout and a probe harness that exits 0 while
+  raising. The corrected numbers above are the ones to cite; the zero row is
+  not evidence.
+- `#1677` (`3d5ace300`, PR #1692) — chore/scripts, tier T1. Adds
+  `scripts/plan_seam_split.py`, a verified planner for splitting the 961
+  `wrap_pyfunction!` registrations in `crates/type_kernel/src/lib.rs` by
+  defining module: 120 defining modules, 49 of them registering exactly one
+  function, 125 declared `mod` lines of which 5 register nothing, 955 unique
+  names for 961 sites so 6 names are registered twice, all single-level
+  `mod::fn` paths with receiver `module`. Largest units: `message_registry`
+  154, `semanal_visitor` 97, `checkexpr_functions` 50, `checker_functions`
+  47, `messages` 35, `typeops` 32. `--verify` fails non-zero on a site count
+  the parse did not see (a silently dropped registration nulls a whole seam
+  battery through the single `try: from type_kernel import (...)` block), a
+  parsed module that is not declared in `lib.rs`, a function name that is
+  really a module name, or a malformed name. Six names registered at two
+  sites each are flagged for confirmation before any move:
+  `rust_classify_simple_literal_type`, `rust_classify_tuple_type_implicit`,
+  `rust_count_stats`, `rust_object_from_instance`, `rust_pretty_seq`,
+  `rust_refers_to_typeddict`. Two figures from an earlier inventory comment
+  are retracted in that PR and must not be built on ("40 defining modules";
+  "199 sites with two colons", the latter an artifact of BSD `sed` ignoring
+  `\s*`). The lesson recorded there is a rule for this host: when a
+  measurement feeds a decision, do it in Python rather than through a BSD
+  shell pipeline, since three of four measurement mistakes that day came from
+  GNU-versus-BSD tooling assumptions and each produced a confident wrong
+  number rather than an error.
+- `#1681` follow-up (`08ef56f57`, PR #1691) — CI tier. The `parity-ast` path
+  gate from `#1681` is rewritten to match paths with a POSIX `case` glob
+  instead of a grep regex. Reason: the regex had been verified with macOS BSD
+  `grep` while CI runs GNU `grep`, so that verification did not validate CI
+  behaviour at all. The skip is now verified on a real kernel PR: `#1690`
+  (`crates/type_kernel/src/checker_functions.rs`, `mypy/checker.py`,
+  `stubs/type_kernel.pyi`, `mypy/test/testtypes.py`) reports
+  `parity-ast: skipped` with `changes: success` and the three kernel jobs
+  green. A skipped job renders as `SKIPPED` in the rollup, the same as
+  `ocr-review`, which settles an earlier anomaly: `#1685` showed
+  `parity-ast: SUCCESS`, so the job really did run there, best explained by
+  the fail-open branch firing silently rather than by a regex mismatch. Its
+  own OCR pass found two defects, both fixed: the fetch retry logged nothing
+  about why the retry failed (the exact ambiguity the change exists to
+  resolve), and `while IFS= read -r f` dropped an unterminated final line, a
+  fail-closed path inside a gate documented to fail open.
+

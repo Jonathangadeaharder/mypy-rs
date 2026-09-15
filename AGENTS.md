@@ -114,6 +114,62 @@ daemon, cache, and incremental-mode checks when affected.
 The native build and parity rules below are the always-on part; the full
 rationale and history live in `docs/native-build-reference.md`.
 
+### Feedback-loop tiers (blast radius decides the gates)
+
+Fan-out work is gated by blast radius, not by habit. CI runs the full corpus
+(`pr-gate` + `parity*`); do not duplicate it locally.
+
+| Tier | Change class | Local gates |
+| --- | --- | --- |
+| T1 | docs, plans, comments, test-only | none |
+| T2 | new Rust seam behind a gate with the Python fallback intact; default-off shadow or read flip; Python-only refactor | build + `cargo test` for the touched crate; the lane's own suite file (it already holds the direct seam tests and the gate-off/on differentials); ONE targeted corpus file; engagement counters (`MYPY_SERIALIZE_STATS=1` call/defer totals, seam hit counts) |
+| T3 | default-ON gate flip, an `Options` default, wire format or `CACHE_VERSION`, resolver/per-SCC identity, astmerge, daemon, plugin contract, deleting a seam that answered in production | full local battery, both gate states: `testcheck` + cold self-check + fine-grained family |
+| T4 | wave level | one full battery on the merged head per wave, plus one `ocr review` pass over the wave diff |
+
+Rules that do not move: a lane may shrink the corpus, never the differential and
+never the engagement proof. A change that trips an unexpected behavior change
+escalates itself to T3. Cap T3 lanes at one or two per wave, since this machine
+holds about two heavy ops under its memory cap.
+
+Pre-flight for T2/T3/T4: prove which source tree you are testing. A worktree
+`.venv` is a symlink to the main checkout's venv, and that venv's editable
+install points at the main checkout, so `import mypy` can silently resolve
+there. The symptom is `_pytest.pathlib.ImportPathMismatchError` naming the main
+checkout's `mypy/test/conftest.py` against yours, with 0 engagement on every
+seam while a probe reports thousands. Before trusting any count, suite result
+or engagement number:
+
+```bash
+PYTHONPATH=<worktree>:<scratch .so dir>:$PYTHONPATH \
+  .venv/bin/python -c "import mypy; print(mypy.__file__)"
+```
+
+It must print the worktree path. A probe harness that exits 0 while raising is
+worse than no probe: read its exit status before reading its numbers.
+
+Heavy ops (cargo build/test, pytest, self-check) run through the weighted pool:
+`/private/tmp/mypy-rs-sem.sh run 1 <build>` for a build, `run 2 <corpus>` for a
+corpus run. Three slots, build = 1, corpus = 2, so a corpus and a build overlap
+while two corpora never do. Class by cost, not by whether the command is pytest:
+a single suite file is build-class (`run 1`, one slot, never queues behind a
+corpus), while `testcheck`, a self-check or a multi-file run is `run 2`. The
+flat `/private/tmp/mypy-rs-heavy.lock` mutex is retired: a build used to wait
+out an entire corpus run behind it. The pool still honours the legacy lock for a
+transition period, and acquiring it is a race rather than a queue, so a
+mis-classed command starves (a 9-second suite was once queued 24 minutes behind
+fourteen `run 2` waiters).
+
+Review: T1/T2 use `ocr delegate preview|rule` plus an independent reader (never
+the author alone, since self-review is not review); T3 and the wave diff use
+`ocr review`. Cost is a wave cost, and the two measured passes span a range:
+3 files at 9m37s / ~760k tokens, and 5 files at 6m56s / ~2.4M tokens, so a
+single early sample understates a batched pass: roughly 3x the tokens for
+under 2x the files. Treat OCR findings as leads to verify against the code,
+not as authoritative statements: the 5-file pass above logged three internal
+`file_read failed: invalid line range` errors before emitting confident
+findings. Prefer `ocr delegate preview|rule` when the rule set is what is
+wanted rather than a verdict.
+
 ### Native resolver / dependency-records parity
 
 The native resolver and dependency-records extraction are behind
