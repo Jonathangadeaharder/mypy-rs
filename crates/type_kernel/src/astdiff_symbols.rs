@@ -34,6 +34,27 @@ use pyo3::types::{PyBool, PyDict, PyList, PyString, PyTuple, PyType};
 use crate::astdiff_snapshot::{snapshot_value, sorted_tuple};
 use crate::astdiff_snapshot::{tuple_from, SnapshotRefs};
 use crate::refs::is_instance;
+use crate::symtable_mirror;
+
+/// Where the walk reads a namespace's `(name, symbol)` pairs from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// The live Python `SymbolTable` dict (`table.items()`).
+    Live,
+    /// The G3.1 read flip: Rust-owned shadow storage.
+    Shadow,
+}
+
+/// Outcome of one namespace walk. The two deferrals are kept apart so a
+/// nested class namespace pays the live retry only for a mirror-gate gap:
+/// a walk-level defer is data-driven and would defer identically again.
+enum Walked {
+    Value(PyObject),
+    /// The mirror gate refused the table (shadow source only).
+    GateGap,
+    /// The walk itself deferred to Python.
+    Deferred,
+}
 
 /// `mypy.nodes` class objects plus the semanal/astdiff callbacks, resolved
 /// once per seam entry.
@@ -94,28 +115,73 @@ pub(crate) fn rust_snapshot_symbol_table(
     name_prefix: &str,
     table: &PyAny,
 ) -> PyResult<Option<PyObject>> {
+    snapshot_with_source(py, name_prefix, table, Source::Live)
+}
+
+/// G3.1 read flip: `snapshot_symbol_table` over Rust-owned namespace
+/// storage. `None` when the store cannot mirror the table exactly (the
+/// caller then walks the live table) or when the walk defers.
+#[pyfunction]
+pub(crate) fn rust_snapshot_symbol_table_shadow(
+    py: Python<'_>,
+    name_prefix: &str,
+    table: &PyAny,
+) -> PyResult<Option<PyObject>> {
+    snapshot_with_source(py, name_prefix, table, Source::Shadow)
+}
+
+fn snapshot_with_source(
+    py: Python<'_>,
+    name_prefix: &str,
+    table: &PyAny,
+    source: Source,
+) -> PyResult<Option<PyObject>> {
     let refs = SymbolRefs::try_new(py)?;
-    match table_value(py, name_prefix, table, &refs) {
-        Ok(value) => Ok(value),
+    match table_value(py, name_prefix, table, &refs, source) {
+        Ok(Walked::Value(value)) => Ok(Some(value)),
+        Ok(_) => Ok(None),
         Err(e) if e.is_instance_of::<PyAttributeError>(py) => Ok(None),
         Err(e) => Err(e),
     }
 }
 
-/// Walk `for name, symbol in table.items()`, building the result dict in
-/// insertion order. `Ok(None)` defers the whole table to Python.
+/// The `(name, symbol)` pairs of one namespace in `table.items()` order.
+fn live_entries(table: &PyAny) -> PyResult<Vec<(PyObject, PyObject)>> {
+    let mut entries: Vec<(PyObject, PyObject)> = Vec::with_capacity(table.len().unwrap_or(0));
+    for pair in table.call_method0("items")?.iter()? {
+        let pair = pair?.downcast::<PyTuple>()?;
+        entries.push((pair.get_item(0)?.into(), pair.get_item(1)?.into()));
+    }
+    Ok(entries)
+}
+
+/// Walk `for name, symbol in <namespace>`, building the result dict in
+/// the namespace's insertion order. `Walked::Deferred` hands the whole
+/// table to Python; `Walked::GateGap` reports that the shadow source
+/// refused it (shadow source only).
 fn table_value(
     py: Python<'_>,
     name_prefix: &str,
     table: &PyAny,
     refs: &SymbolRefs<'_>,
-) -> PyResult<Option<PyObject>> {
+    source: Source,
+) -> PyResult<Walked> {
     let result = PyDict::new(py);
-    let items = table.call_method0("items")?;
-    for pair in items.iter()? {
-        let pair = pair?.downcast::<PyTuple>()?;
-        let name = pair.get_item(0)?;
-        let symbol = pair.get_item(1)?;
+    let entries = match source {
+        Source::Live => live_entries(table)?,
+        // The store's own gate: a table it does not mirror exactly is
+        // never served, and the caller falls back to the live walk.
+        Source::Shadow => match symtable_mirror::entries_if_mirrored(py, table) {
+            Ok(entries) => entries
+                .into_iter()
+                .map(|(name, symbol)| (PyString::new(py, &name).into(), symbol.into_py(py)))
+                .collect(),
+            Err(_gap) => return Ok(Walked::GateGap),
+        },
+    };
+    for (name, symbol) in entries {
+        let name = name.as_ref(py);
+        let symbol = symbol.as_ref(py);
         let node = symbol.getattr("node")?;
         let has_node = node.is_true()?;
         let fullname: PyObject = if has_node {
@@ -147,11 +213,11 @@ fn table_value(
             // Python fallback raises the identical assert.
             let kind = symbol.getattr("kind")?.extract::<i64>().unwrap_or(-1);
             if kind == refs.unbound_imported {
-                return Ok(None);
+                return Ok(Walked::Deferred);
             }
             if !has_node {
                 // `snapshot_definition(None, common)` asserts in Python.
-                return Ok(None);
+                return Ok(Walked::Deferred);
             }
             // `if node and get_prefix(node.fullname) != name_prefix` ->
             // CrossRef; the node is defined in this module otherwise.
@@ -164,17 +230,17 @@ fn table_value(
                         node.get_type().getattr("__name__")?.into(),
                     ],
                 ),
-                Some(true) => match definition_value(py, node, common, refs)? {
+                Some(true) => match definition_value(py, node, common, refs, source)? {
                     Some(value) => value,
-                    None => return Ok(None),
+                    None => return Ok(Walked::Deferred),
                 },
                 // Non-str fullname: Python raises AttributeError.
-                None => return Ok(None),
+                None => return Ok(Walked::Deferred),
             };
             result.set_item(name, value)?;
         }
     }
-    Ok(Some(result.into()))
+    Ok(Walked::Value(result.into()))
 }
 
 /// `get_prefix(fullname) == name_prefix`; `None` when `fullname` is not a
@@ -203,6 +269,7 @@ fn definition_value(
     node: &PyAny,
     common: PyObject,
     refs: &SymbolRefs<'_>,
+    source: Source,
 ) -> PyResult<Option<PyObject>> {
     if is_instance(node, refs.func_def) || is_instance(node, refs.overloaded_func_def) {
         return func_definition(py, node, common, refs).map(Some);
@@ -219,7 +286,7 @@ fn definition_value(
         )));
     }
     if is_instance(node, refs.decorator) {
-        let func = match definition_value(py, node.getattr("func")?, common, refs)? {
+        let func = match definition_value(py, node.getattr("func")?, common, refs, source)? {
             Some(value) => value,
             None => return Ok(None),
         };
@@ -234,7 +301,7 @@ fn definition_value(
         )));
     }
     if is_instance(node, refs.type_info) {
-        return type_info_definition(py, node, common, refs).map(Some);
+        return type_info_definition(py, node, common, refs, source).map(Some);
     }
     Ok(None)
 }
@@ -352,6 +419,7 @@ fn type_info_definition(
     node: &PyAny,
     common: PyObject,
     refs: &SymbolRefs<'_>,
+    source: Source,
 ) -> PyResult<PyObject> {
     let mut spec = node.getattr("dataclass_transform_spec")?;
     if spec.is_none() {
@@ -403,10 +471,19 @@ fn type_info_definition(
         Err(_) => return Ok(py.None()),
     };
     let names = node.getattr("names")?;
-    let nested = match table_value(py, &prefix, names, refs)? {
-        Some(value) => value,
-        // Deep defer: let the Python body build only the nested table.
-        None => refs
+    let nested = match table_value(py, &prefix, names, refs, source)? {
+        Walked::Value(value) => value,
+        // Only a gate gap earns the live retry: a walk-level defer is
+        // data-driven, so it would defer again in Live mode and cost a
+        // second walk that the Python deep defer makes redundant.
+        Walked::GateGap => match table_value(py, &prefix, names, refs, Source::Live)? {
+            Walked::Value(value) => value,
+            _ => refs
+                .py_snapshot_symbol_table
+                .call1((prefix.as_str(), names))?
+                .into(),
+        },
+        Walked::Deferred => refs
             .py_snapshot_symbol_table
             .call1((prefix.as_str(), names))?
             .into(),
