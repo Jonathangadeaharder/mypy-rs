@@ -4873,8 +4873,9 @@ Plan: `docs/plans/2026-09-15-wave3-mass-migration.md`. Starting position
 - W4 `#1628` — expandtype substitution arms; floored with evidence.
 - W5 `#1629` — pass-1-only solve split spike; CLOSED NO-GO (79.8% of
   generic calls need pass-2, 89.2% do full re-solve).
-- W7 `#1637` (PR #1660) — perf sweep audit. Converted 3 message
-  seams to live-object PyO3 reads (`rust_append_numbers_notes_live`,
+- W7 `#1637` (`2b555a2e0`, PR #1660) — perf sweep audit. Converted 3
+  message seams to live-object PyO3 reads
+  (`rust_append_numbers_notes_live`,
   `rust_make_inferred_type_note_live`,
   `rust_append_invariance_notes_live` in `messages.rs`). Serialize
   count barely moved on clean self-check corpus (965188 -> 965419
