@@ -4859,13 +4859,28 @@ Plan: `docs/plans/2026-09-15-wave3-mass-migration.md`. Starting position
   (try/for/with/match) in `checker_functions.rs`; merged.
 - W2 `#1635` (`a2b6d604f`, PR #1655) — subexpr walk + aststrip helper;
   merged.
-- W3 `#1642` — check_call cluster; PR #1654 merged a first slice
-  (deleted `rust_classify_check_arg` wire seam, gated
-  `rust_check_argument_count_plan` on unpack). Remaining rows: batch
-  6 live-scalar seams into one crossing per `check_call` (in progress).
+- W3 `#1642` (`504db773e`, PR #1659 + PR #1654) — check_call cluster.
+  PR #1654 (`fcc1f8e2c`) deleted the `rust_classify_check_arg` wire
+  seam and gated `rust_check_argument_count_plan` on unpack. PR #1659
+  batched `enum_callable_base` + `typeobj_gate` into one FFI crossing
+  (`rust_check_call_head` in `checkcall_typeobj.rs`). Remaining 4 seams
+  floored with evidence: `map_actuals_to_formals` ->
+  `compute_arg_context` -> `check_argument_count` form a sequential
+  dependency chain (each needs the prior's output);
+  `has_abstract_type` is per-arg granularity inside
+  `check_argument_count`. Batching them would require a full
+  `check_call` plan that is out of scope. Issue closed.
 - W4 `#1628` — expandtype substitution arms; floored with evidence.
 - W5 `#1629` — pass-1-only solve split spike; CLOSED NO-GO (79.8% of
   generic calls need pass-2, 89.2% do full re-solve).
+- W7 `#1637` (PR #1660) — perf sweep audit. Converted 3 message
+  seams to live-object PyO3 reads (`rust_append_numbers_notes_live`,
+  `rust_make_inferred_type_note_live`,
+  `rust_append_invariance_notes_live` in `messages.rs`). Serialize
+  count barely moved on clean self-check corpus (965188 -> 965419
+  writes). Per the issue's stop rule ("stop if serialize count does
+  not move"), further module conversions stopped. Gates: testtypes
+  3894/3, testcheck 8144/69/7, self-check clean 353.
 
 ## Pull Requests
 
