@@ -4883,6 +4883,53 @@ Plan: `docs/plans/2026-09-15-wave3-mass-migration.md`. Starting position
   not move"), further module conversions stopped. Gates: testtypes
   3894/3, testcheck 8144/69/7, self-check clean 353.
 
+#### Wave 4 mass migration — big swarm (started 2026-09-15)
+
+Plan: `docs/plans/2026-09-15-wave4-mass-migration.md`. Starting position
+`main = c16936dd6`. Four workers in one AgentSwarm (disjoint files),
+then a queued phase-1.5 worker. Loose ends closed: `#1635` (merged as
+PR #1655), `#1627` (floored not-planned — DefaultPlugin hook bodies
+bounded by 7,121 invocations on a 66.8s self-check, ~0.02-0.05% wall).
+
+- W-A1 `#1626` (`1a4c8f130`, PR #1665) — `Plugin.declare_hook_fullnames`
+  (`dict[str, frozenset[str]] | None`); `DefaultPlugin` returns
+  `DEFAULT_HOOK_FULLNAMES_BY_KIND` (81 fullnames / 7 kinds),
+  `ChainedPlugin` per-kind union, `_build_plugin_hook_registry`
+  (build.py) installs the union and sets the user-plugin bit only when
+  it is None (replacing `len(plugins) > 1`). The native hook registry
+  stays live under user plugins (`proper_plugin` declares its 3 names),
+  so the 328,408 `_try_native_plugin_hook` probes / 111,649
+  `plugin_hook_known_absent(get_attribute_hook)` self-check probes are
+  no longer 100% no-FFI. `NativePluginHookDeclareSuite` (testtypes).
+- W-A2 `#1628` (`2ce18c9f3`, PR #1667) — ported `normalize_trivial_unpack`
+  into the ParamSpec Parameters-splice arm of `expandtype.rs` (mirrors
+  types.py:2852-2865) and lifted three guards: the ParamSpec/TVT
+  `variables` defer in `solve.rs` `rust_infer_function_type_arguments`
+  and in `checkcall.rs` `solve_generic_call_core`, plus the
+  `need_refresh` conjunction in `mypy/checkexpr.py:3085-3087`.
+  Retired the ~90 need_refresh + ~80 var_pspec_tvt + applytype +
+  constraints defer events; `#1621` closed into this (residual solve
+  defers = the documented ParamSpec suffix/prefix splits + polymorphic
+  `extra_tvars` channel floors). 3 Rust units + 1 rewritten parity test.
+  HIGH-RISK variadic class (wave-33 segfault precedent) landed gated
+  with gate-off/on parity green. Gates: cargo 2836/11, testtypes
+  3890/7, testcheck 8144/69/7, self-check clean 353.
+- W-B1 `#1661` (`032caceee`, PR #1664) — retired the `is_literal_type_like`
+  wire seam (typeops.py, 248,410 crossings / 3.8MB -> 0, pure Python
+  body; the seam was 100% native so the round-trip was pure overhead).
+  `NativeIsLiteralTypeLikeRetiredSuite` (3 tests, testtypes). Gates:
+  testtypes 3893/7, testcheck 8144/69/7, self-check clean 353.
+- W-B1b `#1662` (`5a6810b61`, PR #1666) — IAMA dispatch dedup: pass
+  `None` instead of re-serializing the `Instance` when
+  `mx.self_type is typ` (98.95% of cold self-check calls), Rust clones
+  the decoded `instance` as `self_type` (`Option<&[u8]>` param).
+  One wire serialize + one decode eliminated per dispatch call in the
+  common case; native share held 100% (100,661 calls, 0 defers).
+  Gates: testtypes 3890/7, testcheck 8144/69/7, self-check clean 353.
+- (queued phase 1.5) W-B3 `#1663` — semanal gate default-ON with
+  non-wire interfaces; dispatched after the four Phase-1 merges;
+  entry appended here on landing.
+
 ## Pull Requests
 
 The default branch on this fork is `main` (not `master`). Always target
