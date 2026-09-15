@@ -4820,6 +4820,34 @@ behind one owner because all three extend the same `CallableType` wire
 record and share one `CACHE_VERSION` bump. Wave entries land as those PRs
 merge.
 
+#### Wave 3 mass migration (started 2026-09-15)
+
+Plan: `docs/plans/2026-09-15-wave3-mass-migration.md`. Starting position
+`main = 45c94f541`. Six issues targeted for landed-or-floored.
+
+- W6 `#1620` (`d3924727c`, PR #1658) — wire remainder:
+  `CACHE_VERSION` 13 -> 14. `mypy/types.py:3063` writes `definition_ref`
+  as `write_str_opt(data, None)` (deliberately None to avoid circular
+  imports); `mypy/wirefixup.py:857-874` `_resolve_definition` +
+  `_match_definition` resolve it at decode time via a name+arity heuristic
+  over the fallback TypeInfo's symbol table. `crates/type_kernel/src/
+  wire.rs:1235` reads `definition_ref`. PartialType wire tag added.
+  ErasedType guard added. `NativeWireRemainderSuite` (10 tests) in
+  `mypy/test/testtypes.py`. Gates: testtypes 3883/3, testcheck 8144/69/7,
+  testfinegrainedcache 549/229, testmerge 41/1, cold + warm self-check
+  clean 353.
+- W1 `#1634` (`ce6e1ae3f`, PR #1657) — complex-statement drivers
+  (try/for/with/match) in `checker_functions.rs`; merged.
+- W2 `#1635` (`a2b6d604f`, PR #1655) — subexpr walk + aststrip helper;
+  merged.
+- W3 `#1642` — check_call cluster; PR #1654 merged a first slice
+  (deleted `rust_classify_check_arg` wire seam, gated
+  `rust_check_argument_count_plan` on unpack). Remaining rows: batch
+  6 live-scalar seams into one crossing per `check_call` (in progress).
+- W4 `#1628` — expandtype substitution arms; floored with evidence.
+- W5 `#1629` — pass-1-only solve split spike; CLOSED NO-GO (79.8% of
+  generic calls need pass-2, 89.2% do full re-solve).
+
 ## Pull Requests
 
 The default branch on this fork is `main` (not `master`). Always target
