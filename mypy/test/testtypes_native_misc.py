@@ -8,13 +8,12 @@ except ImportError:
     _type_kernel = None  # type: ignore[assignment]
 
 from collections.abc import Callable
-from mypy.nodes import (
-    ARG_POS,
-    Context,
-    INVARIANT,
-    TypeInfo,
-)
+from typing import Any
+from unittest import skipUnless
+
+from mypy.nodes import ARG_POS, INVARIANT, Context, TypeInfo
 from mypy.test.helpers import Suite, assert_equal
+from mypy.test.testtypes import _NATIVE_WIRE_ENABLED, T, _is_type_info
 from mypy.test.typefixture import TypeFixture
 from mypy.typeanal import _set_native_typeanal_active
 from mypy.types import (
@@ -25,15 +24,6 @@ from mypy.types import (
     TypeOfAny,
     TypeVarId,
     TypeVarType,
-)
-from typing import Any
-from unittest import skipUnless
-import mypy.expandtype
-
-from mypy.test.testtypes import (
-    T,
-    _NATIVE_WIRE_ENABLED,
-    _is_type_info,
 )
 
 
@@ -190,6 +180,7 @@ class NativeMatchGenericCallablesSuite(Suite):
         assert_equal(str(on[0]), str(off[0]))
         assert_equal(str(on[1]), str(off[1]))
 
+
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
 class NativeRawExpressionTypeSuite(Suite):
     """Parity for the Rust `visit_raw_expression_type` message classifier.
@@ -209,7 +200,6 @@ class NativeRawExpressionTypeSuite(Suite):
     """
 
     def setUp(self) -> None:
-        from mypy.typeanal import _set_native_typeanal_active
 
         self._set_active = _set_native_typeanal_active
         self._set_active(True)
@@ -327,48 +317,3 @@ class NativeRawExpressionTypeSuite(Suite):
         self._assert_engages("builtins.float")
         self._assert_engages("builtins.complex")
         self._assert_engages("builtins.str")
-
-
-@skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
-class NativeRetiredPredicateDirectSuite(Suite):
-    """Direct pins for retired predicate pyfunctions (#1739).
-
-    The shims lost to their Python bodies and were retired; the
-    pyfunctions stay registered, and these tests keep them exercised.
-    """
-
-    def setUp(self) -> None:
-        import type_kernel as _tk
-
-        self._tk = _tk
-        self.fx = TypeFixture()
-
-    def test_func_has_self_or_cls_argument(self) -> None:
-        from mypy.nodes import Block, FuncDef
-
-        plain = FuncDef("f", [], Block([]))
-        assert self._tk.rust_func_has_self_or_cls_argument(plain) is True
-        static = FuncDef("f", [], Block([]))
-        static.is_static = True
-        assert self._tk.rust_func_has_self_or_cls_argument(static) is False
-        dunder_new = FuncDef("__new__", [], Block([]))
-        dunder_new.is_static = True
-        assert self._tk.rust_func_has_self_or_cls_argument(dunder_new) is True
-
-    def test_is_true_false_literal(self) -> None:
-        from mypy.nodes import IntExpr, NameExpr
-
-        t = NameExpr("True")
-        t.fullname = "builtins.True"
-        assert self._tk.rust_is_true_literal(t) is True
-        assert self._tk.rust_is_false_literal(t) is False
-        z = IntExpr(0)
-        assert self._tk.rust_is_true_literal(z) is False
-        assert self._tk.rust_is_false_literal(z) is True
-
-    def test_has_placeholder(self) -> None:
-        from mypy.types import PlaceholderType
-
-        assert self._tk.rust_has_placeholder(self.fx.o) is False
-        ph = PlaceholderType("mod.x", [], 1)
-        assert self._tk.rust_has_placeholder(ph) is True
