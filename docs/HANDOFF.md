@@ -1,5 +1,111 @@
 # Handoff: strangler-fig Rust migration loop (seam-deferral reduction)
 
+## RESUME POINT — 2026-09-17, early (wave 8: the objective is the full migration, parallelised)
+
+The active objective changed to *"do the full migration to rust parallelize as
+much work as possible"*, so this wave attacks the **ownership ladder** — F, G, H,
+J — rather than more seam retirement. Reconnaissance settled three things with
+evidence; they are the wave's real output so far.
+
+### Where `main` stands
+
+`main` = `57d99198f`+ (wave-7 close #1766, G4 criteria #1768, the F NO-GO record
+#1771). Session total on 2026-09-16: 19 PRs merged, ~19 net-loss seams retired,
+G3.2 landed, plus the G4 criteria and the F record. Tree clean, no lane
+worktrees, no stashes.
+
+### Settled: Phase F is closed by measurement, not contract
+
+ADR-0006 (`58d32ab24`, PR #1694) **is** the experiment for #1671 and it measured
+**NO-GO by ~4.7x on arithmetic**: the `Instance` funnel is 2.119% of the cold
+self-check's total work, so a replacement view removing all of it at zero cost
+beats the native default by 2.12% against the 10% bar. All four ADR-0004
+contract surfaces (plugins, `isinstance`/identity, `__slots__`, astmerge)
+measured **satisfiable**, so the earlier "declined on contract" framing is stale.
+The 2026-09-16 retirements made the gap **worse**: funnel `serialize_calls`
+2,839,692 -> 1,287,230 (-55%) while total work fell at most ~6.7%, ceiling now
+~0.9-1.1%, gap ~9-11x. Recorded in the plan and the close-out (#1771); assessment
+in #1769. Do not re-open without a new mechanism.
+
+### Settled: G4's criteria are pinned; H1 is not next
+
+- G4 criteria, each with a receipt: `docs/plans/2026-09-16-g4-graduation-criteria.md`
+  (#1767/#1768). The write-flip-versus-read-serving fork is left to the owner.
+- **H1 now: no** (#1770). The binder is H1's only mass and `mypy/literals.py:204`
+  keys narrowing on the live `Var` object (`extract_var_from_literal_hash` reads
+  `key[1]` back as a `Var`), so Rust cannot own `Frame.types` without a Var handle
+  scheme — which is what the node read channel is building. Sequence: **node
+  serving channel -> G-family read flips (Var handles) -> H1 as ONE slice
+  (driver + binder join)**. H1's perf case is also weak: statement dispatch ~1.8%
+  gross and expression dispatch ~5% at a 3x undercount, both under F's 10% bar —
+  it is a ladder step, not a speed win.
+- H1's differential must be **cross-run, not in-run** (the checker is not
+  idempotent): byte-identical `exportjson` AST+symbol-table dump is the cheap
+  detector, plus the `_type_maps` invariant and both deferral budgets. **There is
+  no per-call fallback**, so a divergence is a wrong answer rather than a defer.
+  Tier T3, with a new `parity-checker-driver` job.
+
+### In flight (wave 8)
+
+| lane | scope |
+|---|---|
+| N1 | node serving read channel (G1.1) — the critical path |
+| N2 | #1765: the flip gate's cache-data step cannot engage the flip |
+| T1 | #1757: split the engagement suites per area |
+| W1 | end-to-end counters + the wall-clock leg never yet run |
+| G0V | **done** — G0 is partial; see the verdict below |
+
+F1 and H1 completed; their deliverables are issues #1769 and #1770.
+
+### Settled: G0 is *partial*, and G4's criterion 2 needs retargeting (G0V, #1767)
+
+G0V audited the writer against the fields Python-only paths mutate and the answer
+is **no**, on three independent layers:
+
+1. **The store is a per-write delta, not a snapshot.** `capture_meta`
+   (`node_mirror.rs:392-406`) stores one field per write and lazy adoption
+   (`nodes_mirror.py:607-619`) skips baseline-only writes, so no mirror registers
+   `line/column/end_line/end_column` at all while `Context.set_line`
+   (`nodes.py:180-191`) has **120** call sites outside tests. Structural statement
+   fields (`expr`, `body`, `rvalue`, `target`, `patterns`, `arguments`, ...) are
+   absent.
+2. **No store consumer exists.** `rg rust_node_mirror_meta` outside tests finds
+   only `_reset_meta` (`nodes_mirror.py:655`): G0.5 moved the cache-payload
+   *format* to Rust, not its *source* — the cache writer still reads the live
+   Python tree (`sym_node.rs:515-537`, 65 `getattr`).
+3. **Def-family cache-payload fields are unregistered**: `FuncDef._name`,
+   `arg_names`, `arg_kinds`, `original_first_arg`; `Var._name`; `ClassDef.name`.
+   Plus post-construction mutations on unregistered fields
+   (`IfStmt.else_body` `reachability.py:101`, `FuncDef.type_args`
+   `semanal.py:10076`, `Block.body` `astmerge.py:216`, `ClassDef.decorators`
+   `treetransform.py:278`, ...) and two blind channels
+   (`replace_object_state`'s dynamic descriptor copy with no `__delattr__` hook,
+   and `Decorator.decorators.remove` at `plugins/attrs.py:893` with no `touch`).
+
+**Detection limits, stated by the lane:** attribution is by name + annotation and
+is not type-checked, so **2,589 of 8,687 sites (30%) are unattributed** and the
+missing-field list is a **lower bound**.
+
+**Consequence for G4:** criterion 2 is **blocked for both sub-families** until the
+issue says whether the parse-wire blob stays parser-produced or the store owns
+parse-time fields; criterion 3 is adjacent, since aststrip's reset and astmerge's
+dynamic copy act on unregistered fields — a store-sourced def family would be
+stale exactly where G3.2's aststrip hazard lived. The lane's proposed rewrite:
+make criterion 2 target the **cache-payload field set derived from the Python
+writers**, not the unbounded "fields Python-only paths mutate". G1 is clean by
+comparison: no post-construction mutation field is missing from its registration.
+
+### Queue
+
+1. **After N1**: the statement family and `Var` handles (H1's precondition), then
+   H1 as one T3 slice.
+2. **Owner decisions pending**: ADR-0006's disposition (delete the prototype or
+   file a successor — still `Draft`, and `mypy/test/testtypeview.py`'s 33 tests run
+   in **no** CI job); G4's write-flip-versus-read-serving fork; #1745 (no branch
+   protection, so every gate is advisory).
+3. #1761 (`rust_unknown_unpack`, 5.81x), #1763 (retirement leftovers), #1754
+   (census under-reporting).
+
 ## RESUME POINT — 2026-09-16, late (wave 7 close: 16 PRs today, G3.2 read-flip coverage landed)
 
 Wave 7 ran five lanes against the wave-6 inventory: four retirement lanes
