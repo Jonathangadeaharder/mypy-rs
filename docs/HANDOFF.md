@@ -10,14 +10,21 @@ mutex. The seam ledger itself moved out of `AGENTS.md` into
 
 ### Where `main` stands
 
-`main` = `ba762f12a` (the tier protocol and this handoff, PR `#1682`), on top of
-`a7329c5d4` (H1d live-object decision heads, PR `#1690`), `08ef56f57` (POSIX
-glob for the `parity-ast` path gate, PR `#1691`), `3d5ace300` (seam-split
-planner, PR `#1692`), `e531197d3` (zero-call correction, PR `#1686`),
-`a0f6150a7` (evidence convention, PR `#1684`), `e9017bf46` (worktree pool, PR
-`#1683`), `3329850ac` (`parity-ast` path gate, PR `#1681`), `271175175` (the
-ledger archive, PR `#1676`) and `618c2b196` (#1669). Wave 5 branched from
-`506aa7e4c`.
+`main` = `a5bb83244` (G1.2 node-shadow audit and first expression-node read
+flip, PR `#1695`), on top of `58d32ab24` (F reopening one-family view, PR
+`#1694`), `cd54ca293` (semanal live-object seams, PR `#1699`), `0046062a1`
+(residual scalar-seam retirement, PR `#1685`), `24ddff920` (pool
+checkout and venv fix, PR `#1705`), `9b0f426ca` (`check_callable_call` tail
+seam, PR `#1700`), `d6647b8bc` (this read-flip correction, PR `#1704`),
+`ac68f0eaf` (the G3.1 read flip, PR `#1687`), `e28cbca16` (measurement-code
+rule, PR `#1703`), `c73260211` (this resume point, PR `#1697`), `ba762f12a`
+(tier protocol, PR `#1682`), `a7329c5d4` (H1d live-object decision heads, PR
+`#1690`), `08ef56f57` (POSIX glob for the `parity-ast` gate, PR `#1691`),
+`3d5ace300` (seam-split planner, PR `#1692`), `e531197d3` (zero-call correction,
+PR `#1686`), `a0f6150a7` (evidence convention, PR `#1684`), `e9017bf46`
+(worktree pool, PR `#1683`), `3329850ac` (`parity-ast` path gate, PR `#1681`),
+`271175175` (the ledger archive, PR `#1676`) and `618c2b196` (#1669). Wave 5
+branched from `506aa7e4c`.
 
 Landed this wave, in merge order:
 
@@ -58,6 +65,54 @@ Landed this wave, in merge order:
 - `ba762f12a` **the tier protocol, the wave-5 ledger section and this handoff
   (PR #1682)** — tier table plus the weighted pool and the source-tree pre-flight
   in `AGENTS.md`, seven wave-5 entries in the ledger, this resume point. Tier T1.
+- `c73260211` **head refresh and the H1d ledger entry (PR #1697)** — this resume
+  point brought up to date with the merges that landed within minutes of `#1682`;
+  the `#1672`/`#1690` entry added to the ledger. Tier T1.
+- `e28cbca16` **measurement code is evidence-critical (PR #1703)** —
+  `AGENTS.md` rule naming the two failure families (structural zeros; accounting
+  bypassed on the abnormal path) and why a probe needs the full review pass. Tier
+  T1.
+- `ac68f0eaf` **the G3.1 read flip (PR #1687, issue #1670)** — default-off
+  behind `Options.native_symtable_read_flip`; `CACHE_VERSION` and
+  `OPTIONS_AFFECTING_CACHE` untouched; new gate `parity-symtable-flip`, which
+  caught a real defect on its first run. Tier T2 (default-off read flip).
+- `d6647b8bc` **read-flip correction in this handoff (PR #1704)** — the defect
+  was ordering, not a leak; the earlier "leaked `X@N` keys" line was an inference
+  from one side of a diff dump and is retracted. Retracted in the ledger too.
+- `9b0f426ca` **`check_callable_call` tail seam (PR #1700, issue #1673)** —
+  calls 177,899 -> 378, defers 177,524 -> 2, aggregate `serialize_calls` -15.3%;
+  refreshed ranking published; the lane also fixed its own audit probe's
+  id-recycling undercount and lost-report path in the same PR. Tier T2/T3.
+- `24ddff920` **pool checkout and venv fix (PR #1705)** — the pool resolves the
+  main checkout via `git rev-parse --git-common-dir` and re-points `.venv` on
+  every `claim`; lock order and release fixed. Tier T1.
+- `0046062a1` **residual scalar-seam retirement (PR #1685, issue #1668)** — seven
+  gates, per-seam 204 calls / 190 answered / 10,942 bytes -> 0; aggregate
+  explicitly not claimed because the trees differ by six or more foreign commits.
+  Tier T3.
+- `cd54ca293` **semanal live-object seams (PR #1699, issue #1663)** — landed the
+  non-wire conversion and flipped no default; the issue's mechanism was disproven
+  (semanal wire is 0.54% of corpus writes) and the net loss is 3,177,447 gated
+  non-wire calls against a 48ns raw-FFI floor. Tier T3 attempted, closed NO-GO.
+- `58d32ab24` **F reopening one-family view (PR #1694, issue #1671)** — the
+  `Instance` replacement view, env-gated default off, measured against the
+  close-out's reopening bar and closed **NO-GO by ~4.7x**: the family's wire
+  funnel is 2.12% of total work (1.347s of 63.572s) against a 10% bar, capture
+  removes 32.4% of the walk's encodes (3.21M registrations), and routing reads
+  adds no wire saving for 17.43M pyO3 round-trips (+5.8s). All four ADR-0004
+  contract surfaces measured satisfiable, so the binding constraint is
+  arithmetic, not contract; ADR-0006 is the draft successor. Tier T2.
+- `a5bb83244` **G1.2 node-shadow audit and first expression-node read flip (PR
+  #1695, issue #1674)** — the generated fidelity audit (213 slot rows: 76 served,
+  8 wire, 42 marker-only, 6 class-name-only, 41 structural, 40 gap) floors the
+  `snapshot_definition` candidate and picks the #1635 aststrip lvalue surgery;
+  `rust_aststrip_process_lvalue` serves `is_new_def` + `name` from the shadow
+  behind `Options.native_ast_mirror_read` (default off, not in
+  `OPTIONS_AFFECTING_CACHE`) with the Python tail as the identical fallback.
+  `testfinegrained` 747/27 in all three gate states; `aststrip.served` 26 /
+  `deferred` 128; wire delta <=2 events. Tier T2. Merge prep fixed the stale
+  `-> None` annotation that failed CI's self-check (8 errors) and filed #1708
+  for an inherited identity-layer flake.
 
 ### T4 baseline (lane A8), measured at `271175175`
 
@@ -77,15 +132,36 @@ and the source-tree guard printed the worktree path for `mypy`.
 - cold self-check `-n0 --no-incremental -p mypy -p mypyc` -> `Success: no
   issues found in 353 source files`
 
-**`main` moved five times after that measurement** (`271175175` ->
-`e531197d3` -> `3d5ace300` -> `08ef56f57` -> `a7329c5d4` -> `ba762f12a`): four
-of those are docs, CI or scripts, but `a7329c5d4` changes production seams
-(`mypy/checker.py` plus Rust), so this battery describes the code at
-`271175175` only and is not a statement about the later commits. It was
-nevertheless clean at the pinned head, and it is the wave-level T4 run that
-frees the individual lanes from re-running the corpus. The wall-clock figure is
-provisional: `uptime` was recorded alongside the run, but the host was under
-external load (load average 34-48), not quiet.
+**`main` moved eighteen times after that measurement** (`271175175` ->
+`e531197d3` -> ... -> `a5bb83244`; the full chain is at the top of this
+section), and seven of those are production changes (`a7329c5d4` H1d heads,
+`ac68f0eaf` the read flip, `9b0f426ca`, `0046062a1`, `cd54ca293`, `58d32ab24`,
+`a5bb83244`). That battery therefore describes the code at `271175175` only; the
+battery below re-runs it on the merged head. It was nevertheless clean at the
+pinned head. Its wall-clock figure is provisional: `uptime` was recorded
+alongside the run, but the host was under external load (load average 34-48),
+not quiet.
+
+### T4 on the merged wave head (`a5bb83244`)
+
+Full battery re-run by the coordinator on the final wave head; kernel rebuilt
+from source into `/private/tmp/mypy-rs-wave5-tk` (the source-tree guard printed
+the main checkout for `mypy`):
+
+- `cargo test -p mypy-type-kernel` -> `2856 passed; 0 failed; 11 ignored`
+- `testtypes -n0` (`TEST_NATIVE_TYPE_KERNEL=1`) -> `4013 passed, 7 skipped`
+- `testcheck -n0` -> `8198 passed, 15 skipped, 7 xfailed in 281.62s` — the
+  counts are line-identical to the `271175175` battery above, which is the
+  load-invariant claim; the wall clock is not comparable (host conditions)
+- fine-grained family (`testfinegrained`, `testfinegrainedcache`, `testdaemon`,
+  `testmerge`, `testdiff`, `-n0`) -> `1454 passed, 257 skipped in 411.58s`
+- cold self-check `-n0 --no-incremental` -> `Success: no issues found in 354
+  source files` (354 = the baseline's 353 plus `mypy/typeview.py`)
+- audit `--check` (`misc/g12_node_shadow_audit.py`) -> tables match the derived
+  state on this base
+
+Counts are the evidence; no `uptime` line was taken for this run, so its wall
+clocks carry no claim.
 
 ### Process change: tiers, the weighted pool, the source-tree guard
 
@@ -157,14 +233,31 @@ external load (load average 34-48), not quiet.
    `rust_classify_tuple_type_implicit`, `rust_count_stats`,
    `rust_object_from_instance`, `rust_pretty_seq`,
    `rust_refers_to_typeddict`.
-3. Remaining wave-5 lane landings are appended to
-   `docs/plans/type-kernel-seam-ledger.md` as the coordinator reports each
-   merged PR with its measurements.
-4. Open PRs at handoff time: `#1695` (G1.2 node-shadow audit and first
-   expression-node read flip), `#1694` (F reopening measurement), `#1685`
-   (residual scalar-seam sweep), `#1699` (semanal non-wire interfaces with the
-   gate flip), `#1700` (hot-seam rerank, including fixes to the audit probe's
-   structural zeros and lost-report path).
+3. **Wave-5 lane landings: closed.** Every production lane merged and its entry
+   is appended to `docs/plans/type-kernel-seam-ledger.md` in this PR (the last
+   two are `#1671`/`58d32ab24` and `#1674`/`a5bb83244`).
+4. **`#1698` — the semanal net-loss seams, assigned.** The `#1668`-style hot
+   net-loss set from `#1699`'s NO-GO (`refers_to_fullname` +556ns,
+   `rust_lookup` +273ns, `refers_to_class_or_function` +497ns) plus the
+   quiet-host re-measurement. The re-measurement must precede any future semanal
+   gate flip: the five-window `semanal_time` deltas run against the load trend in
+   the stable windows, so nothing there is a clean verdict.
+5. **`#1706` — filed, open.** `hard_exit` flushes stdout before
+   `atexit._run_exitfuncs()` and then `os._exit`s without flushing, dropping
+   redirected-stdout writes, which is the thing the `#1061` comment claims to
+   prevent. Relevant to every probe that writes its report to a file.
+6. **Open PRs at handoff time: only this docs PR (`#1707`).** `#1694` merged as
+   `58d32ab24` and `#1695` as `a5bb83244`, both with all checks green and no
+   unreplied review comments; their lane worktrees and branches were removed
+   after merge.
+7. **`#1708` — filed, open (noticed, not fixed).**
+   `NativeSymtableReadFlipSuite::test_never_adopted_table_defers` flakes because
+   the shared raw identity layer answers `handle_of` for a never-registered
+   `SymbolTable` whose address was recycled: the raw map is unpinned, survives
+   the mirror resets, and is only cleared by `rust_mirror_reset`, which does not
+   run with the type mirror off. Reproduced on `main` without wave-5 gates
+   (1/10 full-file runs), so it is inherited; fix direction and evidence on the
+   issue.
 
 ## RESUME POINT — 2026-09-14, night (second parallel wave landed)
 
