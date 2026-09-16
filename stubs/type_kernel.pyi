@@ -490,12 +490,6 @@ __all__ = [
     "rust_check_unpacks_in_list",
     "rust_find_matching_overload_items",
     "rust_infer_operator_assignment_method",
-    "rust_proxy_read",
-    "rust_proxy_put",
-    "rust_proxy_drop",
-    "rust_proxy_reset",
-    "rust_proxy_entry_count",
-    "rust_proxy_handle_of",
     "rust_node_mirror_capture_ref",
     "rust_node_mirror_capture_analyzed",
     "rust_node_mirror_ref",
@@ -543,6 +537,13 @@ __all__ = [
     "rust_refers_to_different_scope",
     "rust_flatten_lvalues",
     "rust_literal_int_expr",
+    "rust_view_put",
+    "rust_view_encode",
+    "rust_view_args",
+    "rust_view_touch",
+    "rust_view_reset",
+    "rust_view_count",
+    "rust_view_stats",
     "IdMapper",
 ]
 
@@ -2801,16 +2802,6 @@ def rust_infer_operator_assignment_method(
     typ: Any, method: str, in_ops: bool
 ) -> tuple[bool, str] | None: ...
 
-# ADR-0004 proxy P1 (#1553): blob-backed read-shadow store. Handles are
-# minted by rust_proxy_put through the shared identity service; a read
-# serves bytes only while its stamp still matches the caller's epoch.
-def rust_proxy_read(handle: int, stamp: int) -> bytes | None: ...
-def rust_proxy_put(obj: Any, bytes: bytes, stamp: int) -> int: ...
-def rust_proxy_drop(handle: int) -> bool: ...
-def rust_proxy_reset() -> int: ...
-def rust_proxy_entry_count() -> int: ...
-def rust_proxy_handle_of(obj: Any) -> int | None: ...
-
 # Phase G1.0a (#1572): expression dual-write node shadow. `capture_*`
 # mint (or reuse) the shared identity handle and return it; reads return
 # None for an object with no record.
@@ -2942,3 +2933,22 @@ def rust_flatten_lvalues(lvalues: list[Expression]) -> list[Expression] | None: 
 def rust_literal_int_expr(
     type_maps: list[dict[Expression, Type]], expr: Expression
 ) -> tuple[int, int | None] | None: ...
+
+# F reopening experiment (#1671): Rust-owned `Instance` field storage.
+# Handles are minted by rust_view_put through the shared identity service;
+# an encode is served only while its stamp still matches the caller's.
+def rust_view_put(
+    obj: Any,
+    fullname: str,
+    args: list[Any],
+    arg_handles: list[int],
+    fixed_up: bool,
+    args_tvar_clean: bool,
+    stamp: int,
+) -> int: ...
+def rust_view_encode(handle: int, stamp: int, live_fullname: str) -> bytes | None: ...
+def rust_view_args(handle: int, stamp: int) -> tuple[Any, ...] | None: ...
+def rust_view_touch(handle: int) -> bool: ...
+def rust_view_reset() -> int: ...
+def rust_view_count() -> int: ...
+def rust_view_stats() -> tuple[int, int, int]: ...
