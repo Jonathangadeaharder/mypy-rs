@@ -95,17 +95,16 @@ jobs:
           advisory = {"low", "medium", "info", "advisory", "nit"}
           blocking = [c for c in comments
                       if str(c.get("severity", "")).strip().lower() not in advisory]
-          # a skipped run with no findings is the doc-only-diff case: ocr
-          # saw no supported files changed and reviewed nothing. A clean
-          # review is "complete" (ocr >=1.12) or the older "success".
+          # A skipped run with no findings reviewed nothing: ocr skips
+          # doc-only diffs and empty/ancestry diffs alike. A failed run
+          # reports a different status, so any comment-free skip is clean.
+          skipped_clean = (result.get("status") == "skipped" and not comments)
           no_supported = "No supported files changed" in str(result.get("message", ""))
-          skipped_clean = (result.get("status") == "skipped"
-                           and no_supported and not comments)
           if result.get("status") not in ("success", "complete") and not skipped_clean:
               body = f"OpenCodeReview @ {sha}: run status `{result.get('status')}`"
           elif not comments:
               body = (f"OpenCodeReview @ {sha}: nothing to review (no supported files changed)"
-                      if skipped_clean else f"OpenCodeReview @ {sha}: clean, no findings")
+                      if no_supported else f"OpenCodeReview @ {sha}: skipped, no findings")
           else:
               rows = ["| severity | location | finding |", "|---|---|---|"]
               for c in comments:
