@@ -15287,13 +15287,18 @@ class StaleCodedEntryRemedySuite(Suite):
     def activate_stale_kernel(self, kernel: Any) -> None:
         """Point the gated seam at `kernel` with the gate forced on.
 
-        `_HAS_TYPE_KERNEL` and `_WriteBuffer` are patched to what a
-        kernel-present environment binds at import, so the suite exercises
-        the gated path identically with and without a real extension in
-        the environment: the remedy must not depend on which build
+        `_HAS_TYPE_KERNEL` and `_WriteBuffer` are patched to the
+        production binding, so the suite exercises the gated path
+        identically with and without a real extension in the
+        environment: the remedy must not depend on which build
         answered earlier imports.
         """
-        from librt.internal import WriteBuffer
+        try:
+            from librt.internal import WriteBuffer
+        except ImportError:
+            # PyPy / librt absent: production falls back to the
+            # pure-Python path.
+            from mypy.subtypes import _WriteBuffer as WriteBuffer
 
         import mypy.subtypes
         from mypy.subtypes import _set_native_subtype_active, _set_native_subtype_resolver
@@ -15349,6 +15354,22 @@ class StaleCodedEntryRemedySuite(Suite):
         patch = mock.patch.multiple(mypy.subtypes, _HAS_TYPE_KERNEL=True, _type_kernel=stale)
         with patch:
             self.assertFalse(is_subtype(self.fx.a, self.fx.b))
+
+    def test_kernel_activation_tolerates_absent_librt(self) -> None:
+        # PyPy has no librt (pyproject.toml excludes it); production binds
+        # the pure-Python path there, so activation must fall back to
+        # that binding instead of hard-importing librt (#43).
+        import sys
+        import types as types_module
+
+        import mypy.subtypes
+
+        production_binding = mypy.subtypes._WriteBuffer
+        stale = types_module.ModuleType("type_kernel")
+        with mock.patch.dict(sys.modules, {"librt": None, "librt.internal": None}):
+            self.activate_stale_kernel(stale)
+        self.assertIs(mypy.subtypes._WriteBuffer, production_binding)
+        self.assertIs(mypy.subtypes._type_kernel, stale)
 
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
