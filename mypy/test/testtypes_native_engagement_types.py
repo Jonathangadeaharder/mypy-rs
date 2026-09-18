@@ -15293,15 +15293,19 @@ class StaleCodedEntryRemedySuite(Suite):
         environment: the remedy must not depend on which build
         answered earlier imports.
         """
-        try:
-            from librt.internal import WriteBuffer
-        except ImportError:
-            # PyPy / librt absent: production falls back to the
-            # pure-Python path.
-            from mypy.subtypes import _WriteBuffer as WriteBuffer
-
         import mypy.subtypes
         from mypy.subtypes import _set_native_subtype_active, _set_native_subtype_resolver
+
+        def _write_buffer() -> Any:
+            try:
+                from librt.internal import WriteBuffer
+
+                return WriteBuffer
+            except ImportError:
+                # PyPy / librt absent: production binds the pure-Python path.
+                return mypy.subtypes.__dict__["_WriteBuffer"]
+
+        WriteBuffer = _write_buffer()
 
         _set_native_subtype_active(True)
         # Never reached: the remedy fires on the attribute fetch, before
@@ -15364,12 +15368,14 @@ class StaleCodedEntryRemedySuite(Suite):
 
         import mypy.subtypes
 
-        production_binding = mypy.subtypes._WriteBuffer
+        # `__dict__` sidesteps the self-check's implicit-reexport error,
+        # which a constant getattr (bugbear B009) would rewrite back into.
+        production_binding = mypy.subtypes.__dict__["_WriteBuffer"]
         stale = types_module.ModuleType("type_kernel")
         with mock.patch.dict(sys.modules, {"librt": None, "librt.internal": None}):
             self.activate_stale_kernel(stale)
-        self.assertIs(mypy.subtypes._WriteBuffer, production_binding)
-        self.assertIs(mypy.subtypes._type_kernel, stale)
+        self.assertIs(mypy.subtypes.__dict__["_WriteBuffer"], production_binding)
+        self.assertIs(mypy.subtypes.__dict__["_type_kernel"], stale)
 
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
