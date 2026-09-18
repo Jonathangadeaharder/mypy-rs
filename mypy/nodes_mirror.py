@@ -25,10 +25,14 @@ G1.1 adds the store's first *mode-gated* serving read channel:
 `set_read_flip` selects a mode (0 off, 1 serve, 2 serve + differential
 compare) that the native dependency walker obeys when it reads the
 `RefExpr` binding scalars, so those reads are answered from the record
-instead of crossing to the live slots. Mode 0 is the default and leaves
-every read live, and `read_counters` reports the channel's provenance
-(served, deferred, compared, mismatched), which is what makes a run's
-evidence checkable rather than assumed.
+instead of crossing to the live slots. Mode 1 is the production default
+(#1860, G4 expression-family graduation): `build` calls
+`set_production_read_flip` with the capture and `native_ast_mirror_read`
+gates, so a default production run serves, while an explicit
+`MYPY_TK_NODE_READ_FLIP` still wins for the measurement arms and mode 2
+is never a production mode. `read_counters` reports the channel's
+provenance (served, deferred, compared, mismatched), which is what makes
+a run's evidence checkable rather than assumed.
 
 G2 store extension (#1787 / PR A, record-only, no consumer): the
 statement/def metadata store registers the constructor-set payload
@@ -124,9 +128,11 @@ Blind channels, audited against #1787 §1(b):
   deleted slot. The G1 record is not per-field where it matters - the five
   binding scalars the serving channel reads are one snapshot gated by a
   single presence marker (`ref_captures`) - so the #1841-style per-field
-  retire cannot cover them without new record state; the retraction lands
-  with the G1 serving flip going default-on, pinned meanwhile by
-  `NodeSlotDeletionOutOfContractSuite`.
+  retire cannot cover them without new record state. #1860 sent the G1
+  serving flip default-on with this gap still open, by owner contract:
+  no production `del` on a tracked G1 slot exists, the pins stay in force
+  (`NodeSlotDeletionOutOfContractSuite`), and the write-flip work must
+  flip them knowingly.
 
 Design notes:
 - Capture is via class-level monkeypatching of ``__setattr__``. #1864:
@@ -267,6 +273,9 @@ _in_capture = False
 # widen-only: a widened patch set stays, gated at runtime.
 _capture_scope: str = "ref"
 _meta_armed: bool = False
+# #1863: what `set_production_read_flip` last wired. The runner reads this
+# back instead of re-deriving the production default from raw signals.
+_production_read_flip: bool = False
 _ORIG_SETATTR: Any = object.__setattr__
 _ORIG_DELATTR: Any = object.__delattr__
 # id(node) -> native handle for every node the store holds a record for.
@@ -361,6 +370,35 @@ def read_flip() -> int:
     if kernel is None:
         return 0
     return int(kernel.rust_node_mirror_read_mode())
+
+
+def set_production_read_flip(serve: bool) -> int:
+    """Set the G1.1 mode a production build runs (#1860).
+
+    `serve` is `capture_active and Options.native_ast_mirror_read`: with
+    both on, the expression family's walker reads are served (mode 1).
+    An explicit `MYPY_TK_NODE_READ_FLIP` always wins, so the differential
+    arms keep control of the channel, and the compare mode (2) stays a
+    measurement mode this entry point never selects. Called on every
+    manager, so a later build cannot inherit a mode from an earlier one
+    in the process (the aststrip flip's rule).
+    """
+    global _production_read_flip
+    _production_read_flip = serve
+    if os.environ.get(_READ_FLIP_ENV) is not None:
+        return read_flip()
+    return set_read_flip(1 if serve else 0)
+
+
+def production_read_flip() -> bool:
+    """Whether the production wiring last asked this channel to serve.
+
+    What `set_production_read_flip` recorded (#1863): the build wiring's own
+    decision, not a re-derivation from kernel presence and options, so a
+    consumer (the cross-run runner's default model) cannot disagree with
+    what was actually wired. False before any manager ran.
+    """
+    return _production_read_flip
 
 
 def read_counters() -> dict[str, int]:
