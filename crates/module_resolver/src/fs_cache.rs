@@ -327,16 +327,20 @@ impl FsCache {
         };
         let rel_str = rel.to_string_lossy();
         let norm = normalize_path(&rel_str);
+        // Mirror mypy/fscache.py: a later root can override an earlier one,
+        // and a root matching its own __init__.py wins outright.
+        let mut ok = false;
         for root in package_root.iter() {
             if norm.starts_with(root) {
                 // A package root itself is never a package.
                 if norm == format!("{}{}", root, basename) {
-                    return false;
+                    ok = false;
+                    break;
                 }
-                return true;
+                ok = true;
             }
         }
-        false
+        ok
     }
 
     fn listdir(&self, py: Python<'_>, path: String) -> PyResult<Vec<String>> {

@@ -1,0 +1,124 @@
+name: merge-gate
+
+# The gate that must pass before a merge (AGENTS.md §5): CodeQL python
+# analysis plus the pytest-cmdline + pytest-slow families (daemon,
+# incremental, fine-grained, diff-cache) that no per-PR workflow runs.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: merge-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@3ea06614dafe36dec890db3446326e0d40ce53d4 # v3.38.1
+        with:
+          languages: python
+          queries: security-and-quality
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@3ea06614dafe36dec890db3446326e0d40ce53d4 # v3.38.1
+        with:
+          category: /language:python
+
+  merge-battery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # pyproject addopts is "-nauto"; cap it so a 4-core runner does not fan
+      # out 18 xdist workers (memory-cap rule, and see the -nauto issue).
+      PYTEST_XDIST_AUTO_NUM_WORKERS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+        with:
+          version: "0.11.14"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Sync Python deps (uv)
+        run: uv sync --group test
+
+      - name: Build native extensions into a scratch prefix
+        # pytest-cmdline/pytest-slow spawn real mypy and mypyc subprocesses
+        # whose PYTHONPATH is reset to the repo root (testcmdline.py and the
+        # mypyc test_commandline.py), so the extensions must also land there.
+        run: |
+          SCRATCH=/tmp/native-ext
+          mkdir -p "$SCRATCH"
+          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+          for crate in mypy-type-kernel mypy-ast-serialize mypy-module-resolver; do
+            cargo rustc -p "$crate" --features extension-module \
+              --lib --crate-type cdylib --release
+            NAME="${crate#mypy-}"
+            NAME="${NAME//-/_}"
+            for DEST in "$SCRATCH" "$GITHUB_WORKSPACE"; do
+              cp "target/release/lib${NAME}.so" "$DEST/${NAME}${EXT_SUFFIX}" 2>/dev/null \
+                || cp "target/release/lib${NAME}.dylib" "$DEST/${NAME}${EXT_SUFFIX}"
+            done
+          done
+          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+
+      - name: Build in-repo librt (F3 wire cache)
+        run: |
+          LIBSO=/tmp/librt-ext
+          mkdir -p "$LIBSO"
+          (cd mypyc/lib-rt && uv run python setup.py build_ext \
+            --build-lib "$LIBSO" --build-temp /tmp/librt-build)
+          PYTHONPATH="$LIBSO" uv run python -c "from librt.internal import write_raw_bytes; print('in-repo librt: write_raw_bytes OK')"
+          echo "LIBRT_SCRATCH=$LIBSO" >> "$GITHUB_ENV"
+
+      - name: Cold self-check with the native gates on
+        # mypy_self_check.ini sets num_workers = 4, which forces the native
+        # parser and resolver on; this is the cheapest end-to-end gate.
+        env:
+          PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
+          TEST_NATIVE_TYPE_KERNEL: "1"
+        run: uv run python -m mypy --config-file mypy_self_check.ini --no-incremental -p mypy -p mypyc
+
+      - name: Merge battery (pytest-cmdline + pytest-slow families)
+        # runtests.py owns the group definitions (pytest-slow: daemon, mypyc
+        # CLI, error-stream, diff-cache; pytest-cmdline: stubgen/eval/cmdline).
+        # No deselects remain: the last native-parity gaps #4 and #5 are fixed.
+        env:
+          PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
+          TEST_NATIVE_TYPE_KERNEL: "1"
+        run: uv run python runtests.py pytest-cmdline pytest-slow

@@ -529,7 +529,8 @@ impl ImportCollector {
     always_false = None,
     cache_version = 0,
     include_docstrings = false,
-    custom_typing_module = None
+    custom_typing_module = None,
+    cpython_error_messages = true
 ))]
 fn parse(
     py: Python<'_>,
@@ -543,6 +544,7 @@ fn parse(
     cache_version: i64,
     include_docstrings: bool,
     custom_typing_module: Option<String>,
+    cpython_error_messages: bool,
 ) -> PyResult<PyObject> {
     if cache_version != AST_WIRE_VERSION {
         return Err(PyRuntimeError::new_err(format!(
@@ -552,7 +554,7 @@ fn parse(
     }
     let source = read_source(py, source, fnam)?;
     let parsed = parse_unchecked_source(&source, PySourceType::Python);
-    let mut errors = parse_errors_to_py(py, &source, parsed.errors())?;
+    let mut errors = parse_errors_to_py(py, &source, parsed.errors(), cpython_error_messages)?;
     let (type_ignores, type_comments) = collect_comment_directives(&source, parsed.tokens());
     let module = parsed.into_syntax();
     let is_partial_package = is_partial_stub_package(fnam, &module.body);
@@ -616,18 +618,22 @@ fn parse_errors_to_py(
     py: Python<'_>,
     source: &str,
     errors: &[ruff_python_parser::ParseError],
+    cpython_error_messages: bool,
 ) -> PyResult<Vec<PyObject>> {
     let line_starts = line_starts(source);
 
-    // Ruff produces more specific syntax error messages than CPython.
-    // The strangler-fig contract requires byte-identical output to Python.
-    // Re-parse with CPython's ast.parse on ruff syntax errors to match.
+    // Single-process mode runs the native parser where fastparse used to, so
+    // the contract requires byte-identical output: re-parse with CPython's
+    // ast.parse and use its message and location.
 
-    // message and location.
-
-    // Syntax errors are rare in production (users fix them), so the
-    // double-parse cost is negligible.
-    let cpython_error = cpython_syntax_error(py, source).ok();
+    // Parallel mode has no Python-path counterpart (upstream main.py also
+    // force-enables the native parser under --num-workers), so ruff's own
+    // messages are the parity target there.
+    let cpython_error = if cpython_error_messages && !errors.is_empty() {
+        cpython_syntax_error(py, source).ok()
+    } else {
+        None
+    };
 
     // CPython's ast.parse always stops at the first syntax error, so the
     // Python path reports exactly one; emit more and we diverge from parity.

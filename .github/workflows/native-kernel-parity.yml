@@ -146,7 +146,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('**/Cargo.toml') }}
+          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
@@ -258,7 +258,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('**/Cargo.toml') }}
+          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
@@ -364,7 +364,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('**/Cargo.toml') }}
+          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
@@ -474,7 +474,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('**/Cargo.toml') }}
+          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
@@ -549,7 +549,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('**/Cargo.toml') }}
+          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
