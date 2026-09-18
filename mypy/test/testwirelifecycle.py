@@ -75,6 +75,7 @@ class WirefixupInstallSuite(Suite):
     def setUp(self) -> None:
         self._saved_info_map = wirefixup._wire_typeinfo_map
         self._saved_alias_map = wirefixup._wire_alias_map
+        self._saved_symbol_map = wirefixup._wire_symbol_map
         self._saved_kernel_mod = sys.modules.get("type_kernel")
         # Make the optional-accelerator availability check pass even when
         # the Rust .so is not installed in the test environment.
@@ -92,6 +93,7 @@ class WirefixupInstallSuite(Suite):
     def tearDown(self) -> None:
         wirefixup.set_wire_typeinfo_map(self._saved_info_map)
         wirefixup.set_wire_alias_map(self._saved_alias_map)
+        wirefixup.set_wire_symbol_map(self._saved_symbol_map)
         if self._saved_kernel_mod is None:
             sys.modules.pop("type_kernel", None)
         else:
