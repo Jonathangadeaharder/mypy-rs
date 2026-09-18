@@ -211,7 +211,9 @@ from mypy.types import (
     _serialize_stats_on,
     _serialize_with_taint_check,
     _type_wire_cache,
+    _type_wire_cache_hit,
     _wire_cache_enabled,
+    _wire_cache_storable,
     find_unpack_in_list,
     flatten_nested_tuples,
     flatten_nested_unions,
@@ -633,11 +635,11 @@ def _serialize_type_for_checkexpr(t: Type) -> bytes:
         _serialize_stats["calls"] += 1
     key = id(t)
     if _wire_cache_enabled():
-        entry = _type_wire_cache.get(key)
-        if entry is not None and entry[0] is t:
+        cached = _type_wire_cache_hit(key, t)
+        if cached is not None:
             if _serialize_stats_on:
                 _serialize_stats["hits"] += 1
-            return entry[1]
+            return cached
     if type(t) is Instance:
         fn = t.type.fullname
         if (
@@ -655,7 +657,7 @@ def _serialize_type_for_checkexpr(t: Type) -> bytes:
             if _serialize_stats_on:
                 _serialize_stats["writes"] += 1
                 _serialize_stats["bytes"] += len(fast)
-            _type_wire_cache[key] = (t, fast)
+            _type_wire_cache[key] = (t, fast, None)
         return fast
     # Phase F2 (#1393): on the expensive miss path (anything the encode fast
     # path rejects: family composites and tvar-tainted types), read the
@@ -666,15 +668,19 @@ def _serialize_type_for_checkexpr(t: Type) -> bytes:
             _serialize_stats["mirror"] += 1
         return blob
     buf = _CheckExprWriteBuffer()
-    result, saw_tvar = _serialize_with_taint_check(t, buf)
-    if saw_tvar:
+    result, fp = _serialize_with_taint_check(t, buf)
+    if fp is not None:
         if _serialize_stats_on:
             _serialize_stats["tvar"] += 1
-    elif _wire_cache_enabled() and (not isinstance(t, Instance) or t.type_ref is None):  # type: ignore[misc]
+    if (
+        _wire_cache_enabled()
+        and _wire_cache_storable(t)
+        and (not isinstance(t, Instance) or t.type_ref is None)  # type: ignore[misc]
+    ):
         if _serialize_stats_on:
             _serialize_stats["writes"] += 1
             _serialize_stats["bytes"] += len(result)
-        _type_wire_cache[key] = (t, result)
+        _type_wire_cache[key] = (t, result, fp)
     return result
 
 
@@ -2551,11 +2557,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # otherwise (user plugins, registry absent, or a real match).
             if not plugin_call_hook_known_absent(callable_name):
                 if object_type is not None:
-                    method_sig_hook = self._try_native_plugin_hook(
-                        callable_name, "get_method_signature_hook"
-                    )
-                    if method_sig_hook is None:
-                        method_sig_hook = self.plugin.get_method_signature_hook(callable_name)
+                    # Per-kind pre-gate: a registry-proven absent kind
+                    # makes both the seam and the Python chain return
+                    # None, so skip both without the Rust round trip.
+                    if not plugin_hook_known_absent("get_method_signature_hook", callable_name):
+                        method_sig_hook = self._try_native_plugin_hook(
+                            callable_name, "get_method_signature_hook"
+                        )
+                        if method_sig_hook is None:
+                            method_sig_hook = self.plugin.get_method_signature_hook(callable_name)
+                    else:
+                        method_sig_hook = None
                     if method_sig_hook:
                         return self.apply_method_signature_hook(
                             callee,
@@ -2567,11 +2579,18 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             method_sig_hook,
                         )
                 else:
-                    function_sig_hook = self._try_native_plugin_hook(
-                        callable_name, "get_function_signature_hook"
-                    )
-                    if function_sig_hook is None:
-                        function_sig_hook = self.plugin.get_function_signature_hook(callable_name)
+                    # Per-kind pre-gate, same contract as the method
+                    # branch above.
+                    if not plugin_hook_known_absent("get_function_signature_hook", callable_name):
+                        function_sig_hook = self._try_native_plugin_hook(
+                            callable_name, "get_function_signature_hook"
+                        )
+                        if function_sig_hook is None:
+                            function_sig_hook = self.plugin.get_function_signature_hook(
+                                callable_name
+                            )
+                    else:
+                        function_sig_hook = None
                     if function_sig_hook:
                         return self.apply_function_signature_hook(
                             callee, args, arg_kinds, context, arg_names, function_sig_hook
@@ -3283,6 +3302,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             and (
                 (
                     object_type is None
+                    # Per-kind pre-gate: provable absence means the seam
+                    # declines and the Python chain returns None.
+                    and not plugin_hook_known_absent("get_function_hook", callable_name)
                     and (
                         self._try_native_plugin_hook(callable_name, "get_function_hook")
                         or self.plugin.get_function_hook(callable_name)
@@ -3290,6 +3312,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 )
                 or (
                     object_type is not None
+                    and not plugin_hook_known_absent("get_method_hook", callable_name)
                     and (
                         self._try_native_plugin_hook(callable_name, "get_method_hook")
                         or self.plugin.get_method_hook(callable_name)

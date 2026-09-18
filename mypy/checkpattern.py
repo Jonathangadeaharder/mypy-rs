@@ -52,6 +52,14 @@ from mypy.types import (
     UninhabitedType,
     UnionType,
     UnpackType,
+    _read_mirror_blob,
+    _serialize_stats,
+    _serialize_stats_on,
+    _serialize_with_taint_check,
+    _type_wire_cache,
+    _type_wire_cache_hit,
+    _wire_cache_enabled,
+    _wire_cache_storable,
     callable_with_ellipsis,
     find_unpack_in_list,
     get_proper_type,
@@ -83,10 +91,50 @@ def _set_native_checkpattern_active(active: bool) -> None:
     _native_checkpattern_active = active
 
 
+# Argless built-in instances serialize to fixed bytes; mirroring the
+# fast path in checker.py / checkexpr.py / subtypes.py.
+_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
+    "builtins.str": b"\x50\x53",
+    "builtins.function": b"\x50\x54",
+    "builtins.int": b"\x50\x55",
+    "builtins.bool": b"\x50\x56",
+    "builtins.object": b"\x50\x57",
+}
+
+
 def _serialize_type(t: Type) -> bytes:
+    """Serialize a `Type` to its wire-format bytes for the Rust reader."""
+    # Wire-cache probe and store, same phase-gated shape as the S-group
+    # funnels (subtypes.py, join.py, erasetype.py, typeops.py): the probe
+    # is a no-op miss while semantic analysis has the cache disabled.
+    key = id(t)
+    if _wire_cache_enabled():
+        cached = _type_wire_cache_hit(key, t)
+        if cached is not None:
+            return cached
+    if type(t) is Instance:
+        fn = t.type.fullname
+        if (
+            not t.args
+            and not t.last_known_value
+            and not t.extra_attrs
+            and fn in _BUILTIN_INSTANCE_BYTES
+        ):
+            return _BUILTIN_INSTANCE_BYTES[fn]
+    blob = _read_mirror_blob(t)
+    if blob is not None:
+        if _serialize_stats_on:
+            _serialize_stats["mirror"] += 1
+        return blob
     buf = _WriteBuffer()
-    t.write(buf)
-    return buf.getvalue()
+    result, fp = _serialize_with_taint_check(t, buf)
+    if (
+        _wire_cache_enabled()
+        and _wire_cache_storable(t)
+        and (not isinstance(t, Instance) or t.type_ref is None)  # type: ignore[misc]
+    ):
+        _type_wire_cache[key] = (t, result, fp)
+    return result
 
 
 # Branch tags returned by rust_classify_class_pattern_ranges (issue #987).
