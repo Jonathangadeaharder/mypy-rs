@@ -53,7 +53,9 @@ from mypy.types import (
     _serialize_stats_on,
     _serialize_with_taint_check,
     _type_wire_cache,
+    _type_wire_cache_hit,
     _wire_cache_enabled,
+    _wire_cache_storable,
     find_unpack_in_list,
     get_proper_type,
     get_proper_types,
@@ -129,9 +131,9 @@ def _serialize_type(t: Type) -> bytes:
     """Serialize a `Type` to its wire-format bytes for the Rust reader."""
     key = id(t)
     if _wire_cache_enabled():
-        entry = _type_wire_cache.get(key)
-        if entry is not None and entry[0] is t:
-            return entry[1]
+        cached = _type_wire_cache_hit(key, t)
+        if cached is not None:
+            return cached
     if type(t) is Instance:
         fn = t.type.fullname
         if (
@@ -149,9 +151,13 @@ def _serialize_type(t: Type) -> bytes:
             _serialize_stats["mirror"] += 1
         return blob
     buf = _WriteBuffer()
-    result, saw_tvar = _serialize_with_taint_check(t, buf)
-    if not saw_tvar and _wire_cache_enabled() and (not isinstance(t, Instance) or t.type_ref is None):  # type: ignore[misc]
-        _type_wire_cache[key] = (t, result)
+    result, fp = _serialize_with_taint_check(t, buf)
+    if (
+        _wire_cache_enabled()
+        and _wire_cache_storable(t)
+        and (not isinstance(t, Instance) or t.type_ref is None)  # type: ignore[misc]
+    ):
+        _type_wire_cache[key] = (t, result, fp)
     return result
 
 
