@@ -192,7 +192,14 @@ def per_seam_report(proxies: dict[str, CountingProxy]) -> list[str]:
     for name, p in sorted(proxies.items(), key=lambda kv: kv[1].calls, reverse=True):
         if p.calls:
             decisions = p.native + p.fallback
-            lines.append(f"  {name}: {p.calls} calls ({100.0 * p.native / decisions:.2f}% native)")
+            if decisions:
+                lines.append(
+                    f"  {name}: {p.calls} calls ({100.0 * p.native / decisions:.2f}% native)"
+                )
+            else:
+                # A batch seam can answer zero pairs (empty list): calls
+                # without decisions, so the share has no denominator (#46).
+                lines.append(f"  {name}: {p.calls} calls (no decisions)")
     return lines
 
 
