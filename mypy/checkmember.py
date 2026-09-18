@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Callable, Sequence
-from typing import Any, Final, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from mypy import message_registry, state
 from mypy.checker_shared import TypeCheckerSharedApi
@@ -55,6 +55,7 @@ from mypy.typeops import (
     tuple_fallback,
 )
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     AnyType,
     CallableType,
     DeletedType,
@@ -201,14 +202,6 @@ NATIVE_TT_ITEM_FUNC_TYPEOBJ = 9
 NATIVE_TT_ITEM_FUNC_NOT_TYPEOBJ = 10
 NATIVE_TT_ITEM_TYPE_TYPE_INSTANCE = 11
 NATIVE_TT_ITEM_TYPE_TYPE_OTHER = 12
-
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 # bytes -> fixed Type cache for checkmember deserialize, split into

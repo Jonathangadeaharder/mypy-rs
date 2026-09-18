@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any, Final, cast, overload
+from typing import Any, cast, overload
 
 import mypy.typeops
 from mypy.expandtype import expand_type
@@ -19,6 +19,7 @@ from mypy.subtypes import (
     is_subtype,
 )
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     AnyType,
     CallableType,
     DeletedType,
@@ -116,15 +117,6 @@ def _set_native_join_resolver(resolver: Any) -> None:
     """
     global _native_join_resolver
     _native_join_resolver = resolver
-
-
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type(t: Type) -> bytes:

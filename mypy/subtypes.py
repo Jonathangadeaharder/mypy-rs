@@ -37,6 +37,7 @@ from mypy.nodes import (
 from mypy.options import Options
 from mypy.state import state
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     MYPYC_NATIVE_INT_NAMES,
     TUPLE_LIKE_INSTANCE_NAMES,
     TYPED_NAMEDTUPLE_NAMES,
@@ -280,15 +281,6 @@ def _native_infer_variance_member(
         )
     except Exception:
         return None
-
-
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type(t: Type) -> bytes:

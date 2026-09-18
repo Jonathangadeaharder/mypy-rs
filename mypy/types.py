@@ -295,6 +295,18 @@ def _read_mirror_blob(t: Type) -> bytes | None:
     return fn(t)
 
 
+# Wire-format invariant shared with the Rust reader (crates/type_kernel,
+# crates/ast_serialize): fixed wire bytes for argless built-in instances,
+# served by every kernel wire-seam funnel; pinned by the check below.
+_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
+    "builtins.str": b"\x50\x53",
+    "builtins.function": b"\x50\x54",
+    "builtins.int": b"\x50\x55",
+    "builtins.bool": b"\x50\x56",
+    "builtins.object": b"\x50\x57",
+}
+
+
 # Phase F2 (#1530): types_mirror.touch hook, installed by activate when
 # the mirror is on. Raw in-place writes (list/dict item stores,
 # extend/append) never fire the family __setattr__ capture.
@@ -5581,6 +5593,22 @@ def read_type(data: ReadBuffer, tag: Tag | None = None) -> Type:
 # flag off, so this stays inert.
 if _VISITOR_HAS_TYPE_KERNEL:
     _visitor_read_type = read_type
+
+
+# Import-time pin on the wire invariant: the built-in blobs must match the
+# tag constants and round-trip through the wire reader to the argless
+# Instance each stands for, so an encoding change fails here, once.
+assert _BUILTIN_INSTANCE_BYTES == {
+    "builtins.str": bytes((INSTANCE, INSTANCE_STR)),
+    "builtins.function": bytes((INSTANCE, INSTANCE_FUNCTION)),
+    "builtins.int": bytes((INSTANCE, INSTANCE_INT)),
+    "builtins.bool": bytes((INSTANCE, INSTANCE_BOOL)),
+    "builtins.object": bytes((INSTANCE, INSTANCE_OBJECT)),
+}
+for _builtin_name, _builtin_blob in _BUILTIN_INSTANCE_BYTES.items():
+    _decoded = read_type(ReadBuffer(_builtin_blob))
+    assert type(_decoded) is Instance and _decoded.type_ref == _builtin_name
+del _builtin_name, _builtin_blob, _decoded
 
 
 def read_function_like(data: ReadBuffer, tag: Tag) -> FunctionLike:

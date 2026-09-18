@@ -37,6 +37,7 @@ from mypy.typeops import (
     tuple_fallback,
 )
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     AnyType,
     FunctionLike,
     Instance,
@@ -89,17 +90,6 @@ def _set_native_checkpattern_active(active: bool) -> None:
     """Called by the build manager to enable/disable the Rust path."""
     global _native_checkpattern_active
     _native_checkpattern_active = active
-
-
-# Argless built-in instances serialize to fixed bytes; mirroring the
-# fast path in checker.py / checkexpr.py / subtypes.py.
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type(t: Type) -> bytes:

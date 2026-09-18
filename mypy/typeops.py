@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, Final, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from mypy.checker_state import checker_state
 from mypy.copytype import copy_type
@@ -39,6 +39,7 @@ from mypy.nodes import (
 )
 from mypy.state import state
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     ELLIPSIS_TYPE_NAMES,
     NOT_IMPLEMENTED_TYPE_NAMES,
     AnyType,
@@ -189,17 +190,6 @@ def _has_mutated_truthiness(t: Type) -> bool:
     if isinstance(proper, UnionType):
         return any(_has_mutated_truthiness(item) for item in proper.items)
     return False
-
-
-# Argless built-in instances serialize to fixed bytes; mirroring the
-# fast path in checker.py / checkexpr.py / subtypes.py.
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type(t: Type) -> bytes:

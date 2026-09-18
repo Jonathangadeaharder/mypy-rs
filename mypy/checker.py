@@ -270,6 +270,7 @@ from mypy.typeops import (
     type_object_type,
 )
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     ANY_STRATEGY,
     MYPYC_NATIVE_INT_NAMES,
     NOT_IMPLEMENTED_TYPE_NAMES,
@@ -1060,15 +1061,6 @@ def _try_native_is_valid_inferred_type(
         )
     except (AssertionError, NotImplementedError, ValueError):
         return None
-
-
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type_for_checker(t: Type) -> bytes:
