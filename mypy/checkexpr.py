@@ -491,7 +491,8 @@ def _set_native_plugin_hook_registry(
     capture.  The optional `plugins` list is the ChainedPlugin._plugins
     snapshot used by the Rust resolver.
     """
-    global _native_plugin_hook_registry, _native_plugin_hook_has_user_plugins, _native_plugin_hook_plugins
+    global _native_plugin_hook_registry
+    global _native_plugin_hook_has_user_plugins, _native_plugin_hook_plugins
     _native_plugin_hook_registry = registry
     _native_plugin_hook_has_user_plugins = has_user_plugins
     _native_plugin_hook_plugins = plugins
@@ -3056,7 +3057,15 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         return any(tv.id in callee_var_ids for tv in get_type_vars(ctx))
 
                     lam_typevar_ctx = any(_lam_ctx_has_callee_var(i) for i in lam_idx)
-                    if not lam_typevar_ctx:
+                    # Mirrors get_arg_infer_passes: a formal with a type
+                    # var in a callable return needs Python's second pass,
+                    # and a single-pass solve would bind that var to Any.
+                    second_pass_formal = any(
+                        ctx is not None and ctx.accept(ArgInferSecondPassQuery())
+                        for ai, ctx in enumerate(arg_context)
+                        if not arg_kinds[ai].is_star()
+                    )
+                    if not lam_typevar_ctx and not second_pass_formal:
                         arg_types_bytes = []
                         arg_pts: list[Any] = []
                         for a, ctx in zip(args, arg_context):
