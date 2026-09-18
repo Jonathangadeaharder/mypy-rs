@@ -54,6 +54,9 @@ jobs:
         run: uv sync --group test
 
       - name: Build native extensions into a scratch prefix
+        # pytest-cmdline/pytest-slow spawn real mypy and mypyc subprocesses
+        # whose PYTHONPATH is reset to the repo root (testcmdline.py and the
+        # mypyc test_commandline.py), so the extensions must also land there.
         run: |
           SCRATCH=/tmp/native-ext
           mkdir -p "$SCRATCH"
@@ -63,8 +66,10 @@ jobs:
               --lib --crate-type cdylib --release
             NAME="${crate#mypy-}"
             NAME="${NAME//-/_}"
-            cp "target/release/lib${NAME}.so" "$SCRATCH/${NAME}${EXT_SUFFIX}" 2>/dev/null \
-              || cp "target/release/lib${NAME}.dylib" "$SCRATCH/${NAME}${EXT_SUFFIX}"
+            for DEST in "$SCRATCH" "$GITHUB_WORKSPACE"; do
+              cp "target/release/lib${NAME}.so" "$DEST/${NAME}${EXT_SUFFIX}" 2>/dev/null \
+                || cp "target/release/lib${NAME}.dylib" "$DEST/${NAME}${EXT_SUFFIX}"
+            done
           done
           echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
 
