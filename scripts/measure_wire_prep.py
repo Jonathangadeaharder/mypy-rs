@@ -25,32 +25,45 @@ Measurement model (every prep event lands in exactly one bucket):
             The entry's duration is keyed on the identity of the returned
             bytes and handed to the seam that consumes those bytes; an
             unconsumed entry (e.g. a `_subtype_answers` dedup key) is
-            reported as such. A wire-cache hit that re-serves a blob
-            re-accumulates onto the same key, so the next consuming seam
-            pays the hit's cost, matching who actually spent it. A
-            multi-blob result (a `_serialize_type_list*`) is one entry:
-            the first blob carries the duration, the rest carry 0, so
-            consuming two of them cannot double-count. An entry that
-            raises (PlaceholderType and friends: callers catch and defer
-            to Python) stays in the raised bucket, never attributed to
-            a seam.
+            reported as such, counted per pending blob (a multi-blob
+            result contributes several, only the first carrying time),
+            so unconsumed counts can exceed the entry count. A wire-cache
+            hit that re-serves a blob re-accumulates onto the same key,
+            so the next consuming seam pays the hit's cost, matching who
+            actually spent it. A multi-blob result (a
+            `_serialize_type_list*`) is one entry: the first blob carries
+            the duration, the rest carry 0, so consuming two of them
+            cannot double-count. An entry that raises (PlaceholderType
+            and friends: callers catch and defer to Python) stays in the
+            raised bucket, never attributed to a seam.
   ledger W  adapter windows: the buffer-built seams (constraints, solve,
             argmap...) serialize via raw `t.write(buf)` + `buf.getvalue()`
             rather than `_serialize*` funnels, so the named adapter
             functions are wrapped and the window from adapter entry to
             the adapter's target seam call is timed. Windows reset at
             every wrapped seam call, so gate work that itself calls other
-            seams is discarded, never misattributed as prep.
+            seams is discarded, never misattributed as prep. The window
+            residual - time that is neither a timed serialize entry, nor
+            a seam call, nor an attributed window - is raw buffer prep,
+            gate checks and argument glue; it is split by whether the
+            adapter made any seam call, so prep for calls the adapter
+            never made is visible, not buried.
 
 Known-answer validation runs first (`--self-test`): a forced seam-call
 count, a wire-cache accumulation case, an unconsumed case, an adapter
-window case and an alias-seam case, each asserted exactly, plus a global
-conservation identity (seam-attributed + unconsumed + no-blob + raised
-serialize time == total serialize entry time). The probe exits non-zero if
-any check fails, if the audited run fails, or if the coverage census finds a
-loaded-but-unpatched `_serialize*` helper (an undercount is worse than
-no measurement). Numbers are nanosecond integers, so the identity is
-exact, not approximate.
+window case, an alias-seam case, a kwarg-nesting consumption case and a
+patch-idempotence case, each asserted exactly, plus a global conservation
+identity (seam-attributed + unconsumed + no-blob + raised serialize time
+== total serialize entry time) and a wrapper-overhead calibration check.
+The probe exits non-zero if any check fails, if the audited run fails, or
+if the coverage census finds a loaded-but-unpatched `_serialize*` helper
+(an undercount is worse than no measurement). Numbers are nanosecond
+integers, so the identity is exact, not approximate.
+
+`--calibrate` measures the instrumentation itself: the serialize wrapper
+costs more per event than the raw serializer (timing, frame lookup, site
+string, blob pinning). It prints both rates so the wrapper overhead is
+reproducible per machine; subtract it when quoting absolute prep numbers.
 """
 
 from __future__ import annotations
@@ -157,9 +170,11 @@ ADAPTERS: tuple[tuple[str, str, str], ...] = (
     ("mypy.checker", "_try_native_stmt_outcome", "rust_stmt_outcome"),
 )
 
-_PATCHED = " __wire_prep_patched__"
-
 # --- ledger state ------------------------------------------------------------
+# Originals captured at patch time so calibration can time the raw
+# serializer against the wrapped one in the same process.
+_orig_serializers: dict[str, Callable[..., Any]] = {}
+
 _serialize_depth = 0
 
 serialize_entry_ns = 0
@@ -181,6 +196,9 @@ _pinned_bytes = 0
 _TRACKED_WARN_BYTES = 1 << 30
 _pinned_warned = False
 
+# Unconsumed counts are per pending BLOB, not per serialize entry: a
+# multi-blob result contributes several blobs (only the first carries
+# time), so `unconsumed_events` can exceed the serialize entry count.
 unconsumed_ns = 0
 unconsumed_events = 0
 unconsumed_site_ns: collections.Counter[str] = collections.Counter()
@@ -201,7 +219,11 @@ window_deferred_ns: collections.Counter[str] = collections.Counter()
 window_raised_ns: collections.Counter[str] = collections.Counter()
 window_events: collections.Counter[str] = collections.Counter()
 window_unattributed_ns = 0
-adapter_residual_ns = 0
+# Adapter residual: window time no ledger sees (raw t.write buffer
+# prep, gate checks, argument glue), split by whether the adapter made
+# any seam call so prep for never-made calls is visible, not buried.
+adapter_residual_called_ns = 0
+adapter_residual_uncalled_ns = 0
 registered_seams: set[str] = set()
 alias_seams: set[str] = set()
 
@@ -221,13 +243,14 @@ def _activity_done(dt: int) -> None:
 
 
 class _AdapterFrame:
-    __slots__ = ("t0", "sub", "attributed", "target")
+    __slots__ = ("t0", "sub", "attributed", "target", "seam_called")
 
     def __init__(self, target: str) -> None:
         self.t0 = _perf()
         self.sub = 0
         self.attributed = 0
         self.target = target
+        self.seam_called = False
 
 
 def _wrap_adapter(fn: Callable[..., Any], target: str) -> Callable[..., Any]:
@@ -240,13 +263,16 @@ def _wrap_adapter(fn: Callable[..., Any], target: str) -> Callable[..., Any]:
             _stack.pop()
             total = _perf() - frame.t0
             residual = total - frame.sub - frame.attributed
-            global adapter_residual_ns
             if residual > 0:
-                adapter_residual_ns += residual
+                global adapter_residual_called_ns, adapter_residual_uncalled_ns
+                if frame.seam_called:
+                    adapter_residual_called_ns += residual
+                else:
+                    adapter_residual_uncalled_ns += residual
             _activity_done(total)
 
     wrapper.__name__ = getattr(fn, "__name__", target)
-    wrapper._wire_prep_target = target
+    wrapper._wire_prep_patched = True
     return wrapper
 
 
@@ -287,14 +313,13 @@ def _blobs_of(value: Any) -> list[Any]:
 
 
 def _iter_arg_blobs(args: tuple[Any, ...], kwargs: dict[str, Any]) -> list[Any]:
+    """Blobs reachable from call arguments, positional and keyword alike."""
     out: list[Any] = []
-    for a in args:
+    for a in list(args) + list(kwargs.values()):
         out.extend(_blobs_of(a))
         if isinstance(a, (list, tuple)):
             for x in a:
                 out.extend(_blobs_of(x))
-    for a in kwargs.values():
-        out.extend(_blobs_of(a))
     return out
 
 
@@ -331,7 +356,8 @@ def _record_entry(result: Any, dt: int) -> None:
                 _pinned_warned = True
                 print(
                     f"measure_wire_prep: pinned blob bytes passed "
-                    f"{_TRACKED_WARN_BYTES // (1 << 20)} MiB; report may be truncated",
+                    f"{_TRACKED_WARN_BYTES // (1 << 20)} MiB; unconsumed blobs are "
+                    f"pinned (kept alive) until finalize, so memory keeps growing",
                     file=sys.stderr,
                 )
     _activity_done(dt)
@@ -409,6 +435,9 @@ def _wrap_seam(name: str, fn: Callable[..., Any], alias: bool) -> Callable[..., 
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         seam_calls[name] += 1
+        if _stack:
+            for frame in _stack:
+                frame.seam_called = True
         window_ns = _take_window(name)
         timed = bool(_stack)
         t0 = _perf() if timed else 0
@@ -474,9 +503,25 @@ def patch_serializers() -> int:
                 continue
             if getattr(attr, "_wire_prep_patched", False):
                 continue
+            _orig_serializers[f"{modname}.{name}"] = attr
             setattr(mod, name, _wrap_serializer(name, attr))
             n += 1
     return n
+
+
+def _restore_serializers() -> None:
+    """Undo patch_serializers, for calibration only.
+
+    The raw baseline must run on the truly uninstrumented tree: with
+    wrappers live, a directly-called `_serialize_type` leaves the depth
+    gauge at 0, so every nested `_serialize*` helper pays the full
+    wrapper entry cost that uninstrumented production code never pays.
+    """
+    for key, fn in _orig_serializers.items():
+        modname, name = key.rsplit(".", 1)
+        mod = sys.modules.get(modname)
+        if mod is not None:
+            setattr(mod, name, fn)
 
 
 def patch_seams() -> int:
@@ -489,7 +534,10 @@ def patch_seams() -> int:
     for name in dir(type_kernel):
         if not name.startswith("rust_") or not callable(getattr(type_kernel, name)):
             continue
-        setattr(type_kernel, name, _wrap_seam(name, getattr(type_kernel, name), False))
+        fn = getattr(type_kernel, name)
+        if getattr(fn, "_wire_prep_patched", False):
+            continue
+        setattr(type_kernel, name, _wrap_seam(name, fn, False))
         n += 1
     for modname, mod in list(sys.modules.items()):
         if not modname.startswith("mypy.") or mod is None:
@@ -523,6 +571,8 @@ def patch_adapters() -> int:
             attr = path
         if not callable(orig):
             problems.append(f"{modname}.{path} is not callable")
+            continue
+        if getattr(orig, "_wire_prep_patched", False):
             continue
         setattr(holder, attr, _wrap_adapter(orig, target))
     if problems:
@@ -597,6 +647,69 @@ def _fresh_any() -> Any:
     from mypy.types import AnyType, TypeOfAny
 
     return AnyType(TypeOfAny.explicit)
+
+
+# Calibration rates are min-of-rounds per-event nanoseconds, so a single
+# noisy round cannot inflate the quoted wrapper overhead.
+_CAL_ROUNDS = 9
+_CAL_N = 500
+
+
+def calibrate() -> tuple[int, int]:
+    """Per-event cost of the serialize wrapper vs the raw serializer.
+
+    The ledger's per-event numbers include the wrapper bookkeeping
+    (timing, frame lookup, site string, blob pinning), so an
+    instrumented serialize event costs more than a raw one. This is the
+    committed, reproducible source of the wrapper-vs-raw correction the
+    #45 report relied on: run `--calibrate` on the machine a measurement
+    came from and subtract the overhead when quoting absolute prep
+    numbers. Rates are min-of-rounds over `_CAL_N` `_serialize_type`
+    calls on rotating `AnyType` inputs, wire cache off. The raw rate is
+    measured with every serializer temporarily unpatched, so it sees the
+    true uninstrumented path, nested helpers included.
+    """
+    import mypy.subtypes
+    import mypy.types
+
+    raw = _orig_serializers.get("mypy.subtypes._serialize_type")
+    if raw is None:
+        raise RuntimeError(
+            "calibration needs patch_serializers() to have captured "
+            "mypy.subtypes._serialize_type first"
+        )
+    objs = [_fresh_any() for _ in range(8)]
+    cache_state = mypy.types._type_wire_cache_enabled
+    mypy.types._type_wire_cache_enabled = False
+    try:
+
+        def run_rounds(fn: Callable[..., Any], rounds: int) -> int:
+            best: int | None = None
+            for _ in range(rounds):
+                t0 = _perf()
+                for i in range(_CAL_N):
+                    fn(objs[i % len(objs)])
+                dt = _perf() - t0
+                if best is None or dt < best:
+                    best = dt
+            assert best is not None
+            return best // _CAL_N
+
+        # One untimed pass per fn: lazy caches and first-touch costs of
+        # a cold AnyType must not land on whichever fn is timed first.
+        _restore_serializers()
+        try:
+            for i in range(_CAL_N):
+                raw(objs[i % len(objs)])
+            raw_ns = run_rounds(raw, _CAL_ROUNDS)
+        finally:
+            patch_serializers()
+        wrapped = mypy.subtypes._serialize_type
+        for i in range(_CAL_N):
+            wrapped(objs[i % len(objs)])
+        return raw_ns, run_rounds(wrapped, _CAL_ROUNDS)
+    finally:
+        mypy.types._type_wire_cache_enabled = cache_state
 
 
 def selftest() -> list[str]:
@@ -737,6 +850,20 @@ def selftest() -> list[str]:
         f"(want {n_alias}/{n_alias})",
     )
 
+    # 6. Kwarg blob walk: nested containers in kwarg values are
+    # consumed symmetrically with positional args.
+    kw_probe = _wrap_seam("selftest_kw_probe", lambda *args, **kwargs: None, False)
+    n_pending_kw = len(pending)
+    b1 = mypy.subtypes._serialize_type(_fresh_any())
+    b2 = mypy.subtypes._serialize_type(_fresh_any())
+    kw_probe(x=[[b1], b2])
+    check(
+        "kwarg nested blob list is consumed",
+        prep_events["selftest_kw_probe"] == 2 and len(pending) == n_pending_kw,
+        f"prep events={prep_events['selftest_kw_probe']} (want 2), "
+        f"pending delta {len(pending) - n_pending_kw} (want 0)",
+    )
+
     # 7. A serialize that raises (PlaceholderType is unserializable by
     # design): the original exception propagates unchanged and the time
     # lands in the raised bucket, not in a seam's ledger.
@@ -766,6 +893,40 @@ def selftest() -> list[str]:
     check("global identity holds", not identity_failures(), str(identity_failures()))
     gaps = coverage_census()
     check("coverage census clean", not gaps, f"unpatched: {gaps}")
+
+    # 9. Idempotence: a second patch pass must not re-wrap. Pre-guard,
+    # the bare `rust_*`/type_kernel pass re-wrapped every seam, so one
+    # logical seam call counted twice in every ledger.
+    n_reg_before = len(registered_seams)
+    n_repatched = patch_seams()
+    calls_repatch = seam_calls["rust_is_type_type"]
+    type_kernel.rust_is_type_type(mypy.subtypes._serialize_type(_fresh_any()))
+    check(
+        "second patch_seams() wraps nothing and counts once",
+        n_repatched == 0
+        and len(registered_seams) == n_reg_before
+        and seam_calls["rust_is_type_type"] - calls_repatch == 1,
+        f"repatched={n_repatched} (want 0), call delta "
+        f"{seam_calls['rust_is_type_type'] - calls_repatch} (want 1)",
+    )
+    adapter_fn = mypy.constraints._try_native_is_type_type
+    patch_adapters()
+    check(
+        "second patch_adapters() rewraps nothing",
+        mypy.constraints._try_native_is_type_type is adapter_fn,
+        "adapter function object changed across a re-patch",
+    )
+
+    # 10. Calibration: the instrumented wrapper must cost more per
+    # event than the raw serializer; both rates print as the detail.
+    raw_ns, wrapped_ns = calibrate()
+    check(
+        "calibration: instrumented wrapper costs more than raw",
+        wrapped_ns > raw_ns,
+        f"raw {raw_ns} ns/event vs wrapper {wrapped_ns} ns/event",
+    )
+    finalize_unconsumed()
+    check("identity holds after calibration", not identity_failures(), str(identity_failures()))
 
     print("=== wire-prep probe known-answer validation ===", file=sys.stderr)
     for label, ok, detail in checks:
@@ -828,21 +989,41 @@ def report(run_status: str) -> None:
         file=out,
     )
     print(
-        f"  unconsumed: {unconsumed_events} events, {_fmt_s(unconsumed_ns)} | "
+        f"  unconsumed: {unconsumed_events} pending blobs (per blob, not per "
+        f"entry; 0-dt non-first blobs of multi-blob results included, so "
+        f"this can exceed serialize entries), {_fmt_s(unconsumed_ns)} | "
         f"no-blob results: {no_blob_events}, {_fmt_s(no_blob_ns)}",
         file=out,
     )
     print(
         f"adapter windows: {sum(window_events.values())} events, "
         f"{_fmt_s(prep_w_total)} (unattributed discards "
-        f"{_fmt_s(window_unattributed_ns)}, adapter residual "
-        f"{_fmt_s(adapter_residual_ns)})",
+        f"{_fmt_s(window_unattributed_ns)})",
         file=out,
     )
     print(
-        f"TOTAL python-side wire prep: {_fmt_s(prep_s_total + prep_w_total + serialize_raised_ns)} "
+        f"  adapter residual: {_fmt_s(adapter_residual_called_ns + adapter_residual_uncalled_ns)} "
+        f"= window time no ledger sees (raw t.write buffer prep, gate "
+        f"checks, argument glue);",
+        file=out,
+    )
+    print(
+        f"  seam-called windows {_fmt_s(adapter_residual_called_ns)} / "
+        f"never-called windows {_fmt_s(adapter_residual_uncalled_ns)} "
+        f"(the never-called share is prep for seam calls the adapter never made)",
+        file=out,
+    )
+    seam_attributed_ns = prep_s_total + prep_w_total + serialize_raised_ns
+    print(
+        f"TOTAL seam-attributed wire prep: {_fmt_s(seam_attributed_ns)} "
         f"(deferred-call share {_fmt_s(prep_deferred_total)}; "
         f"raised-serialize share {_fmt_s(serialize_raised_ns)})",
+        file=out,
+    )
+    print(
+        f"  + unconsumed prep (never reached a seam): {unconsumed_events} "
+        f"pending blobs, {_fmt_s(unconsumed_ns)}; the two sum to "
+        f"{_fmt_s(seam_attributed_ns + unconsumed_ns)}",
         file=out,
     )
     identity = identity_failures()
@@ -888,7 +1069,12 @@ def report(run_status: str) -> None:
     prow.sort(reverse=True)
     print(
         "  seam                                        calls  defers  "
-        "prep_S_s(useful/deferred/raised)  prep_W_s  seam_call_s",
+        "prep_S_s(useful/deferred/raised)  prep_W_s  seam_call_in_window_s",
+        file=out,
+    )
+    print(
+        "  (seam_call_in_window_s accumulates only calls timed inside an "
+        "adapter window; it is 0 for seams called outside adapters)",
         file=out,
     )
     for total_ns, seam, s_ns, w_ns in prow[:45]:
@@ -936,6 +1122,11 @@ PREP_REFUSAL = (
 
 
 def finalize_unconsumed() -> None:
+    """Move still-pending blobs to the unconsumed bucket.
+
+    Counts per blob (multi-blob results contribute more than one), so
+    the event count is not comparable to serialize entries.
+    """
     global unconsumed_ns, unconsumed_events
     for key, entry in pending.items():
         unconsumed_ns += entry[0]
@@ -959,6 +1150,21 @@ def main(argv: list[str]) -> int:
             print(f"measure_wire_prep: {len(fails)} self-test failure(s)", file=sys.stderr)
             return 1
         print("self-test: all known-answer checks passed", file=sys.stderr)
+        return 0
+
+    if "--calibrate" in argv:
+        _import_all()
+        patch_serializers()
+        raw_ns, wrapped_ns = calibrate()
+        print("=== wire-prep probe calibration: serialize wrapper overhead ===", file=sys.stderr)
+        print(f"raw _serialize_type:            {raw_ns} ns/event", file=sys.stderr)
+        print(f"instrumented (ledger wrapper): {wrapped_ns} ns/event", file=sys.stderr)
+        print(f"wrapper overhead:              {wrapped_ns - raw_ns} ns/event", file=sys.stderr)
+        print(
+            "ledger S event cost includes this overhead; subtract it when quoting "
+            "absolute prep numbers (min-of-rounds rate, wire cache off)",
+            file=sys.stderr,
+        )
         return 0
 
     # Measurement run: single-process cold self-check via the audited argv.
