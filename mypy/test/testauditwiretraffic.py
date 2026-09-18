@@ -28,6 +28,14 @@ re-registrations counted and marked on the affected row (#1837).
 so the guards are proven without a self-check. A guard that rejected every
 run would be as useless as the hollow zero, so each refusal is paired with
 a positive control that must return 0.
+
+The probes' decision classification is guarded here too (#36): the coded
+single-pair seam (1/0/3 decided, -1 deferred, #33) and the batch slot
+seam are classified by both the audit's seam wrapper and the share probe's
+counting proxy, and a misclassification silently mis-splits useful vs
+deferred bytes and calls. The share probe's display is guarded alongside:
+a 99.72% native seam must not print as "100%", and its deferral list must
+rank by deferral count, not call count.
 """
 
 from __future__ import annotations
@@ -47,11 +55,21 @@ from unittest import mock
 import mypy.main
 
 _AUDIT_PATH = Path(__file__).resolve().parents[2] / "misc" / "audit_wire_traffic.py"
+_SHARE_PATH = Path(__file__).resolve().parents[2] / "scripts" / "measure_native_share.py"
 
 
 def _load_audit_module() -> types.ModuleType:
     """A fresh module per test: the counters are module-level globals."""
     spec = importlib.util.spec_from_file_location("audit_wire_traffic_under_test", _AUDIT_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_share_module() -> types.ModuleType:
+    """A fresh `scripts/measure_native_share.py`, same loading contract."""
+    spec = importlib.util.spec_from_file_location("measure_native_share_under_test", _SHARE_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -849,6 +867,159 @@ class SharedBlobAttributionSuite(unittest.TestCase):
         self.assertIn("(25.0%, 1000 B)", output)
         self.assertIn("other causes: 30 events", output)
         self.assertIn("subtypes.py:879:_is_subtype  [shared: 5]", output)
+
+
+class CodedSeamSplitSuite(unittest.TestCase):
+    """#36: the probes' coded/batch classification, proven at the wrapper.
+
+    Both probes classify `rust_is_subtype_coded` results (1/0/3 decided
+    natively, -1 deferred, #33) and `rust_is_subtype_batch` slots, and a
+    misclassification silently mis-splits useful vs deferred bytes and
+    calls: the probes still run and still print numbers, so only a test
+    can catch it (measurement code is evidence-critical, AGENTS.md).
+    """
+
+    def setUp(self) -> None:
+        self.audit = _load_audit_module()
+        self.share = _load_share_module()
+
+    def test_audit_wrapper_splits_coded_codes_into_useful_and_deferred(self) -> None:
+        codes = {"false": 0, "true": 1, "consult": 3, "defer": -1}
+        lens: dict[str, int] = {}
+        for label, code in codes.items():
+            blob = f"blob-{label}".encode()
+            self.audit.register_serializer_result(blob, f"site-{label}")
+            lens[label] = len(blob)
+            seam = self.audit.make_seam("rust_is_subtype_coded", lambda *a, c=code: c)
+            seam(blob)
+        self.assertEqual(dict(self.audit.seam_calls), {"rust_is_subtype_coded": 4})
+        self.assertEqual(dict(self.audit.seam_defers), {"rust_is_subtype_coded": 1})
+        # 1/0/3 are decided answers (0 is a decided False, 3 a consult
+        # cut): useful bytes, never deferrals.
+        self.assertEqual(
+            dict(self.audit.useful), {"site-false": 1, "site-true": 1, "site-consult": 1}
+        )
+        self.assertEqual(
+            dict(self.audit.useful_bytes),
+            {
+                "site-false": lens["false"],
+                "site-true": lens["true"],
+                "site-consult": lens["consult"],
+            },
+        )
+        self.assertEqual(dict(self.audit.deferred), {"site-defer": 1})
+        self.assertEqual(dict(self.audit.deferred_bytes), {"site-defer": lens["defer"]})
+        self.assertEqual(
+            dict(self.audit.deferred_pair), {("site-defer", "rust_is_subtype_coded"): 1}
+        )
+        self.assertEqual(
+            dict(self.audit.seam_call_bytes), {"rust_is_subtype_coded": sum(lens.values())}
+        )
+        self.assertEqual(self.audit.pending, {})
+
+    def test_audit_wrapper_splits_batch_slots_by_outcome(self) -> None:
+        deferred_pair = [b"batch-left", b"batch-right"]
+        decided_pair = [b"batch2-left", b"batch2-right"]
+        for blob in deferred_pair + decided_pair:
+            self.audit.register_serializer_result(blob, "site-batch")
+        deferred_seam = self.audit.make_seam("rust_is_subtype_batch", lambda *a: [1, -1, 0])
+        deferred_seam(deferred_pair)
+        # One -1 slot defers the call: both blobs land in the deferred
+        # bucket, the any(-1) rule the report's byte split depends on.
+        self.assertEqual(dict(self.audit.seam_defers), {"rust_is_subtype_batch": 1})
+        self.assertEqual(dict(self.audit.deferred), {"site-batch": 2})
+        decided_seam = self.audit.make_seam("rust_is_subtype_batch", lambda *a: [1, 0])
+        decided_seam(decided_pair)
+        self.assertEqual(dict(self.audit.seam_defers), {"rust_is_subtype_batch": 1})
+        self.assertEqual(dict(self.audit.useful), {"site-batch": 2})
+        self.assertEqual(dict(self.audit.deferred), {"site-batch": 2})
+        self.assertEqual(self.audit.pending, {})
+
+    def test_share_proxy_counts_each_coded_decision(self) -> None:
+        results = [1, 0, 3, -1, 1]
+        proxy = self.share.CountingProxy("rust_is_subtype_coded", lambda *a: results.pop(0))
+        # The proxy must pass the code through untouched: the shim
+        # persists the exact answer it receives (#33).
+        seen = [proxy() for _ in range(5)]
+        self.assertEqual(seen, [1, 0, 3, -1, 1])
+        self.assertEqual((proxy.calls, proxy.native, proxy.fallback), (5, 4, 1))
+
+    def test_share_proxy_counts_batch_slots_per_decision(self) -> None:
+        proxy = self.share.CountingProxy("rust_is_subtype_batch", lambda *a: [1, -1, 0, -1])
+        self.assertEqual(proxy(), [1, -1, 0, -1])
+        # One call, four decisions: two answered, two deferred.
+        self.assertEqual((proxy.calls, proxy.native, proxy.fallback), (1, 2, 2))
+
+
+class ShareReportDisplaySuite(unittest.TestCase):
+    """#36: the share report's display must not round deferrals away."""
+
+    def setUp(self) -> None:
+        self.share = _load_share_module()
+
+    def seeded(self, name: str, calls: int, native: int, fallback: int) -> Any:
+        # The display reads the counters only; classification is proven by
+        # CodedSeamSplitSuite, so the counters are seeded directly to keep
+        # the #35 review shape cheap to reproduce.
+        proxy = self.share.CountingProxy(name, lambda *a: None)
+        proxy.calls, proxy.native, proxy.fallback = calls, native, fallback
+        return proxy
+
+    def sections(self, lines: list[str]) -> tuple[list[str], list[str]]:
+        defer_at = lines.index("top deferrals by deferral count:")
+        all_at = lines.index("all seams with calls:")
+        return lines[defer_at + 1 : all_at - 1], lines[all_at + 1 :]
+
+    def test_a_99_72_percent_native_seam_is_not_printed_as_100(self) -> None:
+        # The #35 review shape: 22,932 calls, 64 deferrals. The :.0f share
+        # printed "100% native" and hid them from the per-seam section.
+        proxies = {
+            "rust_is_subtype_coded": self.seeded("rust_is_subtype_coded", 22_932, 22_868, 64)
+        }
+        defer_rows, all_rows = self.sections(self.share.per_seam_report(proxies))
+        self.assertIn("  rust_is_subtype_coded: 22932 calls (99.72% native)", all_rows)
+        self.assertFalse(any("100% native" in row for row in all_rows))
+        # The deferral stays visible with an unrounded share.
+        self.assertIn(
+            "  rust_is_subtype_coded: 22932 calls, 64 fallbacks (0.28% defer)", defer_rows
+        )
+
+    def test_the_deferral_list_ranks_by_deferrals_not_calls(self) -> None:
+        # Sixteen bulk seams with more calls but fewer deferrals used to
+        # fill the top-15-by-calls list and cut the coded seam entirely.
+        proxies = {
+            f"rust_bulk_{i:02d}": self.seeded(f"rust_bulk_{i:02d}", 200_000, 199_990, 10)
+            for i in range(16)
+        }
+        proxies["rust_is_subtype_coded"] = self.seeded("rust_is_subtype_coded", 22_932, 22_868, 64)
+        defer_rows, _ = self.sections(self.share.per_seam_report(proxies))
+        # 17 seams defer, the list holds 15: call-count ranking cut the
+        # coded seam (rank 17 by calls); deferral ranking leads with it.
+        self.assertEqual(len(defer_rows), 15)
+        self.assertEqual(
+            defer_rows[0], "  rust_is_subtype_coded: 22932 calls, 64 fallbacks (0.28% defer)"
+        )
+
+    def test_main_prints_the_per_seam_report(self) -> None:
+        # Wiring proof: `main()` must print what `per_seam_report` returns
+        # for the counters the run produced, so the probe's exit report
+        # cannot silently lose the deferral rows after the #36 refactor.
+        proxies = {
+            "rust_is_subtype_coded": self.seeded("rust_is_subtype_coded", 22_932, 22_868, 64)
+        }
+        err = io.StringIO()
+        with (
+            mock.patch.object(self.share, "run", lambda cwd: proxies),
+            mock.patch.object(sys, "argv", ["measure_native_share.py"]),
+            contextlib.redirect_stderr(err),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(self.share.main(), 0)
+        output = err.getvalue()
+        self.assertIn("top deferrals by deferral count:", output)
+        self.assertIn("22932 calls, 64 fallbacks (0.28% defer)", output)
+        self.assertIn("22932 calls (99.72% native)", output)
+        self.assertNotIn("100% native", output)
 
 
 if __name__ == "__main__":

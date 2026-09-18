@@ -115,6 +115,14 @@ except ImportError:
     _rust_classify_type_parameter = None  # type: ignore[assignment]
     _HAS_TYPE_KERNEL = False
 
+# A stale type_kernel build predating #33 imports fine but lacks
+# `rust_is_subtype_coded`; the gated call must fail with this remedy
+# instead of a bare AttributeError INTERNAL ERROR (#36).
+STALE_TYPE_KERNEL_REMEDY = (
+    "rebuild the in-repo type_kernel extension and prepend its scratch directory "
+    "to PYTHONPATH (see AGENTS.md, 'Type kernel build order')"
+)
+
 # Module-level flag + resolver, set by the build manager from
 # `Options.native_type_kernel` at the start of each build. The hot path
 # reads these without an options lookup per call. When `_native_subtype_active`
@@ -821,7 +829,18 @@ def _is_subtype(
         # (1/0/3/-1, matching `rust_is_subtype_batch`) lets the answer be
         # persisted here directly, with no buffered re-evaluation (#33).
         try:
-            code = _type_kernel.rust_is_subtype_coded(
+            # Fetched through the module attribute on purpose: the parity
+            # engagement test and both probes wrap this attribute in place.
+            coded_entry = _type_kernel.rust_is_subtype_coded
+        except AttributeError as err:
+            # A stale extension predating #33 (#36): fail with the
+            # rebuild remedy, never as a bare INTERNAL ERROR.
+            raise RuntimeError(
+                "the type_kernel on sys.path is not the in-repo extension: "
+                f"{err}. " + STALE_TYPE_KERNEL_REMEDY
+            ) from err
+        try:
+            code = coded_entry(
                 # Reuse the cache attempt's wire bytes when it produced
                 # them; re-serialize only if that attempt declined.
                 left_bytes if left_bytes is not None else _serialize_type(left),

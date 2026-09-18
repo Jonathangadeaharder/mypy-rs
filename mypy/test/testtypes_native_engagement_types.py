@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest import skipUnless
+from unittest import mock, skipUnless
 
 import mypy.expandtype
 from mypy.checker import TypeChecker
@@ -15249,6 +15249,106 @@ class NativeCallableUnifyPreludeSuite(Suite):
             on = is_subtype(left, fail_right)
         assert on is False
         assert len(calls) == 1, f"expected 1 seam call, got {len(calls)}"
+
+
+class StaleCodedEntryRemedySuite(Suite):
+    """#36: a stale type_kernel build fails with the pointed rebuild remedy.
+
+    An extension predating #33 imports fine, so the staleness surfaces only
+    as the missing `rust_is_subtype_coded` attribute on the first gated
+    subtype check. That must raise the pointed RuntimeError (the
+    `parse_to_binary_ast` pattern, mypy/nativeparse.py), not a bare
+    AttributeError that reads as an INTERNAL ERROR. The gate-off path is
+    untouched: with the seam off the same stale module answers through the
+    Python engine exactly as before, so a legitimately absent kernel never
+    triggers the remedy.
+    """
+
+    def setUp(self) -> None:
+        from mypy.subtypes import _clear_subtype_batch
+
+        self.fx = TypeFixture(INVARIANT)
+        # Earlier suites persist coded answers into `_subtype_answers`
+        # under the default flag set (#33); a leftover hit would answer
+        # this pair before the fetch under test could run.
+        _clear_subtype_batch()
+
+    def tearDown(self) -> None:
+        from mypy.subtypes import (
+            _clear_subtype_batch,
+            _set_native_subtype_active,
+            _set_native_subtype_resolver,
+        )
+
+        _clear_subtype_batch()
+        _set_native_subtype_active(False)
+        _set_native_subtype_resolver(None)
+
+    def activate_stale_kernel(self, kernel: Any) -> None:
+        """Point the gated seam at `kernel` with the gate forced on.
+
+        `_HAS_TYPE_KERNEL` and `_WriteBuffer` are patched to what a
+        kernel-present environment binds at import, so the suite exercises
+        the gated path identically with and without a real extension in
+        the environment: the remedy must not depend on which build
+        answered earlier imports.
+        """
+        from librt.internal import WriteBuffer
+
+        import mypy.subtypes
+        from mypy.subtypes import _set_native_subtype_active, _set_native_subtype_resolver
+
+        _set_native_subtype_active(True)
+        # Never reached: the remedy fires on the attribute fetch, before
+        # the resolver is handed to the kernel.
+        _set_native_subtype_resolver(SimpleNamespace())
+        patch = mock.patch.multiple(
+            mypy.subtypes, _HAS_TYPE_KERNEL=True, _type_kernel=kernel, _WriteBuffer=WriteBuffer
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_missing_coded_entry_names_the_rebuild_remedy(self) -> None:
+        import types as types_module
+
+        stale = types_module.ModuleType("type_kernel")
+        self.activate_stale_kernel(stale)
+        # Two distinct no-arg Instances skip the fast paths, so the check
+        # reaches the gated block, where the fetch must fail loudly.
+        with self.assertRaises(RuntimeError) as ctx:
+            is_subtype(self.fx.a, self.fx.b)
+        message = str(ctx.exception)
+        self.assertIn("the type_kernel on sys.path is not the in-repo extension", message)
+        self.assertIn("rust_is_subtype_coded", message)
+        self.assertIn("AGENTS.md", message)
+        self.assertIn("Type kernel build order", message)
+        self.assertIsInstance(ctx.exception.__cause__, AttributeError)
+
+    def test_a_kernel_with_the_coded_entry_answers_through_the_gate(self) -> None:
+        # Positive control: the remedy fires only on the missing symbol.
+        # A kernel exposing the entry answers normally, and the answer is
+        # persisted (#33), cleared by tearDown.
+        import types as types_module
+
+        fresh = types_module.ModuleType("type_kernel")
+        fresh.rust_is_subtype_coded = lambda *a, **k: 1  # type: ignore[attr-defined]
+        self.activate_stale_kernel(fresh)
+        self.assertTrue(is_subtype(self.fx.a, self.fx.b))
+
+    def test_the_gate_off_path_is_untouched_by_the_remedy(self) -> None:
+        # With the seam off, the same stale module must not raise: the
+        # Python engine answers, exactly as before #36.
+        import types as types_module
+
+        import mypy.subtypes
+        from mypy.subtypes import _set_native_subtype_active, _set_native_subtype_resolver
+
+        stale = types_module.ModuleType("type_kernel")
+        _set_native_subtype_active(False)
+        _set_native_subtype_resolver(None)
+        patch = mock.patch.multiple(mypy.subtypes, _HAS_TYPE_KERNEL=True, _type_kernel=stale)
+        with patch:
+            self.assertFalse(is_subtype(self.fx.a, self.fx.b))
 
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
