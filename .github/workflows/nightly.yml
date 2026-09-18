@@ -85,12 +85,11 @@ jobs:
       - name: Default group battery (native gates on)
         # runtests.py default minus `lint`: the blocking lint gate is the
         # per-PR lint-changed job; the tree-wide scan is deep-lint-and-docs.
-        # --deselects are known native-parity gaps #4 and #9, issue-tracked.
+        # --deselect is native-parity gap #9, tracked in an issue.
         env:
           PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
           TEST_NATIVE_TYPE_KERNEL: "1"
           PYTEST_ADDOPTS: >-
-            --deselect mypy/test/testcmdline.py::PythonCmdlineSuite::cmdline.test::testPackageRootMultiple1
             --deselect mypy/test/testtypegen.py::TypeExportSuite::typexport-basic.test::testLambdaInListAndHigherOrderFunction
         run: uv run python runtests.py self self-packaging pytest-fast pytest-cmdline pytest-slow
 
