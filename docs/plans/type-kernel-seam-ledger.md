@@ -864,7 +864,9 @@ including:
   crossing the Python seam); residual defers are genuine kernel
   decisions (generic signatures, recursive aliases), not gate defers.
 - `expand_type_by_instance` recursive arms (subtypes.rs, behind the
-  `rust_is_subtype` seam) — mirrors `expandtype.py`'s ExpandTypeVisitor:
+  `rust_is_subtype_coded` seam, the production crossing since #33/#35;
+  the scalar `rust_is_subtype` entry is test/parity-only) — mirrors
+  `expandtype.py`'s ExpandTypeVisitor:
   five new arms (CallableType, Overloaded, TupleType, TypeType,
   UnpackType) walk the pure tree where decidable. CallableType defers on
   a declared ParamSpec (Parameters args-splice path) and on a var-arg
