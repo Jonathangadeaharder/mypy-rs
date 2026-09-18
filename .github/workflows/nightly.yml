@@ -85,12 +85,9 @@ jobs:
       - name: Default group battery (native gates on)
         # runtests.py default minus `lint`: the blocking lint gate is the
         # per-PR lint-changed job; the tree-wide scan is deep-lint-and-docs.
-        # --deselect is native-parity gap #9, tracked in an issue.
         env:
           PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
           TEST_NATIVE_TYPE_KERNEL: "1"
-          PYTEST_ADDOPTS: >-
-            --deselect mypy/test/testtypegen.py::TypeExportSuite::typexport-basic.test::testLambdaInListAndHigherOrderFunction
         run: uv run python runtests.py self self-packaging pytest-fast pytest-cmdline pytest-slow
 
       - name: Opt-in group battery (native gates on)
@@ -278,7 +275,11 @@ jobs:
                   f"/issues?state=open&labels=nightly-failure&per_page=100&page={page}"
               )
               open_issues.extend(i for i in batch if "pull_request" not in i)
-              if len(batch) < 100 or page >= 10:
+              if len(batch) < 100:
+                  break
+              if page >= 10:
+                  # A truncated scan could file a duplicate; make it visible.
+                  print("nightly: warning: open-issue scan hit the 10-page cap")
                   break
               page += 1
           existing = next((i["number"] for i in open_issues), None)
