@@ -126,6 +126,15 @@ and crashes with `AttributeError: module 'ast_serialize' has no attribute
 (see `testdaemon.py:run_cmd`), which dropped the Rust dirs and triggered
 this; that harness now prepends instead of overwriting.
 
+A third hazard: **root-level `.so` artifacts shadow scratch builds.** Running
+`.venv/bin/python -m mypy ...` with cwd = repo root puts the root dir at
+`sys.path[0]`, which wins over every `PYTHONPATH` scratch dir. A leftover
+`type_kernel.cpython-313-darwin.so` / `ast_serialize...so` / `module_resolver
+...so` at the root is then imported instead of the freshly built one and can
+fail with a stale `AttributeError` (e.g. `rust_is_subtype_coded`, #37). Never
+build or copy `.so`s into the repo root; always use a scratch prefix on
+`PYTHONPATH`, and delete any root artifacts you find (they are gitignored).
+
 `mypy_self_check.ini` runs with `num_workers = 4`, which forces both
 `native_parser` and `native_resolver` on, so the self-check exercises both
 extensions end-to-end and is the cheapest correctness gate after a rebuild.
