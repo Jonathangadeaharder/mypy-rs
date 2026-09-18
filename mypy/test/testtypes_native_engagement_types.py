@@ -897,12 +897,10 @@ class NativeProtocolImplementationSuite(Suite):
         sibling_key = (self._serialize(self.fx.b), self._serialize(self.fx.a), ctx_key)
         try:
             _clear_subtype_batch()
-            assert subtypes_mod.is_subtype(left, right) is True, (
-                "cut answer must reach the caller"
-            )
-            assert cut_key not in subtypes_mod._subtype_answers, (
-                "cut answer must not persist into _subtype_answers"
-            )
+            assert subtypes_mod.is_subtype(left, right) is True, "cut answer must reach the caller"
+            assert (
+                cut_key not in subtypes_mod._subtype_answers
+            ), "cut answer must not persist into _subtype_answers"
             # A plain decided pair in the same activation window (B <: A)
             # must still cache: the exclusion is cut-specific, not global.
             assert subtypes_mod.is_subtype(self.fx.b, self.fx.a) is True
@@ -973,9 +971,7 @@ class NativeProtocolImplementationSuite(Suite):
             # see a cached True: the fresh coded call re-derives, the
             # member loop decides False, and that fresh answer persists.
             second = subtypes_mod.is_subtype(left, right)
-            assert (
-                second is False
-            ), "poisoned cache re-answered cut True without re-derivation"
+            assert second is False, "poisoned cache re-answered cut True without re-derivation"
             assert subtypes_mod._subtype_answers[(left_b, right_b, ctx_key)] is False
         finally:
             _clear_subtype_batch()

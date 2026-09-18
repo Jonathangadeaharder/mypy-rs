@@ -7318,9 +7318,7 @@ mod tests {
         let defer_right = encode(&instance("a.Gen", vec![any_type()]));
         let code = |l: &[u8], rr: &[u8], native: &mut NativeTypeResolver| {
             rust_is_subtype_coded(
-                l,
-                rr,
-                false, // ignore_type_params
+                l, rr, false, // ignore_type_params
                 false, // ignore_declared_variance
                 false, // always_covariant
                 false, // ignore_promotions
@@ -7328,8 +7326,7 @@ mod tests {
                 true,  // strict_optional
                 false, // ignore_pos_arg_names
                 false, // strict_concatenate
-                native,
-                false, // infer_unions
+                native, false, // infer_unions
             )
         };
         assert_eq!(code(&ok_left, &ok_right, &mut native), 1);
