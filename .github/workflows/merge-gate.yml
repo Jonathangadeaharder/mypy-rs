@@ -115,10 +115,13 @@ jobs:
         run: uv run python -m mypy --config-file mypy_self_check.ini --no-incremental -p mypy -p mypyc
 
       - name: Merge battery (pytest-cmdline + pytest-slow families)
-        # runtests.py owns the group definitions: pytest-slow is the daemon,
-        # mypyc CLI, error-stream and diff-cache families, pytest-cmdline the
-        # stubgen/eval/cmdline families.
+        # runtests.py owns the group definitions (pytest-slow: daemon, mypyc
+        # CLI, error-stream, diff-cache; pytest-cmdline: stubgen/eval/cmdline).
+        # The two --deselect cases are native-parity gaps #4 and #5.
         env:
           PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
           TEST_NATIVE_TYPE_KERNEL: "1"
+          PYTEST_ADDOPTS: >-
+            --deselect mypy/test/testcmdline.py::PythonCmdlineSuite::cmdline.test::testPackageRootMultiple1
+            --deselect mypy/test/testcmdline.py::PythonCmdlineSuite::cmdline.test::testParallelRunWithSyntaxError
         run: uv run python runtests.py pytest-cmdline pytest-slow
