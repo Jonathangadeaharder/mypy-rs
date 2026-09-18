@@ -6,6 +6,7 @@ import os
 import types
 import unittest
 from io import StringIO
+from typing import Any
 from unittest import mock
 
 from mypy.build import BuildManager
@@ -14,18 +15,36 @@ from mypy.fscache import FileSystemCache
 from mypy.modulefinder import BuildSourceSet, SearchPaths
 from mypy.options import Options
 from mypy.plugin import Plugin
-from mypy.test.helpers import _ensure_native_modules_available, _env_gate
+from mypy.test.helpers import (
+    _NATIVE_ENV_MODULE_PROBES,
+    _ensure_native_modules_available,
+    _env_gate,
+)
 
 
 def _fail_import(name: str, *args: object) -> types.ModuleType:
     raise ImportError(f"cannot import {name}: simulated wrong-interpreter failure")
 
 
+def _clear_native_env() -> Any:
+    """Clear the native import-probe gates so ambient CI env cannot leak in.
+
+    The suite runs under parity jobs that export gates globally, and these
+    tests assert the no-request and gate-off paths. Only the probe gates in
+    `_NATIVE_ENV_MODULE_PROBES` are cleared; option gates (type kernel,
+    mirrors, cache) do not affect import probing.
+    """
+    return mock.patch.dict(
+        os.environ, {name: "" for name in _NATIVE_ENV_MODULE_PROBES}, clear=False
+    )
+
+
 class NativeEnvAvailabilitySuite(unittest.TestCase):
     def test_no_request_is_silent(self) -> None:
         # No requested gate: the import probe is never attempted.
-        with mock.patch("importlib.import_module", side_effect=_fail_import):
-            _ensure_native_modules_available()
+        with _clear_native_env():
+            with mock.patch("importlib.import_module", side_effect=_fail_import):
+                _ensure_native_modules_available()
 
     def test_missing_module_fails_loudly(self) -> None:
         with mock.patch.dict(os.environ, {"TEST_NATIVE_TYPE_KERNEL": "1"}):
@@ -127,9 +146,10 @@ class NativeGateOffPropagationSuite(unittest.TestCase):
     def test_gate_off_leaves_all_seams_inactive(self) -> None:
         options = Options()
         options.use_builtins_fixtures = True
-        options.native_parser = _env_gate("TEST_NATIVE_PARSER")
-        options.native_resolver = _env_gate("TEST_NATIVE_RESOLVER")
-        options.native_type_kernel = _env_gate("TEST_NATIVE_TYPE_KERNEL")
+        with _clear_native_env():
+            options.native_parser = _env_gate("TEST_NATIVE_PARSER")
+            options.native_resolver = _env_gate("TEST_NATIVE_RESOLVER")
+            options.native_type_kernel = _env_gate("TEST_NATIVE_TYPE_KERNEL")
         assert not options.native_type_kernel
         self._build_manager(options)
         after = self._flags()

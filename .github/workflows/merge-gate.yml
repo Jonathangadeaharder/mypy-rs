@@ -117,10 +117,8 @@ jobs:
       - name: Merge battery (pytest-cmdline + pytest-slow families)
         # runtests.py owns the group definitions (pytest-slow: daemon, mypyc
         # CLI, error-stream, diff-cache; pytest-cmdline: stubgen/eval/cmdline).
-        # The --deselect case is the remaining native-parity gap (#5).
+        # No deselects remain: the last native-parity gaps #4 and #5 are fixed.
         env:
           PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
           TEST_NATIVE_TYPE_KERNEL: "1"
-          PYTEST_ADDOPTS: >-
-            --deselect mypy/test/testcmdline.py::PythonCmdlineSuite::cmdline.test::testParallelRunWithSyntaxError
         run: uv run python runtests.py pytest-cmdline pytest-slow
