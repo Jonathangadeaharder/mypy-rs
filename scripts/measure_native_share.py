@@ -1,9 +1,9 @@
-"""Measure the native work share by call-count, independent of wall-clock.
+"""Measure the native work share by decision count, independent of wall-clock.
 
 The time-based metric ((python - native) / python) has inverted since M17:
 accumulated per-call wire/deferral overhead makes the native path slower
 than pure Python even though more work runs in Rust. This script measures
-what the user actually asked for: the fraction of kernel seam *calls*
+what the user actually asked for: the fraction of kernel seam *decisions*
 that Rust handles successfully (result not None), i.e. how much of the
 work really executes in Rust.
 
@@ -24,7 +24,8 @@ Usage:
     uv run python scripts/measure_native_share.py [--only-native]
 
 Reports:
-    total calls, native successes, python fallbacks, and per-name share.
+    total calls and decisions, native successes, python fallbacks, and
+    per-name share.
 """
 
 from __future__ import annotations
@@ -172,21 +173,26 @@ def per_seam_report(proxies: dict[str, CountingProxy]) -> list[str]:
     needs, and call-count ranking hid the coded subtype seam's 64
     deferrals in the #35 review. Every share prints with two decimals,
     because a 99.72% native seam rounded to "100%" hid the same number.
+    Shares divide by the seam's decision total (`native + fallback`),
+    not its call count: a batch seam answers many slots per call, and
+    the per-call denominator printed over-100% rows (#41).
     """
     lines: list[str] = []
     lines.append("")
     lines.append("top deferrals by deferral count:")
     for name, p in sorted(proxies.items(), key=lambda kv: kv[1].fallback, reverse=True)[:15]:
         if p.fallback:
+            decisions = p.native + p.fallback
             lines.append(
                 f"  {name}: {p.calls} calls, {p.fallback} fallbacks "
-                f"({100.0 * p.fallback / p.calls:.2f}% defer)"
+                f"({100.0 * p.fallback / decisions:.2f}% defer)"
             )
     lines.append("")
     lines.append("all seams with calls:")
     for name, p in sorted(proxies.items(), key=lambda kv: kv[1].calls, reverse=True):
         if p.calls:
-            lines.append(f"  {name}: {p.calls} calls ({100.0 * p.native / p.calls:.2f}% native)")
+            decisions = p.native + p.fallback
+            lines.append(f"  {name}: {p.calls} calls ({100.0 * p.native / decisions:.2f}% native)")
     return lines
 
 
@@ -195,12 +201,16 @@ def main() -> int:
     parser.parse_args()
     proxies = run(os.getcwd())
     out = sys.stderr  # self-check floods stdout; report on stderr
-    total = sum(p.calls for p in proxies.values())
+    calls = sum(p.calls for p in proxies.values())
     native = sum(p.native for p in proxies.values())
-    fallback = total - native
-    print("\n=== native call share (self-check) ===", file=out)
-    print(f"total seam calls: {total}", file=out)
+    fallback = sum(p.fallback for p in proxies.values())
+    # Header shares are per-decision, like the per-seam rows: batch seams
+    # answer many slots per call, so calls cannot be the denominator (#41).
+    total = native + fallback
+    print("\n=== native work share (self-check) ===", file=out)
+    print(f"total seam calls: {calls}", file=out)
     if total:
+        print(f"total decisions:  {total}", file=out)
         print(f"native:          {native} ({100.0 * native / total:.1f}%)", file=out)
         print(f"python fallback: {fallback} ({100.0 * fallback / total:.1f}%)", file=out)
         for line in per_seam_report(proxies):

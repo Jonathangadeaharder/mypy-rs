@@ -35,7 +35,9 @@ seam are classified by both the audit's seam wrapper and the share probe's
 counting proxy, and a misclassification silently mis-splits useful vs
 deferred bytes and calls. The share probe's display is guarded alongside:
 a 99.72% native seam must not print as "100%", and its deferral list must
-rank by deferral count, not call count.
+rank by deferral count, not call count. The shares divide by the decision
+total, not the call count, so a batch seam answers many slots per call
+without printing over-100% rows (#41).
 """
 
 from __future__ import annotations
@@ -1020,6 +1022,33 @@ class ShareReportDisplaySuite(unittest.TestCase):
         self.assertIn("22932 calls, 64 fallbacks (0.28% defer)", output)
         self.assertIn("22932 calls (99.72% native)", output)
         self.assertNotIn("100% native", output)
+
+    def test_batch_seam_share_divides_by_decisions_not_calls(self) -> None:
+        # #41: a batch seam answers many slots per call, so the share
+        # denominator is the decision total (native + fallback), never
+        # the call count: one call, two slots, one deferred = 50.00%.
+        proxies = {"rust_is_subtype_batch": self.seeded("rust_is_subtype_batch", 1, 1, 1)}
+        defer_rows, all_rows = self.sections(self.share.per_seam_report(proxies))
+        self.assertIn("  rust_is_subtype_batch: 1 calls, 1 fallbacks (50.00% defer)", defer_rows)
+        self.assertIn("  rust_is_subtype_batch: 1 calls (50.00% native)", all_rows)
+
+    def test_main_header_shares_divide_by_decisions_not_calls(self) -> None:
+        # Same mismatch in main(): with calls (1) != decisions (2) the
+        # per-call denominator printed 100% native and a zero fallback.
+        proxies = {"rust_is_subtype_batch": self.seeded("rust_is_subtype_batch", 1, 1, 1)}
+        err = io.StringIO()
+        with (
+            mock.patch.object(self.share, "run", lambda cwd: proxies),
+            mock.patch.object(sys, "argv", ["measure_native_share.py"]),
+            contextlib.redirect_stderr(err),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(self.share.main(), 0)
+        output = err.getvalue()
+        self.assertIn("total seam calls: 1", output)
+        self.assertIn("total decisions:  2", output)
+        self.assertIn("native:          1 (50.0%)", output)
+        self.assertIn("python fallback: 1 (50.0%)", output)
 
 
 if __name__ == "__main__":
