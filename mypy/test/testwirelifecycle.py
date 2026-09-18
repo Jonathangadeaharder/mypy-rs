@@ -86,6 +86,7 @@ class WirefixupInstallSuite(Suite):
         self.mgr.modules = {}
         self.mgr._native_typeinfo_map = {}
         self.mgr._native_alias_map = {}
+        self.mgr._native_symbol_map = {}
         self.mgr._native_snapshotted = set()
 
     def tearDown(self) -> None:
