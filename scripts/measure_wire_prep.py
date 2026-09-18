@@ -372,9 +372,7 @@ def _wrap_serializer(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
-def _consume_args(
-    args: tuple[Any, ...], kwargs: dict[str, Any], seam: str, outcome: str
-) -> None:
+def _consume_args(args: tuple[Any, ...], kwargs: dict[str, Any], seam: str, outcome: str) -> None:
     for b in _iter_arg_blobs(args, kwargs):
         key = id(b)
         entry = pending.pop(key, None)
@@ -555,9 +553,7 @@ def coverage_census() -> list[str]:
             # A bare `rust_` name is only a gap when it binds a kernel
             # function: mypy defines its own `rust_*` helpers that call
             # the wrapped `_rust_*` seams and are fine.
-            if name.startswith("rust_") and getattr(attr, "__module__", "").startswith(
-                "mypy"
-            ):
+            if name.startswith("rust_") and getattr(attr, "__module__", "").startswith("mypy"):
                 continue
             gaps.append(f"{modname}.{name}")
     return sorted(set(gaps))
@@ -627,15 +623,11 @@ def selftest() -> list[str]:
     blob_orphan = mypy.subtypes._serialize_type(_fresh_any())
     check(
         "unconsumed entry counted",
-        len(pending) == n_pending_before + 1
-        and serialize_entry_events == n_unc_events_before + 1,
-        f"pending={len(pending)} (want +1), "
-        f"entries={serialize_entry_events} (want +1)",
+        len(pending) == n_pending_before + 1 and serialize_entry_events == n_unc_events_before + 1,
+        f"pending={len(pending)} (want +1), entries={serialize_entry_events} (want +1)",
     )
     check(
-        "orphan blob still pending",
-        id(blob_orphan) in pending,
-        "orphan blob missing from pending",
+        "orphan blob still pending", id(blob_orphan) in pending, "orphan blob missing from pending"
     )
 
     # 2. Forced seam calls: N calls, one fresh prep blob each.
@@ -721,8 +713,7 @@ def selftest() -> list[str]:
     check(
         "N adapter calls report exactly N windows",
         window_events["rust_is_type_type"] - win_events_before == n_win,
-        f"windows={window_events['rust_is_type_type'] - win_events_before} "
-        f"(want {n_win})",
+        f"windows={window_events['rust_is_type_type'] - win_events_before} (want {n_win})",
     )
     check(
         "windows carry positive time",
@@ -962,10 +953,7 @@ def main(argv: list[str]) -> int:
             return 1
         n_ser = patch_serializers()
         patch_adapters()
-        print(
-            f"[prep] self-test harness: {n_ser} serializers patched",
-            file=sys.stderr,
-        )
+        print(f"[prep] self-test harness: {n_ser} serializers patched", file=sys.stderr)
         fails = selftest()
         if fails:
             print(f"measure_wire_prep: {len(fails)} self-test failure(s)", file=sys.stderr)
@@ -1038,9 +1026,7 @@ def main(argv: list[str]) -> int:
     gaps = coverage_census()
     if gaps:
         refusals.append(
-            PREP_REFUSAL.format(
-                detail=f"unpatched helpers would undercount prep: {gaps[:10]}"
-            )
+            PREP_REFUSAL.format(detail=f"unpatched helpers would undercount prep: {gaps[:10]}")
         )
     identity = identity_failures()
     if identity:
