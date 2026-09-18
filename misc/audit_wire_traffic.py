@@ -106,7 +106,12 @@ UNIT_HANDLED_SEAMS: frozenset[str] = frozenset(
         "rust_add_type_promotion",
     }
 )
+# Batch seam returning a per-pair list: 1/0 = native, -1 = deferral.
 _BATCH_SLOT_SEAMS: frozenset[str] = frozenset({"rust_is_subtype_batch"})
+# Coded single-pair seam (#33): 1/0/3 = native decision (3 = consult
+# cut, still decided), -1 = deferral. Never None, so without this rule
+# every deferral would count as useful.
+_CODED_DECISION_SEAMS: frozenset[str] = frozenset({"rust_is_subtype_coded"})
 
 SERIALIZER_PREFIX = "_serialize"
 
@@ -158,7 +163,7 @@ probe_calls: collections.Counter[str] = collections.Counter()
 probe_stats: dict[str, dict[str, Any]] = {}
 # #1827 cause split for the unconsumed bucket: `mypy.subtypes._subtype_answers`
 # answers a repeated pair without calling any seam, so the two keys built for
-# that lookup at `mypy/subtypes.py:879-880` never reach a seam by construction.
+# that lookup in `_is_subtype` never reach a seam by construction.
 subtype_dedup: dict[str, int] = {"probes": 0, "hits": 0}
 # id(blob) -> the blob itself, for every pair key a dedup hit turned away.
 # Pinned like `_tracked_blobs`, since the split keys on `id()`; bounded by the
@@ -278,6 +283,9 @@ def make_seam(name: str, fn: Callable[..., Any]) -> Callable[..., Any]:
         if name in _BATCH_SLOT_SEAMS:
             if isinstance(result, list) and any(s == -1 for s in result):
                 deferred_ = True
+        elif name in _CODED_DECISION_SEAMS:
+            if result == -1:
+                deferred_ = True
         elif result is None and name not in CLASSIFIER_NEGATIVE_SEAMS:
             if name not in UNIT_HANDLED_SEAMS:
                 deferred_ = True
@@ -354,10 +362,11 @@ def patch_serializers() -> int:
 class _CountingAnswers(dict[Any, Any]):
     """`mypy.subtypes._subtype_answers` with its dedup lookups counted (#1827).
 
-    The dict answers an identical pair from `mypy/subtypes.py:916-920`, which
-    returns before any single-pair or batch seam call: the two blobs built at
-    `:879-880` for that lookup are unconsumed by construction. Counting `in`
-    on the dict is the only place that says so; the buckets cannot.
+    The dict answers an identical pair from the `_subtype_answers` lookup
+    in `_is_subtype`, which returns before any single-pair seam call: the
+    two blobs built for that lookup are unconsumed by construction.
+    Counting `in` on the dict is the only place that says so; the buckets
+    cannot.
     """
 
     def __contains__(self, key: object) -> bool:
@@ -588,7 +597,9 @@ def _buffered_blob_ids() -> set[int] | None:
 
     Settles the competing explanation for the unconsumed bucket (#1827): a
     buffered pair whose buffer was dropped at a build boundary never reached a
-    seam either. None (unreadable buffer) must not print as a zero.
+    seam either. None (unreadable buffer) must not print as a zero. An
+    imported module without the attribute is the deleted-buffer case (#33)
+    and is reported as such by report(), which checks it first.
     """
     subtypes_mod = sys.modules.get("mypy.subtypes")
     batch = getattr(subtypes_mod, "_subtype_batch", None) if subtypes_mod is not None else None
@@ -691,8 +702,8 @@ def report(run_status: str) -> None:
         residual = n_unconsumed - n_dedup
         if residual > 0:
             print(
-                f"  other causes: {residual} events, a batch dropped at a build "
-                f"boundary or a serialization under a dark gate; not split further here",
+                f"  other causes: {residual} events, a serialization under a "
+                f"dark gate; not split further here",
                 file=out,
             )
         if n_dedup:
@@ -705,7 +716,15 @@ def report(run_status: str) -> None:
                 file=out,
             )
     buffered_ids = _buffered_blob_ids()
-    if buffered_ids is None:
+    _subtypes_mod = sys.modules.get("mypy.subtypes")
+    if _subtypes_mod is not None and not hasattr(_subtypes_mod, "_subtype_batch"):
+        # The buffer was deleted (#33): nothing can be buffered, and the
+        # absence must not read as an unmeasured share.
+        print(
+            "  mypy.subtypes._subtype_batch: deleted (#33), nothing buffered by construction",
+            file=out,
+        )
+    elif buffered_ids is None:
         print("  mypy.subtypes._subtype_batch: NOT READABLE, buffered share unmeasured", file=out)
     else:
         n_buffered = sum(1 for key in pending if key in buffered_ids)

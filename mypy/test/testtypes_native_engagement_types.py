@@ -846,14 +846,15 @@ class NativeProtocolImplementationSuite(Suite):
             del _PROTOCOL_PAIRS_IN_FLIGHT[key]
         assert result is True, f"in-flight pair must cut True, got {result!r}"
 
-    def test_flush_returns_but_never_caches_cut_answers(self) -> None:
+    def test_coded_returns_but_never_caches_cut_answers(self) -> None:
         """A true answer sampled through a registry-consult cut is correct
-        only for the derivation that took the cut: `_flush_subtype_batch`
-        must hand it to the triggering call but never persist it into
+        only for the derivation that took the cut: the coded single-pair
+        path must return it to the caller but never persist it into
         `_subtype_answers`. Without this, a later fresh derivation of the
         same pair reads the poisoned True cache
         (testProtocolIncompatibilityWithUnionType, batch poisoning)."""
         import mypy.subtypes as subtypes_mod
+        from mypy.state import state
         from mypy.subtypes import (
             _PROTOCOL_PAIRS_IN_FLIGHT,
             _clear_subtype_batch,
@@ -861,6 +862,7 @@ class NativeProtocolImplementationSuite(Suite):
             _set_native_subtype_resolver,
         )
         from mypy.types import Instance
+        from mypy.typestate import type_state
 
         self._live_info = {}
         # left f -> object vs right f -> A: the member loop alone says
@@ -875,55 +877,64 @@ class NativeProtocolImplementationSuite(Suite):
         _set_native_subtype_resolver(self.resolver)
         left, right = Instance(p1, []), Instance(p2, [])
         left_b, right_b = self._serialize(left), self._serialize(right)
-        ctx_key = (False, False, False, False, False, True, False, False, False)
+        # The exact key the gate computes for `is_subtype`'s default
+        # flag set, so the cache assertions test the real lookup key.
+        ctx_key = (
+            False,
+            False,
+            False,
+            False,
+            False,
+            state.strict_optional,
+            False,
+            False,
+            type_state.infer_unions,
+        )
         pair_key = (left_b, right_b, False)
         assert pair_key not in _PROTOCOL_PAIRS_IN_FLIGHT
         _PROTOCOL_PAIRS_IN_FLIGHT[pair_key] = 1
-        flushed_key = (left_b, right_b, ctx_key)
+        cut_key = (left_b, right_b, ctx_key)
+        sibling_key = (self._serialize(self.fx.b), self._serialize(self.fx.a), ctx_key)
         try:
             _clear_subtype_batch()
-            # Sibling pair (any instance <: object) rides the same batch;
-            # its code-1 answer must still be cached.
-            sibling = (self._serialize(right), self._serialize(Instance(self.fx.oi, [])), ctx_key)
-            subtypes_mod._subtype_batch.append((left_b, right_b, ctx_key))
-            subtypes_mod._subtype_batch.append(sibling)
-            answers = subtypes_mod._flush_subtype_batch()
+            assert subtypes_mod.is_subtype(left, right) is True, (
+                "cut answer must reach the caller"
+            )
+            assert cut_key not in subtypes_mod._subtype_answers, (
+                "cut answer must not persist into _subtype_answers"
+            )
+            # A plain decided pair in the same activation window (B <: A)
+            # must still cache: the exclusion is cut-specific, not global.
+            assert subtypes_mod.is_subtype(self.fx.b, self.fx.a) is True
             assert (
-                answers.get(flushed_key) is True
-            ), f"cut answer must reach the caller: {answers!r}"
-            # (_clear_subtype_batch wipes _subtype_answers too, so every
-            # cache assertion must run before the cleanup.)
-            assert (
-                flushed_key not in subtypes_mod._subtype_answers
-            ), "cut answer must not persist into _subtype_answers"
-            assert (
-                sibling in subtypes_mod._subtype_answers
-                and subtypes_mod._subtype_answers[sibling] is True
+                sibling_key in subtypes_mod._subtype_answers
+                and subtypes_mod._subtype_answers[sibling_key] is True
             ), "plain decided pair must still cache"
             assert (
                 _PROTOCOL_PAIRS_IN_FLIGHT.get(pair_key) == 1
-            ), "flush must not touch the registry"
+            ), "the coded path must not touch the registry"
         finally:
             _PROTOCOL_PAIRS_IN_FLIGHT.pop(pair_key, None)
             _clear_subtype_batch()
             _set_native_subtype_active(False)
             _set_native_subtype_resolver(None)
 
-    def test_flush_fresh_derivation_runs_member_loop(self) -> None:
+    def test_coded_fresh_derivation_runs_member_loop(self) -> None:
         """End-to-end poisoning pin: after a consult-cut `True` has been
-        flushed for an in-flight pair, a later flush of the identical
+        returned for an in-flight pair, a later call on the identical
         bytes under the same flags (registry now empty) must NOT be
-        answered True from any cache; its slot defers so Python re-derives
-        via the single-pair path and the member loop decides."""
+        answered True from any cache; the coded entry re-derives, the
+        member loop decides False, and only that fresh False persists."""
         import mypy.subtypes as subtypes_mod
+        from mypy.state import state
         from mypy.subtypes import (
             _PROTOCOL_PAIRS_IN_FLIGHT,
             _clear_subtype_batch,
-            _flush_subtype_batch,
             _set_native_subtype_active,
             _set_native_subtype_resolver,
         )
         from mypy.types import Instance
+        from mypy.typestate import type_state
 
         self._live_info = {}
         p1 = self._protocol("mod.FreshCutP1", ["f"])
@@ -936,26 +947,36 @@ class NativeProtocolImplementationSuite(Suite):
         _set_native_subtype_resolver(self.resolver)
         left, right = Instance(p1, []), Instance(p2, [])
         left_b, right_b = self._serialize(left), self._serialize(right)
-        ctx_key = (False, False, False, False, False, True, False, False, False)
+        ctx_key = (
+            False,
+            False,
+            False,
+            False,
+            False,
+            state.strict_optional,
+            False,
+            False,
+            type_state.infer_unions,
+        )
         pair_key = (left_b, right_b, False)
         try:
             _clear_subtype_batch()
             _PROTOCOL_PAIRS_IN_FLIGHT[pair_key] = 1
             try:
-                subtypes_mod._subtype_batch.append((left_b, right_b, ctx_key))
-                answers = _flush_subtype_batch()
+                first = subtypes_mod.is_subtype(left, right)
             finally:
                 del _PROTOCOL_PAIRS_IN_FLIGHT[pair_key]
             # The cut answer reaches the first derivation...
-            assert answers.get((left_b, right_b, ctx_key)) is True
+            assert first is True
+            assert (left_b, right_b, ctx_key) not in subtypes_mod._subtype_answers
             # ...and the second derivation of the identical pair must not
-            # see a cached True: a fresh flush (registry empty) must
-            # re-derive and answer False instead.
-            subtypes_mod._subtype_batch.append((left_b, right_b, ctx_key))
-            second = _flush_subtype_batch()
+            # see a cached True: the fresh coded call re-derives, the
+            # member loop decides False, and that fresh answer persists.
+            second = subtypes_mod.is_subtype(left, right)
             assert (
-                second.get((left_b, right_b, ctx_key)) is False
-            ), f"poisoned cache re-answered cut True without re-derivation: {second!r}"
+                second is False
+            ), "poisoned cache re-answered cut True without re-derivation"
+            assert subtypes_mod._subtype_answers[(left_b, right_b, ctx_key)] is False
         finally:
             _clear_subtype_batch()
             _set_native_subtype_active(False)
@@ -15178,34 +15199,42 @@ class NativeCallableUnifyPreludeSuite(Suite):
         assert (off, on) == (True, True)
 
     def test_seam_engagement(self) -> None:
-        # Wave 37 (#1426): the generic-left Callable|Callable pair is
-        # decided INSIDE rust_is_subtype (the kernel unifies the generic
-        # left natively), so the whole pair crosses the is_subtype seam:
+        """Wave 37 (#1426): the generic-left Callable|Callable pair is decided
+        inside the kernel (it unifies the generic left natively), so the whole
+        pair crosses the is_subtype seam: the unifiable pair once, and the
+        unify-failure pair once more (kernel NoUnify -> False, no Python
+        prelude involved).
 
-        # the unifiable pair once, and the unify-failure pair once more
-        # (kernel NoUnify -> False, no Python prelude involved).
+        Since #33 the production entry is `rust_is_subtype_coded`, so that is
+        the module attribute counted here. `_clear_subtype_batch` empties
+        `_subtype_answers`, which earlier tests in this class now persist into
+        directly (#33) and would otherwise answer these identical pairs
+        without a seam call.
+        """
 
         import contextlib
 
         import type_kernel as tk_mod
+
+        from mypy.subtypes import _clear_subtype_batch
 
         def counting_ctx() -> contextlib.AbstractContextManager[list[object]]:
             calls: list[object] = []
 
             @contextlib.contextmanager
             def ctx() -> Iterator[list[object]]:
-                orig = tk_mod.rust_is_subtype
+                orig = tk_mod.rust_is_subtype_coded
 
                 def counting(*args: object, **kwargs: object) -> object:
                     calls.append(args)
                     fn = cast(Callable[..., object], orig)
                     return fn(*args, **kwargs)
 
-                tk_mod.rust_is_subtype = counting  # type: ignore[assignment]
+                tk_mod.rust_is_subtype_coded = counting  # type: ignore[assignment]
                 try:
                     yield calls
                 finally:
-                    tk_mod.rust_is_subtype = orig
+                    tk_mod.rust_is_subtype_coded = orig
 
             return ctx()
 
@@ -15213,11 +15242,13 @@ class NativeCallableUnifyPreludeSuite(Suite):
         ok_right = self.fx.callable(self.fx.o, self.fx.o)
         fail_right = self.fx.callable(self.fx.o, self.fx.nonet)
 
+        _clear_subtype_batch()
         with counting_ctx() as calls:
             on = is_subtype(left, ok_right)
         assert on is True
         assert len(calls) == 1, f"expected 1 seam call, got {len(calls)}"
 
+        _clear_subtype_batch()
         with counting_ctx() as calls:
             on = is_subtype(left, fail_right)
         assert on is False
@@ -15232,9 +15263,10 @@ class NativeIsSubtypeBatchSuite(Suite):
     shared flag set. Each slot must equal the answer the single-pair
     `rust_is_subtype` call would give; a pair Rust cannot decide (a
     protocol-Instance right) must be marked -1 for its slot only, without
-    poisoning the decided pairs in the same batch. The Python accumulator
-    (`_flush_subtype_batch`) drops -1 slots and answers the rest from the
-    returned dict, keyed by (left, right, flag-set).
+    poisoning the decided pairs in the same batch. The single-pair coded
+    entry `rust_is_subtype_coded` (#33) must report the same code for the
+    same pair and flags: the shim persists its answers directly and
+    treats 3 (consult cut) and -1 (defer) by this same contract.
     """
 
     def setUp(self) -> None:
@@ -15291,6 +15323,39 @@ class NativeIsSubtypeBatchSuite(Suite):
             self.resolver,
         )
 
+    def _coded(self, left_b: bytes, right_b: bytes) -> int:
+        """Run `rust_is_subtype_coded` with the same default flag set."""
+        return _type_kernel.rust_is_subtype_coded(
+            left_b,
+            right_b,
+            False,  # ignore_type_params
+            False,  # ignore_declared_variance
+            False,  # always_covariant
+            False,  # ignore_promotions
+            False,  # proper_subtype
+            state.strict_optional,
+            False,  # ignore_pos_arg_names
+            False,  # strict_concatenate
+            self.resolver,
+        )
+
+    def test_coded_entry_matches_batch_codes(self) -> None:
+        # The coded single-pair entry is the production path (#33); each
+        # code must equal the batch slot for the same pair and flags.
+        from mypy.subtypes import _serialize_type
+
+        pairs = [
+            (_serialize_type(self.fx.a), _serialize_type(self.fx.o)),
+            (_serialize_type(self.fx.b), _serialize_type(self.fx.a)),
+            (_serialize_type(self.fx.a), _serialize_type(self.fx.b)),
+            (_serialize_type(self.fx.a), _serialize_type(Instance(self.proto_info, []))),
+        ]
+        batch = self._batch(pairs)
+        coded = [self._coded(left_b, right_b) for left_b, right_b in pairs]
+        # 1 = decided True, 0 = decided False, -1 = defer (protocol right).
+        assert batch == [1, 1, 0, -1]
+        assert coded == batch
+
     def test_identical_repeats_match_single_pair(self) -> None:
         # The same (A, object) pair repeated: every slot must carry the
         # answer the single-pair call gives, so the Python-edge dedup is
@@ -15342,32 +15407,50 @@ class NativeIsSubtypeBatchSuite(Suite):
         )
         assert got == [1, -1]
 
-    def test_accumulator_flush_maps_answers(self) -> None:
-        # `_flush_subtype_batch` folds decided pairs into the build-global
-        # answer cache and drops deferred (-1) slots.
-
-        # A repeated identical pair is answered from the cache without a
-        # fresh Rust call.
-
-        # Drives the batch primitive directly; 512 is a `Final` threshold,
-        # so the accumulator is exercised at the flush edge.
+    def test_gate_persists_coded_answers_directly(self) -> None:
+        # The production gate persists each decided coded answer directly
+        # (#33): decided True and False both land in the build-global
+        # `_subtype_answers`; a deferred pair leaves no entry.
         import mypy.subtypes as subtypes
+        from mypy.state import state
+        from mypy.typestate import type_state
 
         subtypes._clear_subtype_batch()
-        left_b = subtypes._serialize_type(self.fx.a)
-        right_b = subtypes._serialize_type(self.fx.o)
-        ctx_key = (False, False, False, False, False, False, False, False, False)
-        subtypes._subtype_batch.append((left_b, right_b, ctx_key))
-        proto_inst = Instance(self.proto_info, [])
-        subtypes._subtype_batch.append(
-            (subtypes._serialize_type(self.fx.a), subtypes._serialize_type(proto_inst), ctx_key)
+        ctx_key = (
+            False,
+            False,
+            False,
+            False,
+            False,
+            state.strict_optional,
+            False,
+            False,
+            type_state.infer_unions,
         )
-        answers = subtypes._flush_subtype_batch()
-        # Decided pair present; deferred pair absent from both dicts.
-        assert answers[(left_b, right_b, ctx_key)] is True
-        assert subtypes._subtype_answers[(left_b, right_b, ctx_key)] is True
-        assert len(answers) == 1
-        assert subtypes._subtype_batch == []
+        decided_key = (
+            subtypes._serialize_type(self.fx.b),
+            subtypes._serialize_type(self.fx.a),
+            ctx_key,
+        )
+        false_key = (
+            subtypes._serialize_type(self.fx.a),
+            subtypes._serialize_type(self.fx.b),
+            ctx_key,
+        )
+        proto_inst = Instance(self.proto_info, [])
+        proto_key = (
+            subtypes._serialize_type(self.fx.a),
+            subtypes._serialize_type(proto_inst),
+            ctx_key,
+        )
+        assert subtypes.is_subtype(self.fx.b, self.fx.a) is True
+        assert subtypes.is_subtype(self.fx.a, self.fx.b) is False
+        assert subtypes._subtype_answers[decided_key] is True
+        assert subtypes._subtype_answers[false_key] is False
+        # Deferred pair: the coded entry defers, Python decides after it,
+        # and no native answer may persist for the slot.
+        subtypes.is_subtype(self.fx.a, proto_inst)
+        assert proto_key not in subtypes._subtype_answers
 
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")

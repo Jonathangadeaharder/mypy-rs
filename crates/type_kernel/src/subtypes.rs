@@ -4478,6 +4478,75 @@ pub(crate) fn rust_is_subtype(
     is_subtype(&left, &right, &ctx, resolver.resolver())
 }
 
+/// `#[pyfunction]` entry: single-pair variant of `rust_is_subtype` that
+/// reports the batch entry's i8 code so the Python shim can persist the
+/// answer directly instead of buffering it for a later batch flush
+/// (which re-evaluated every scalar-answered pair, #33). Codes match
+/// `rust_is_subtype_batch` exactly: 1 = true, 0 = false, 3 =
+/// true-via-consult-cut (uncacheable), -1 = defer.
+#[pyfunction]
+#[pyo3(signature = (left_bytes, right_bytes, ignore_type_params, ignore_declared_variance, always_covariant, ignore_promotions, proper_subtype, strict_optional, ignore_pos_arg_names, strict_concatenate, resolver, infer_unions = false))]
+#[allow(clippy::too_many_arguments, dead_code)]
+pub(crate) fn rust_is_subtype_coded(
+    left_bytes: &[u8],
+    right_bytes: &[u8],
+    ignore_type_params: bool,
+    ignore_declared_variance: bool,
+    always_covariant: bool,
+    ignore_promotions: bool,
+    proper_subtype: bool,
+    strict_optional: bool,
+    ignore_pos_arg_names: bool,
+    strict_concatenate: bool,
+    resolver: &mut NativeTypeResolver,
+    infer_unions: bool,
+) -> i8 {
+    // Ambient `type_state.infer_unions` for kernel-expect unify (#1426).
+    // RAII: restored on drop, so the thread-local cannot leak into a
+    // later FFI call that was not handed the flag.
+    let _infer_unions_guard = crate::unify::InferUnionsGuard::install(infer_unions);
+    let left = match decode_type(left_bytes) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let right = match decode_type(right_bytes) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let alias_resolver = resolver.alias_resolver().shared();
+    let left = match expand_top_aliases(&left, &alias_resolver, strict_optional) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let right = match expand_top_aliases(&right, &alias_resolver, strict_optional) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let ctx = SubtypeContext::with_callable_flags(
+        ignore_type_params,
+        ignore_declared_variance,
+        always_covariant,
+        ignore_promotions,
+        proper_subtype,
+        strict_optional,
+        ignore_pos_arg_names,
+        strict_concatenate,
+    );
+    // Same per-pair consult accounting as the batch entry: the marker is
+    // reset before the derivation and read immediately after it returns.
+    crate::protocols::consult_cut_reset();
+    let answer = is_subtype(&left, &right, &ctx, resolver.resolver());
+    match answer {
+        // 3 = true via a registry-consult cut: correct for this
+        // derivation but never cacheable — the shim returns code 3
+        // without persisting it into _subtype_answers.
+        Some(true) if crate::protocols::consult_cut_taken() => 3,
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    }
+}
+
 /// `#[pyfunction]` entry: batch variant of `rust_is_subtype`.
 ///
 /// Arrives as a flat vec of interleaved `(left, right)` byte blobs plus
@@ -7226,6 +7295,49 @@ mod tests {
     }
 
     #[test]
+    fn coded_entry_matches_batch_codes() {
+        // The production single-pair entry (#33) must report exactly the
+        // code the batch entry does for the same pair and flags: 1/0
+        // decided, -1 defer (code 3 is exercised from the Python side).
+        let mut gen = snap("a.Gen", "Gen");
+        gen.type_vars = vec!["T".to_string()];
+        gen.type_vars_with_variance = vec![("T".to_string(), COVARIANT, 0)];
+        let mut derived = snap("a.Sub", "Sub");
+        derived.has_base.insert("a.Gen".to_string());
+        derived.mro.push("a.Gen".to_string());
+        let r = make_resolver(vec![gen, derived, snap("builtins.object", "object")]);
+        let mut native = NativeTypeResolver::from_resolver(r);
+        // Decided true: a.Sub[Any] <: builtins.object.
+        let ok_left = encode(&instance("a.Sub", vec![any_type()]));
+        let ok_right = encode(&instance("builtins.object", vec![]));
+        // Decided false: builtins.object <: a.Sub[Any].
+        let false_left = encode(&instance("builtins.object", vec![]));
+        let false_right = encode(&instance("a.Sub", vec![any_type()]));
+        // Deferring pair: a.Sub[Any] <: a.Gen[Any] (no bases blobs).
+        let defer_left = encode(&instance("a.Sub", vec![any_type()]));
+        let defer_right = encode(&instance("a.Gen", vec![any_type()]));
+        let code = |l: &[u8], rr: &[u8], native: &mut NativeTypeResolver| {
+            rust_is_subtype_coded(
+                l,
+                rr,
+                false, // ignore_type_params
+                false, // ignore_declared_variance
+                false, // always_covariant
+                false, // ignore_promotions
+                false, // proper_subtype
+                true,  // strict_optional
+                false, // ignore_pos_arg_names
+                false, // strict_concatenate
+                native,
+                false, // infer_unions
+            )
+        };
+        assert_eq!(code(&ok_left, &ok_right, &mut native), 1);
+        assert_eq!(code(&false_left, &false_right, &mut native), 0);
+        assert_eq!(code(&defer_left, &defer_right, &mut native), -1);
+    }
+
+    #[test]
     fn test_engine_defers_on_kept_alias() {
         // Issue #1205 keep-node contract: an alias missing from the alias
         // resolver is kept as a node and the engine defers on comparisons
@@ -8525,6 +8637,8 @@ pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rust_is_subtype, m)?)?;
 
     m.add_function(wrap_pyfunction!(rust_is_subtype_batch, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_subtype_coded, m)?)?;
 
     m.add_function(wrap_pyfunction!(rust_subtype_tvar_tuple_right, m)?)?;
 
