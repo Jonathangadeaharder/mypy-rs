@@ -1,0 +1,230 @@
+name: nightly
+
+# Full-battery nightly run (AGENTS.md §5): test families no per-PR workflow
+# runs, a full Rust workspace pass, the docs build with -W, and a deep lint
+# scan. Failures file an issue and never block a merge.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  full-battery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      PYTEST_XDIST_AUTO_NUM_WORKERS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+        with:
+          version: "0.11.14"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-nightly-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: cargo-nightly-${{ runner.os }}-
+
+      - name: Sync Python deps (uv)
+        run: uv sync --group test
+
+      - name: Build native extensions into a scratch prefix
+        # pytest-cmdline/pytest-slow spawn real mypy and mypyc subprocesses
+        # whose PYTHONPATH is reset to the repo root (testcmdline.py and the
+        # mypyc test_commandline.py), so the extensions must also land there.
+        run: |
+          SCRATCH=/tmp/native-ext
+          mkdir -p "$SCRATCH"
+          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+          for crate in mypy-type-kernel mypy-ast-serialize mypy-module-resolver; do
+            cargo rustc -p "$crate" --features extension-module \
+              --lib --crate-type cdylib --release
+            NAME="${crate#mypy-}"
+            NAME="${NAME//-/_}"
+            for DEST in "$SCRATCH" "$GITHUB_WORKSPACE"; do
+              cp "target/release/lib${NAME}.so" "$DEST/${NAME}${EXT_SUFFIX}" 2>/dev/null \
+                || cp "target/release/lib${NAME}.dylib" "$DEST/${NAME}${EXT_SUFFIX}"
+            done
+          done
+          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+
+      - name: Build in-repo librt (F3 wire cache)
+        run: |
+          LIBSO=/tmp/librt-ext
+          mkdir -p "$LIBSO"
+          (cd mypyc/lib-rt && uv run python setup.py build_ext \
+            --build-lib "$LIBSO" --build-temp /tmp/librt-build)
+          PYTHONPATH="$LIBSO" uv run python -c "from librt.internal import write_raw_bytes; print('in-repo librt: write_raw_bytes OK')"
+          echo "LIBRT_SCRATCH=$LIBSO" >> "$GITHUB_ENV"
+
+      - name: Default group battery (native gates on)
+        # runtests.py default minus `lint`: main carries pre-existing lint
+        # drift, so the blocking lint gate is the per-PR lint-changed job and
+        # the tree-wide scan lives in deep-lint-and-docs below.
+        env:
+          PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
+          TEST_NATIVE_TYPE_KERNEL: "1"
+        run: uv run python runtests.py self self-packaging pytest-fast pytest-cmdline pytest-slow
+
+      - name: Opt-in group battery (native gates on)
+        # mypyc-fast skips the MYPYC_SLOW cases; mypyc-extra is exactly those
+        # cases and no other workflow runs them, so the nightly owns them.
+        env:
+          PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
+          TEST_NATIVE_TYPE_KERNEL: "1"
+        run: uv run python runtests.py pytest-extra mypyc-fast mypyc-extra
+
+  rust-workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-nightly-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: cargo-nightly-${{ runner.os }}-
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+        with:
+          version: "0.11.14"
+
+      - name: Sync Python deps (uv)
+        run: uv sync --group test
+
+      - name: cargo fmt --check (workspace)
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (workspace, -D warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test (workspace)
+        run: |
+          SITE=$(uv run python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])")
+          PYO3_PYTHON=$(uv run python -c "import sys; print(sys.executable)") \
+          PYTHONPATH="$GITHUB_WORKSPACE:$SITE" cargo test --workspace
+
+  deep-lint-and-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+        with:
+          version: "0.11.14"
+
+      - name: Sync Python deps (uv, docs + dev groups)
+        run: uv sync --group test --group docs --group dev
+
+      - name: Deep lint scan (whole tree, report-only)
+        # main carries pre-existing ruff findings, so this scan reports and
+        # never fails the job; the per-PR lint-changed gate is the blocking one.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          uvx ruff@0.14.3 check --no-fix --output-format=concise . | tee /tmp/ruff-deep.txt
+          printf 'ruff findings: %s\n' "$(grep -c ':' /tmp/ruff-deep.txt || true)"
+
+      - name: Docs build (sphinx -W)
+        run: uv run docs
+
+  report:
+    needs: [full-battery, rust-workspace, deep-lint-and-docs]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File an issue when a nightly job failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULTS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+
+          results = json.loads(os.environ["RESULTS"])
+          failed = [name for name, job in results.items() if job.get("result") not in ("success", "skipped")]
+          if not failed:
+              print("nightly: all jobs green")
+              raise SystemExit(0)
+
+          title = "nightly: failing jobs " + ", ".join(sorted(failed))
+          body = (
+              "The nightly battery failed.\n\n"
+              f"- run: {os.environ['RUN_URL']}\n"
+              f"- failing jobs: {', '.join(sorted(failed))}\n\n"
+              "This issue never blocks a merge; it records rot on main.\n"
+          )
+          # --jq emits "" for no match; a failed call must not look like
+          # "no open issue", which would file a duplicate every night.
+          existing = subprocess.run(
+              ["gh", "issue", "list", "--state", "open", "--label", "nightly-failure",
+               "--json", "number", "--jq", ".[0].number"],
+              capture_output=True, text=True, check=True,
+          ).stdout.strip()
+          if existing:
+              subprocess.run(["gh", "issue", "comment", existing, "--body", body], check=True)
+              print(f"nightly: commented on #{existing}")
+          else:
+              subprocess.run(
+                  ["gh", "label", "create", "nightly-failure",
+                   "--color", "B60205", "--description", "nightly battery failure"],
+                  check=False,
+              )
+              subprocess.run(
+                  ["gh", "issue", "create", "--title", title, "--body", body,
+                   "--label", "nightly-failure"],
+                  check=True,
+              )
+          PY
