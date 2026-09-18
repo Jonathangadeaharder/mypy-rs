@@ -83,12 +83,9 @@ jobs:
           echo "LIBRT_SCRATCH=$LIBSO" >> "$GITHUB_ENV"
 
       - name: Default group battery (native gates on)
-        # runtests.py default minus `lint`: main carries pre-existing lint
-        # drift, so the blocking lint gate is the per-PR lint-changed job and
-        # the tree-wide scan lives in deep-lint-and-docs below.
-        # The --deselect cases are known native-parity gaps: #4 (resolver
-        # --package-root) and #9 (type-kernel lambda arg inference under
-        # typegen). Each is tracked in an issue and deselected until fixed.
+        # runtests.py default minus `lint`: the blocking lint gate is the
+        # per-PR lint-changed job; the tree-wide scan is deep-lint-and-docs.
+        # --deselects are known native-parity gaps #4 and #9, issue-tracked.
         env:
           PYTHONPATH: ${{ env.LIBRT_SCRATCH }}:${{ env.SCRATCH }}
           TEST_NATIVE_TYPE_KERNEL: "1"
@@ -146,20 +143,29 @@ jobs:
           PYTHONPATH="$GITHUB_WORKSPACE:$SITE" cargo test --workspace
 
       - name: cargo clippy (workspace, report-only)
-        # Report-only: main carries clippy drift outside the kernel lib the
-        # per-PR gate lints; the debt is tracked in an issue. The count goes
-        # to the step summary so the report job (and readers) can consume it.
-        continue-on-error: true
+        # Report-only: main carries clippy drift outside the kernel libs
+        # the per-PR gate lints (#10). Findings are counted into the step
+        # summary; a broken clippy run fails the job so the report records it.
         run: |
           cargo clippy --workspace --all-targets --message-format=short \
             2>&1 | tee /tmp/clippy-deep.txt
-          findings=$(grep -cE ': (warning|error): ' /tmp/clippy-deep.txt || true)
-          printf 'clippy findings: %s\n' "$findings"
+          # PIPESTATUS[0] is clippy's own status; a broken clippy (missing
+          # component, aborted run) must not read as a clean tree.
+          clippy_status=${PIPESTATUS[0]}
+          findings=$(grep -cE ': (warning|error): ' /tmp/clippy-deep.txt)
+          grep_status=$?
+          if [ "$clippy_status" -gt 0 ] || [ "$grep_status" -gt 1 ]; then
+            printf 'clippy broke (status %s) or grep failed (status %s)\n' \
+              "$clippy_status" "$grep_status"
+            exit 1
+          fi
+          printf 'clippy exit status: %s; findings: %s\n' "$clippy_status" "$findings"
           {
             echo '### cargo clippy (workspace, report-only)'
             echo
-            echo "\`${findings}\` findings. Debt is tracked in an issue; this"
-            echo 'step never fails the nightly.'
+            echo "clippy status \`$clippy_status\`; \`${findings}\` findings."
+            echo 'Debt is tracked in an issue; this step never fails on'
+            echo 'findings, only on a broken run.'
           } >> "$GITHUB_STEP_SUMMARY"
 
   deep-lint-and-docs:
@@ -217,9 +223,12 @@ jobs:
           # A failed call must raise loudly rather than resemble
           # "no open issue", which would file a duplicate every night.
           api = f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}"
+          # Content-Type is the documented contract for JSON request bodies;
+          # urllib does not set it, and without it GitHub may reject POSTs.
           headers = {
               "Authorization": f"token {os.environ['GH_TOKEN']}",
               "Accept": "application/vnd.github+json",
+              "Content-Type": "application/json",
               "X-GitHub-Api-Version": "2022-11-28",
           }
 
@@ -271,5 +280,6 @@ jobs:
               ensure_label("nightly-failure", "B60205", "nightly battery failure")
               issue = rest("/issues", {"title": title, "body": body,
                                        "labels": ["nightly-failure"]})
+              assert issue is not None, "POST /issues returned an empty body"
               print(f"nightly: filed #{issue['number']}")
           PY
