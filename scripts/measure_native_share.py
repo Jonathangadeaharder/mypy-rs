@@ -164,6 +164,32 @@ def run(cwd: str) -> dict[str, CountingProxy]:
     return proxies
 
 
+def per_seam_report(proxies: dict[str, CountingProxy]) -> list[str]:
+    """Per-seam display lines (#36: deferrals must survive the display).
+
+    The deferral list ranks by deferral count, not call count: a seam
+    with few calls but real deferrals is exactly the row the reader
+    needs, and call-count ranking hid the coded subtype seam's 64
+    deferrals in the #35 review. Every share prints with two decimals,
+    because a 99.72% native seam rounded to "100%" hid the same number.
+    """
+    lines: list[str] = []
+    lines.append("")
+    lines.append("top deferrals by deferral count:")
+    for name, p in sorted(proxies.items(), key=lambda kv: kv[1].fallback, reverse=True)[:15]:
+        if p.fallback:
+            lines.append(
+                f"  {name}: {p.calls} calls, {p.fallback} fallbacks "
+                f"({100.0 * p.fallback / p.calls:.2f}% defer)"
+            )
+    lines.append("")
+    lines.append("all seams with calls:")
+    for name, p in sorted(proxies.items(), key=lambda kv: kv[1].calls, reverse=True):
+        if p.calls:
+            lines.append(f"  {name}: {p.calls} calls ({100.0 * p.native / p.calls:.2f}% native)")
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()
@@ -177,21 +203,8 @@ def main() -> int:
     if total:
         print(f"native:          {native} ({100.0 * native / total:.1f}%)", file=out)
         print(f"python fallback: {fallback} ({100.0 * fallback / total:.1f}%)", file=out)
-        print("\ntop deferrals by call count:", file=out)
-        for name, p in sorted(proxies.items(), key=lambda kv: kv[1].calls, reverse=True)[:15]:
-            if p.fallback:
-                print(
-                    f"  {name}: {p.calls} calls, {p.fallback} fallbacks "
-                    f"({100.0 * p.fallback / p.calls:.0f}% defer)",
-                    file=out,
-                )
-        print("\nall seams with calls:", file=out)
-        for name, p in sorted(proxies.items(), key=lambda kv: kv[1].calls, reverse=True):
-            if p.calls:
-                print(
-                    f"  {name}: {p.calls} calls ({100.0 * p.native / p.calls:.0f}% native)",
-                    file=out,
-                )
+        for line in per_seam_report(proxies):
+            print(line, file=out)
     return 0
 
 
