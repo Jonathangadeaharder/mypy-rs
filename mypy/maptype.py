@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Final, cast
+from typing import Any, cast
 
 from mypy.expandtype import expand_type_by_instance
 from mypy.nodes import TypeInfo
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     AnyType,
     CallableType,
     Instance,
@@ -81,17 +82,6 @@ def _set_native_map_resolver(resolver: Any) -> None:
     """
     global _native_map_resolver
     _native_map_resolver = resolver
-
-
-# Argless built-in instances serialize to fixed bytes; mirroring the
-# fast path in checker.py / checkexpr.py / subtypes.py.
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type(t: Type) -> bytes:

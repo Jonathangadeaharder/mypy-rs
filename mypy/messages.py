@@ -74,6 +74,7 @@ from mypy.subtypes import (
 )
 from mypy.typeops import separate_union_literals
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     AnyType,
     CallableType,
     DeletedType,
@@ -135,17 +136,6 @@ def _set_native_messages_active(active: bool) -> None:
 def _set_native_messages_resolver(resolver: Any) -> None:
     global _native_messages_resolver
     _native_messages_resolver = resolver
-
-
-# Argless built-in instances serialize to fixed bytes; mirroring the
-# fast path in checker.py / checkexpr.py / subtypes.py.
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type_for_messages(t: Type) -> bytes:

@@ -173,6 +173,7 @@ from mypy.typeops import (
     type_object_type,
 )
 from mypy.types import (
+    _BUILTIN_INSTANCE_BYTES,
     LITERAL_TYPE_NAMES,
     TUPLE_LIKE_INSTANCE_NAMES,
     AnyType,
@@ -619,15 +620,6 @@ def _try_native_plugin_hook(callable_name: str, hook_method_name: str) -> Any:
     except Exception:
         # On any FFI error, fall back to Python.
         return None
-
-
-_BUILTIN_INSTANCE_BYTES: Final[dict[str, bytes]] = {
-    "builtins.str": b"\x50\x53",
-    "builtins.function": b"\x50\x54",
-    "builtins.int": b"\x50\x55",
-    "builtins.bool": b"\x50\x56",
-    "builtins.object": b"\x50\x57",
-}
 
 
 def _serialize_type_for_checkexpr(t: Type) -> bytes:
