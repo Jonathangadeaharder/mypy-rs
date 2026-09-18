@@ -27,10 +27,12 @@ def _fail_import(name: str, *args: object) -> types.ModuleType:
 
 
 def _clear_native_env() -> Any:
-    """Drop every TEST_NATIVE_* gate so ambient CI env cannot leak in.
+    """Clear the native import-probe gates so ambient CI env cannot leak in.
 
-    The suite runs under env-gated parity jobs that export gates globally;
-    tests asserting the no-request / gate-off paths must not inherit them.
+    The suite runs under parity jobs that export gates globally, and these
+    tests assert the no-request and gate-off paths. Only the probe gates in
+    `_NATIVE_ENV_MODULE_PROBES` are cleared; option gates (type kernel,
+    mirrors, cache) do not affect import probing.
     """
     return mock.patch.dict(
         os.environ, {name: "" for name in _NATIVE_ENV_MODULE_PROBES}, clear=False

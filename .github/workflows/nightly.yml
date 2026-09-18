@@ -146,13 +146,16 @@ jobs:
         # the per-PR gate lints (#10). Findings are counted into the step
         # summary; a broken clippy run fails the job so the report records it.
         run: |
+          # GitHub's default shell is `bash -e`: probe exit statuses under
+          # set +e so a zero-finding grep or a clippy crash is handled, not
+          # fatal-by-accident.
+          set +e
           cargo clippy --workspace --all-targets --message-format=short \
             2>&1 | tee /tmp/clippy-deep.txt
-          # PIPESTATUS[0] is clippy's own status; a broken clippy (missing
-          # component, aborted run) must not read as a clean tree.
           clippy_status=${PIPESTATUS[0]}
           findings=$(grep -cE ': (warning|error): ' /tmp/clippy-deep.txt)
           grep_status=$?
+          set -e
           if [ "$clippy_status" -gt 0 ] || [ "$grep_status" -gt 1 ]; then
             printf 'clippy broke (status %s) or grep failed (status %s)\n' \
               "$clippy_status" "$grep_status"
@@ -267,10 +270,17 @@ jobs:
                       raise
 
           # GET /issues also returns PRs; only issues carry the label flow.
-          open_issues = [
-              i for i in rest("/issues?state=open&labels=nightly-failure&per_page=10")
-              if "pull_request" not in i
-          ]
+          # Paginate: the guard must find the tracker even past one page.
+          open_issues: list[dict] = []
+          page = 1
+          while True:
+              batch = rest(
+                  f"/issues?state=open&labels=nightly-failure&per_page=100&page={page}"
+              )
+              open_issues.extend(i for i in batch if "pull_request" not in i)
+              if len(batch) < 100 or page >= 10:
+                  break
+              page += 1
           existing = next((i["number"] for i in open_issues), None)
           if existing:
               rest(f"/issues/{existing}/comments", {"body": body})

@@ -629,7 +629,7 @@ fn parse_errors_to_py(
     // Parallel mode has no Python-path counterpart (upstream main.py also
     // force-enables the native parser under --num-workers), so ruff's own
     // messages are the parity target there.
-    let cpython_error = if cpython_error_messages {
+    let cpython_error = if cpython_error_messages && !errors.is_empty() {
         cpython_syntax_error(py, source).ok()
     } else {
         None
