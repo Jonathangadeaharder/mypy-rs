@@ -496,7 +496,7 @@ mod identity_tests {
         });
         // Dropping the extra owner makes the next sweep collect it.
         drop(held);
-        Python::with_gil(|py| sweep_stable(py));
+        Python::with_gil(sweep_stable);
         assert_eq!(stable_entry_count(), 0);
     }
 

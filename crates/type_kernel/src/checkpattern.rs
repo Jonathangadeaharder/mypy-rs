@@ -1164,6 +1164,40 @@ pub(crate) fn rust_filter_or_match_types(
     Some(out)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_is_uninhabited, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_get_match_arg_names, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_get_type_range, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_should_self_match, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_can_match_sequence, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_contract_starred_pattern_types, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_expand_starred_pattern_types, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_construct_sequence_child, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_classify_class_pattern_ranges, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_classify_sequence_pattern_head, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_classify_sequence_tuple_result, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_classify_mapping_rest, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_classify_class_pattern_alias_gate, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_classify_class_pattern_keywords, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_filter_or_match_types, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2038,7 +2072,7 @@ mod tests {
         let int = instance("builtins.int", vec![]);
         assert_eq!(
             rust_classify_sequence_tuple_result(
-                blobs(&[int.clone()]),
+                blobs(std::slice::from_ref(&int)),
                 blobs(&[type_alias("mod.A")]),
                 &mut test_resolver(),
             ),
@@ -2051,7 +2085,7 @@ mod tests {
         let aliases = alias_resolver_with_targets(&[("mod.A", instance("builtins.int", vec![]))]);
         let int = instance("builtins.int", vec![]);
         let (new_uninh, tag, idx, mask) = rust_classify_sequence_tuple_result(
-            blobs(&[int.clone()]),
+            blobs(std::slice::from_ref(&int)),
             blobs(&[type_alias("mod.A")]),
             &mut resolver_with_aliases(aliases),
         )
@@ -2198,38 +2232,4 @@ mod tests {
             Some(vec![0, 1])
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_is_uninhabited, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_get_match_arg_names, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_get_type_range, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_should_self_match, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_can_match_sequence, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_contract_starred_pattern_types, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_expand_starred_pattern_types, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_construct_sequence_child, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_classify_class_pattern_ranges, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_classify_sequence_pattern_head, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_classify_sequence_tuple_result, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_classify_mapping_rest, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_classify_class_pattern_alias_gate, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_classify_class_pattern_keywords, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_filter_or_match_types, m)?)?;
-    Ok(())
 }
