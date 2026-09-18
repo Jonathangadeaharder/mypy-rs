@@ -1793,6 +1793,16 @@ fn normalize_tuple_unpack_to_instance(arg: &Type) -> Option<Type> {
     None
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_expand_type, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_expand_type_by_instance, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_remove_trivial, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3158,14 +3168,4 @@ mod tests {
         let out = param_spec_leaf(&t, &env, false).unwrap();
         assert!(matches!(out, Type::AnyType { .. }));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_expand_type, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_expand_type_by_instance, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_remove_trivial, m)?)?;
-    Ok(())
 }

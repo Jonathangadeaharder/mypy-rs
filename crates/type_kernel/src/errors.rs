@@ -88,6 +88,12 @@ pub fn rust_format_messages_default(
     out
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_format_messages_default, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,10 +129,4 @@ mod tests {
             vec!["foo.py:10:3:10:5: error: Undefined name  [name-defined]"]
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_format_messages_default, m)?)?;
-    Ok(())
 }

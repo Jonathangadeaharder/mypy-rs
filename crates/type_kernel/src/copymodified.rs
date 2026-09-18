@@ -394,6 +394,13 @@ pub(crate) fn rust_copy_modified(
 // Unit tests
 // ---------------------------------------------------------------------------
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #475: Type.copy_modified field-swap seam.
+    m.add_function(wrap_pyfunction!(rust_copy_modified, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,11 +797,4 @@ mod tests {
             .unwrap()
             .is_none());
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #475: Type.copy_modified field-swap seam.
-    m.add_function(wrap_pyfunction!(rust_copy_modified, m)?)?;
-    Ok(())
 }

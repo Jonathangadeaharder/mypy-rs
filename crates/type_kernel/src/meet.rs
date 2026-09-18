@@ -2077,6 +2077,41 @@ pub(crate) fn rust_adjust_tuple(left_bytes: &[u8], r_bytes: &[u8]) -> Option<Vec
     }
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_is_overlapping_types, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_narrow_declared_type, m)?)?;
+
+    // Issue #526: get_possible_variants alongside narrow_declared_type.
+    m.add_function(wrap_pyfunction!(rust_get_possible_variants, m)?)?;
+
+    // Issue #525: is_overlapping_types + helpers from meet.py.
+    // rust_is_overlapping_types is already registered above (line 161).
+    m.add_function(wrap_pyfunction!(rust_is_overlapping_erased_types, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_are_typed_dicts_overlapping, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_are_tuples_overlapping, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_expand_tuple_if_possible, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_adjust_tuple, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_tuple, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_enum_overlapping_union, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_literal_in_union, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_object, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_none_object_overlap, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_are_related_types, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2885,39 +2920,4 @@ mod tests {
             Some(true)
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_is_overlapping_types, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_narrow_declared_type, m)?)?;
-
-    // Issue #526: get_possible_variants alongside narrow_declared_type.
-    m.add_function(wrap_pyfunction!(rust_get_possible_variants, m)?)?;
-
-    // Issue #525: is_overlapping_types + helpers from meet.py.
-    // rust_is_overlapping_types is already registered above (line 161).
-    m.add_function(wrap_pyfunction!(rust_is_overlapping_erased_types, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_are_typed_dicts_overlapping, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_are_tuples_overlapping, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_expand_tuple_if_possible, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_adjust_tuple, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_tuple, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_enum_overlapping_union, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_literal_in_union, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_object, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_none_object_overlap, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_are_related_types, m)?)?;
-    Ok(())
 }

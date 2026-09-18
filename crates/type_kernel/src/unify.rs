@@ -149,319 +149,6 @@ fn strip_ret(t: &Type) -> Option<Type> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn instance(name: &str, args: Vec<Type>) -> Type {
-        Type::Instance {
-            type_ref: name.to_string(),
-            args,
-            last_known_value: None,
-            extra_attrs: None,
-        }
-    }
-
-    fn callable(variables: Vec<Type>) -> Type {
-        Type::CallableType {
-            fallback: Box::new(instance("builtins.function", vec![])),
-            instance_type: None,
-            is_ellipsis_args: false,
-            implicit: false,
-            is_bound: false,
-            from_concatenate: false,
-            imprecise_arg_kinds: false,
-            unpack_kwargs: false,
-            from_type_type: false,
-            arg_types: vec![],
-            arg_kinds: vec![],
-            arg_names: vec![],
-            ret_type: Box::new(instance("builtins.int", vec![])),
-            name: None,
-            variables,
-            type_guard: None,
-            type_is: None,
-            special_sig: None,
-            definition_ref: None,
-        }
-    }
-
-    fn tvar(raw_id: i64) -> Type {
-        Type::TypeVarType {
-            name: "T".to_string(),
-            fullname: "T".to_string(),
-            raw_id,
-            namespace: "".to_string(),
-            values: vec![],
-            upper_bound: Box::new(Type::AnyType {
-                type_of_any: 6,
-                source_any: None,
-                missing_import_name: None,
-            }),
-            default: Box::new(Type::AnyType {
-                type_of_any: 6,
-                source_any: None,
-                missing_import_name: None,
-            }),
-            variance: 0,
-            meta_level: 0,
-        }
-    }
-
-    #[test]
-    fn test_strip_ret_replaces_ret_keeps_everything_else() {
-        let src = callable(vec![]);
-        let stripped = strip_ret(&src).expect("callable strips");
-        let Type::CallableType {
-            ret_type,
-            arg_types,
-            variables,
-            name,
-            ..
-        } = &stripped
-        else {
-            panic!("strip_ret must produce a callable");
-        };
-        assert!(matches!(
-            ret_type.as_ref(),
-            Type::UninhabitedType { ambiguous: false }
-        ));
-        assert!(arg_types.is_empty());
-        assert!(variables.is_empty());
-        assert!(name.is_none());
-    }
-
-    #[test]
-    fn test_strip_ret_non_callable_defers() {
-        assert!(strip_ret(&instance("builtins.int", vec![])).is_none());
-    }
-
-    // -- unify_generic_callable_core outcomes --
-
-    fn callable_with(variables: Vec<Type>, args: Vec<Type>, ret: Type) -> Type {
-        let mut c = callable(variables);
-        if let Type::CallableType {
-            arg_types,
-            arg_kinds,
-            arg_names,
-            ret_type,
-            ..
-        } = &mut c
-        {
-            *arg_types = args;
-            *arg_kinds = vec![0; arg_types.len()];
-            *arg_names = vec![None; arg_types.len()];
-            *ret_type = Box::new(ret);
-        }
-        c
-    }
-
-    fn resolver_with(fullnames: &[&str]) -> crate::typeinfo::TypeResolver {
-        let mut r = crate::typeinfo::TypeResolver::new();
-        for f in fullnames {
-            let mut s = crate::typeinfo::TypeInfoSnapshot {
-                fullname: f.to_string(),
-                name: f.to_string(),
-                ..Default::default()
-            };
-            s.mro.push(f.to_string());
-            s.has_base.insert(f.to_string());
-            if *f != "builtins.object" {
-                s.mro.push("builtins.object".to_string());
-                s.has_base.insert("builtins.object".to_string());
-            }
-            r.insert(f.to_string(), s);
-        }
-        r
-    }
-
-    fn empty_aliases() -> TypeAliasResolver {
-        TypeAliasResolver::new()
-    }
-
-    #[test]
-    fn test_unify_defers_on_tvar_clash() {
-        // Right's tree carries a TypeVar with the same raw id as one of
-        // left's variables: freshening territory -> Defer.
-        let left = callable(vec![tvar(1)]);
-        let right = callable_with(vec![], vec![tvar(1)], instance("builtins.int", vec![]));
-        let r = resolver_with(&["builtins.int", "builtins.object"]);
-        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
-        assert_eq!(outcome, UnifyOutcome::Defer);
-    }
-
-    #[test]
-    fn test_unify_no_unify_on_unsolvable_var() {
-        // Mixing a contravariant position with a plain position gives T a
-        // lower (a.B <: T) and an unrelated upper (T <: a.A): strict solve
-        // returns None (skip_unsatisfied=False) -> NoUnify.
-        let left = callable_with(
-            vec![tvar(1)],
-            vec![
-                callable_with(vec![], vec![tvar(1)], instance("builtins.int", vec![])),
-                tvar(1),
-            ],
-            instance("builtins.int", vec![]),
-        );
-        let right = callable_with(
-            vec![],
-            vec![
-                callable_with(
-                    vec![],
-                    vec![instance("a.B", vec![])],
-                    instance("builtins.int", vec![]),
-                ),
-                instance("a.A", vec![]),
-            ],
-            instance("builtins.int", vec![]),
-        );
-        let r = resolver_with(&[
-            "a.A",
-            "a.B",
-            "builtins.function",
-            "builtins.object",
-            // The nested callables' `-> int` ret pairs cross
-            // visit_instance_native, which snapshots both classes.
-            "builtins.int",
-        ]);
-        // ignore_return=true: the unsolvability lives in the arg
-        // constraints; the ret pair is unrelated to the None verdict.
-        let outcome = unify_generic_callable_core(&left, &right, true, true, &r, &empty_aliases());
-        assert_eq!(outcome, UnifyOutcome::NoUnify);
-    }
-
-    fn tvar_bound(raw_id: i64, bound: &str) -> Type {
-        let mut t = tvar(raw_id);
-        if let Type::TypeVarType { upper_bound, .. } = &mut t {
-            *upper_bound = Box::new(instance(bound, vec![]));
-        }
-        t
-    }
-
-    #[test]
-    fn test_unify_report_flag_drives_no_unify() {
-        // T's bound is a.A, the solved target is a.B (not a subtype): the
-        // apply bound check hits Python's report callback, so the caller
-        // answers False (NoUnify), never a deferral.
-        let left = callable_with(
-            vec![tvar_bound(1, "a.A")],
-            vec![tvar(1)],
-            instance("a.B", vec![]),
-        );
-        let right = callable_with(
-            vec![],
-            vec![instance("a.B", vec![])],
-            instance("a.B", vec![]),
-        );
-        let r = resolver_with(&["a.A", "a.B", "builtins.function", "builtins.object"]);
-        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
-        assert_eq!(outcome, UnifyOutcome::NoUnify);
-    }
-
-    #[test]
-    fn test_unify_unified_substitutes_right_actuals() {
-        // T's single constraint points at builtins.int: unified left gets
-        // its arg substituted with int.
-        let left = callable_with(
-            vec![tvar(1)],
-            vec![tvar(1)],
-            instance("builtins.int", vec![]),
-        );
-        let right = callable_with(
-            vec![],
-            vec![instance("builtins.int", vec![])],
-            instance("builtins.int", vec![]),
-        );
-        let r = resolver_with(&["builtins.int", "builtins.object"]);
-        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
-        match outcome {
-            UnifyOutcome::Unified(t) => match t {
-                Type::CallableType { arg_types, .. } => {
-                    assert_eq!(arg_types, vec![instance("builtins.int", vec![])],);
-                }
-                other => panic!("expected CallableType, got {:?}", other),
-            },
-            other => panic!("expected Unified, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_unify_generic_right_arg_frame_unifies() {
-        // The wave-37 no_extra_tvar_shape gate deferred every pair whose
-        // right callable declared its own type variables; the extras
-        // channel (#1427) now decides: T is constrained by str and substituted.
-        let left = callable_with(
-            vec![tvar(5)],
-            vec![tvar(5)],
-            instance("builtins.int", vec![]),
-        );
-        let right = callable_with(
-            vec![tvar(2)],
-            vec![instance("builtins.str", vec![])],
-            instance("builtins.int", vec![]),
-        );
-        let r = resolver_with(&[
-            "builtins.int",
-            "builtins.str",
-            "builtins.function",
-            "builtins.object",
-        ]);
-        let outcome = unify_generic_callable_core(&left, &right, true, true, &r, &empty_aliases());
-        match outcome {
-            UnifyOutcome::Unified(t) => match t {
-                Type::CallableType { arg_types, .. } => {
-                    assert_eq!(arg_types, vec![instance("builtins.str", vec![])],);
-                }
-                other => panic!("expected CallableType, got {:?}", other),
-            },
-            other => panic!("expected Unified, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_unify_ret_frame_extras_end_to_end() {
-        // ignore_return=false: the ambient reverse gate attaches right's
-        // own variables as extras in the nested generic arg frame; the
-        // unified result still substitutes the inner arg.
-        let left = callable_with(
-            vec![tvar(5)],
-            vec![callable_with(vec![], vec![tvar(5)], tvar(5))],
-            instance("builtins.int", vec![]),
-        );
-        let right = callable_with(
-            vec![tvar(2)],
-            vec![callable_with(
-                vec![],
-                vec![instance("builtins.str", vec![])],
-                instance("builtins.str", vec![]),
-            )],
-            instance("builtins.int", vec![]),
-        );
-        let r = resolver_with(&[
-            "builtins.int",
-            "builtins.str",
-            "builtins.function",
-            "builtins.object",
-        ]);
-        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
-        match outcome {
-            UnifyOutcome::Unified(t) => match t {
-                Type::CallableType { arg_types, .. } => {
-                    let Type::CallableType {
-                        arg_types: inner, ..
-                    } = &arg_types[0]
-                    else {
-                        panic!("outer arg is a callable");
-                    };
-                    assert_eq!(inner, &vec![instance("builtins.str", vec![])],);
-                }
-                other => panic!("expected CallableType, got {:?}", other),
-            },
-            other => panic!("expected Unified, got {:?}", other),
-        }
-    }
-}
-
 /// Core of `unify_generic_callable` (subtypes.py:2954-3011).
 ///
 /// Both inputs must be the NORMALIZED callables (the caller's
@@ -616,6 +303,319 @@ pub(crate) fn unify_generic_callable_core(
             } else {
                 UnifyOutcome::Defer
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(name: &str, args: Vec<Type>) -> Type {
+        Type::Instance {
+            type_ref: name.to_string(),
+            args,
+            last_known_value: None,
+            extra_attrs: None,
+        }
+    }
+
+    fn callable(variables: Vec<Type>) -> Type {
+        Type::CallableType {
+            fallback: Box::new(instance("builtins.function", vec![])),
+            instance_type: None,
+            is_ellipsis_args: false,
+            implicit: false,
+            is_bound: false,
+            from_concatenate: false,
+            imprecise_arg_kinds: false,
+            unpack_kwargs: false,
+            from_type_type: false,
+            arg_types: vec![],
+            arg_kinds: vec![],
+            arg_names: vec![],
+            ret_type: Box::new(instance("builtins.int", vec![])),
+            name: None,
+            variables,
+            type_guard: None,
+            type_is: None,
+            special_sig: None,
+            definition_ref: None,
+        }
+    }
+
+    fn tvar(raw_id: i64) -> Type {
+        Type::TypeVarType {
+            name: "T".to_string(),
+            fullname: "T".to_string(),
+            raw_id,
+            namespace: "".to_string(),
+            values: vec![],
+            upper_bound: Box::new(Type::AnyType {
+                type_of_any: 6,
+                source_any: None,
+                missing_import_name: None,
+            }),
+            default: Box::new(Type::AnyType {
+                type_of_any: 6,
+                source_any: None,
+                missing_import_name: None,
+            }),
+            variance: 0,
+            meta_level: 0,
+        }
+    }
+
+    #[test]
+    fn test_strip_ret_replaces_ret_keeps_everything_else() {
+        let src = callable(vec![]);
+        let stripped = strip_ret(&src).expect("callable strips");
+        let Type::CallableType {
+            ret_type,
+            arg_types,
+            variables,
+            name,
+            ..
+        } = &stripped
+        else {
+            panic!("strip_ret must produce a callable");
+        };
+        assert!(matches!(
+            ret_type.as_ref(),
+            Type::UninhabitedType { ambiguous: false }
+        ));
+        assert!(arg_types.is_empty());
+        assert!(variables.is_empty());
+        assert!(name.is_none());
+    }
+
+    #[test]
+    fn test_strip_ret_non_callable_defers() {
+        assert!(strip_ret(&instance("builtins.int", vec![])).is_none());
+    }
+
+    // -- unify_generic_callable_core outcomes --
+
+    fn callable_with(variables: Vec<Type>, args: Vec<Type>, ret: Type) -> Type {
+        let mut c = callable(variables);
+        if let Type::CallableType {
+            arg_types,
+            arg_kinds,
+            arg_names,
+            ret_type,
+            ..
+        } = &mut c
+        {
+            *arg_types = args;
+            *arg_kinds = vec![0; arg_types.len()];
+            *arg_names = vec![None; arg_types.len()];
+            **ret_type = ret;
+        }
+        c
+    }
+
+    fn resolver_with(fullnames: &[&str]) -> crate::typeinfo::TypeResolver {
+        let mut r = crate::typeinfo::TypeResolver::new();
+        for f in fullnames {
+            let mut s = crate::typeinfo::TypeInfoSnapshot {
+                fullname: f.to_string(),
+                name: f.to_string(),
+                ..Default::default()
+            };
+            s.mro.push(f.to_string());
+            s.has_base.insert(f.to_string());
+            if *f != "builtins.object" {
+                s.mro.push("builtins.object".to_string());
+                s.has_base.insert("builtins.object".to_string());
+            }
+            r.insert(f.to_string(), s);
+        }
+        r
+    }
+
+    fn empty_aliases() -> TypeAliasResolver {
+        TypeAliasResolver::new()
+    }
+
+    #[test]
+    fn test_unify_defers_on_tvar_clash() {
+        // Right's tree carries a TypeVar with the same raw id as one of
+        // left's variables: freshening territory -> Defer.
+        let left = callable(vec![tvar(1)]);
+        let right = callable_with(vec![], vec![tvar(1)], instance("builtins.int", vec![]));
+        let r = resolver_with(&["builtins.int", "builtins.object"]);
+        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
+        assert_eq!(outcome, UnifyOutcome::Defer);
+    }
+
+    #[test]
+    fn test_unify_no_unify_on_unsolvable_var() {
+        // Mixing a contravariant position with a plain position gives T a
+        // lower (a.B <: T) and an unrelated upper (T <: a.A): strict solve
+        // returns None (skip_unsatisfied=False) -> NoUnify.
+        let left = callable_with(
+            vec![tvar(1)],
+            vec![
+                callable_with(vec![], vec![tvar(1)], instance("builtins.int", vec![])),
+                tvar(1),
+            ],
+            instance("builtins.int", vec![]),
+        );
+        let right = callable_with(
+            vec![],
+            vec![
+                callable_with(
+                    vec![],
+                    vec![instance("a.B", vec![])],
+                    instance("builtins.int", vec![]),
+                ),
+                instance("a.A", vec![]),
+            ],
+            instance("builtins.int", vec![]),
+        );
+        let r = resolver_with(&[
+            "a.A",
+            "a.B",
+            "builtins.function",
+            "builtins.object",
+            // The nested callables' `-> int` ret pairs cross
+            // visit_instance_native, which snapshots both classes.
+            "builtins.int",
+        ]);
+        // ignore_return=true: the unsolvability lives in the arg
+        // constraints; the ret pair is unrelated to the None verdict.
+        let outcome = unify_generic_callable_core(&left, &right, true, true, &r, &empty_aliases());
+        assert_eq!(outcome, UnifyOutcome::NoUnify);
+    }
+
+    fn tvar_bound(raw_id: i64, bound: &str) -> Type {
+        let mut t = tvar(raw_id);
+        if let Type::TypeVarType { upper_bound, .. } = &mut t {
+            **upper_bound = instance(bound, vec![]);
+        }
+        t
+    }
+
+    #[test]
+    fn test_unify_report_flag_drives_no_unify() {
+        // T's bound is a.A, the solved target is a.B (not a subtype): the
+        // apply bound check hits Python's report callback, so the caller
+        // answers False (NoUnify), never a deferral.
+        let left = callable_with(
+            vec![tvar_bound(1, "a.A")],
+            vec![tvar(1)],
+            instance("a.B", vec![]),
+        );
+        let right = callable_with(
+            vec![],
+            vec![instance("a.B", vec![])],
+            instance("a.B", vec![]),
+        );
+        let r = resolver_with(&["a.A", "a.B", "builtins.function", "builtins.object"]);
+        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
+        assert_eq!(outcome, UnifyOutcome::NoUnify);
+    }
+
+    #[test]
+    fn test_unify_unified_substitutes_right_actuals() {
+        // T's single constraint points at builtins.int: unified left gets
+        // its arg substituted with int.
+        let left = callable_with(
+            vec![tvar(1)],
+            vec![tvar(1)],
+            instance("builtins.int", vec![]),
+        );
+        let right = callable_with(
+            vec![],
+            vec![instance("builtins.int", vec![])],
+            instance("builtins.int", vec![]),
+        );
+        let r = resolver_with(&["builtins.int", "builtins.object"]);
+        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
+        match outcome {
+            UnifyOutcome::Unified(t) => match t {
+                Type::CallableType { arg_types, .. } => {
+                    assert_eq!(arg_types, vec![instance("builtins.int", vec![])],);
+                }
+                other => panic!("expected CallableType, got {:?}", other),
+            },
+            other => panic!("expected Unified, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unify_generic_right_arg_frame_unifies() {
+        // The wave-37 no_extra_tvar_shape gate deferred every pair whose
+        // right callable declared its own type variables; the extras
+        // channel (#1427) now decides: T is constrained by str and substituted.
+        let left = callable_with(
+            vec![tvar(5)],
+            vec![tvar(5)],
+            instance("builtins.int", vec![]),
+        );
+        let right = callable_with(
+            vec![tvar(2)],
+            vec![instance("builtins.str", vec![])],
+            instance("builtins.int", vec![]),
+        );
+        let r = resolver_with(&[
+            "builtins.int",
+            "builtins.str",
+            "builtins.function",
+            "builtins.object",
+        ]);
+        let outcome = unify_generic_callable_core(&left, &right, true, true, &r, &empty_aliases());
+        match outcome {
+            UnifyOutcome::Unified(t) => match t {
+                Type::CallableType { arg_types, .. } => {
+                    assert_eq!(arg_types, vec![instance("builtins.str", vec![])],);
+                }
+                other => panic!("expected CallableType, got {:?}", other),
+            },
+            other => panic!("expected Unified, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_unify_ret_frame_extras_end_to_end() {
+        // ignore_return=false: the ambient reverse gate attaches right's
+        // own variables as extras in the nested generic arg frame; the
+        // unified result still substitutes the inner arg.
+        let left = callable_with(
+            vec![tvar(5)],
+            vec![callable_with(vec![], vec![tvar(5)], tvar(5))],
+            instance("builtins.int", vec![]),
+        );
+        let right = callable_with(
+            vec![tvar(2)],
+            vec![callable_with(
+                vec![],
+                vec![instance("builtins.str", vec![])],
+                instance("builtins.str", vec![]),
+            )],
+            instance("builtins.int", vec![]),
+        );
+        let r = resolver_with(&[
+            "builtins.int",
+            "builtins.str",
+            "builtins.function",
+            "builtins.object",
+        ]);
+        let outcome = unify_generic_callable_core(&left, &right, false, true, &r, &empty_aliases());
+        match outcome {
+            UnifyOutcome::Unified(t) => match t {
+                Type::CallableType { arg_types, .. } => {
+                    let Type::CallableType {
+                        arg_types: inner, ..
+                    } = &arg_types[0]
+                    else {
+                        panic!("outer arg is a callable");
+                    };
+                    assert_eq!(inner, &vec![instance("builtins.str", vec![])],);
+                }
+                other => panic!("expected CallableType, got {:?}", other),
+            },
+            other => panic!("expected Unified, got {:?}", other),
         }
     }
 }

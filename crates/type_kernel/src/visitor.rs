@@ -1122,6 +1122,34 @@ pub(crate) fn copy_type_inner(typ: &Type) -> Type {
     typ.clone()
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_has_type_vars, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_has_recursive_types, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_literal_type, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_unannotated_any, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_remove_dups, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_type_vars_as_args, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_callable_with_ellipsis, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_find_unpack_in_list, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_split_with_prefix_and_suffix, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_flatten_nested_unions, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_flatten_nested_tuples, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_copy_type, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1298,7 +1326,7 @@ mod tests {
     fn test_has_recursive_types_true_typevar_upper_bound() {
         let mut tv = make_typevar(1);
         if let Type::TypeVarType { upper_bound, .. } = &mut tv {
-            *upper_bound = Box::new(make_alias("mod.A", vec![], true));
+            **upper_bound = make_alias("mod.A", vec![], true);
         }
         assert!(has_recursive_types_inner(&tv));
     }
@@ -1307,7 +1335,7 @@ mod tests {
     fn test_has_recursive_types_true_typevar_default() {
         let mut tv = make_typevar(1);
         if let Type::TypeVarType { default, .. } = &mut tv {
-            *default = Box::new(make_alias("mod.A", vec![], true));
+            **default = make_alias("mod.A", vec![], true);
         }
         assert!(has_recursive_types_inner(&tv));
     }
@@ -1660,7 +1688,7 @@ mod tests {
     #[test]
     fn test_flatten_nested_unions_alias_no_handle() {
         let alias = make_alias("mod.A", vec![], false);
-        let result = flatten_inner(&[alias.clone()], false, true, None);
+        let result = flatten_inner(std::slice::from_ref(&alias), false, true, None);
         assert!(result.is_some());
         assert_eq!(result.unwrap(), vec![alias]);
     }
@@ -1687,7 +1715,7 @@ mod tests {
         resolver.insert("mod.L".to_string(), bare_alias_snapshot("mod.L", &target));
         let alias = make_alias("mod.L", vec![], false);
         // Python appends the ORIGINAL alias for a non-union expansion.
-        let result = flatten_inner(&[alias.clone()], true, true, Some(&resolver));
+        let result = flatten_inner(std::slice::from_ref(&alias), true, true, Some(&resolver));
         assert_eq!(result.unwrap(), vec![alias]);
     }
 
@@ -1753,7 +1781,7 @@ mod tests {
         // (the wire is_recursive flag drives the decision, no resolver
         // needed).
         let alias = make_alias("mod.S", vec![], true);
-        let result = flatten_inner(&[alias.clone()], true, false, None);
+        let result = flatten_inner(std::slice::from_ref(&alias), true, false, None);
         assert_eq!(result.unwrap(), vec![alias]);
     }
 
@@ -1941,32 +1969,4 @@ mod tests {
         assert!(matches!(&flat[1], Type::Instance { .. }));
         assert!(active.is_empty());
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_has_type_vars, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_has_recursive_types, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_literal_type, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_unannotated_any, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_remove_dups, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_type_vars_as_args, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_callable_with_ellipsis, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_find_unpack_in_list, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_split_with_prefix_and_suffix, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_flatten_nested_unions, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_flatten_nested_tuples, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_copy_type, m)?)?;
-    Ok(())
 }

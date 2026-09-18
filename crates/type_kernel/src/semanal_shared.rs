@@ -889,6 +889,23 @@ fn find_dataclass_transform_spec_inner(py: Python<'_>, node: &PyAny) -> PyResult
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // semanal_shared.py + sharedparse.py pure helpers.
+    m.add_function(wrap_pyfunction!(rust_special_function_elide_names, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_argument_elide_name, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_set_callable_name, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_has_placeholder, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_calculate_tuple_fallback, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_find_dataclass_transform_spec, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1025,21 +1042,4 @@ mod tests {
             }
         }
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // semanal_shared.py + sharedparse.py pure helpers.
-    m.add_function(wrap_pyfunction!(rust_special_function_elide_names, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_argument_elide_name, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_set_callable_name, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_has_placeholder, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_calculate_tuple_fallback, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_find_dataclass_transform_spec, m)?)?;
-    Ok(())
 }

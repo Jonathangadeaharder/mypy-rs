@@ -169,6 +169,13 @@ pub(crate) fn rust_covers_at_runtime(
     covers_at_runtime_inner(&item, &supertype, strict_optional, resolver.resolver())
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #745: subtypes.covers_at_runtime (runtime isinstance coverage).
+    m.add_function(wrap_pyfunction!(rust_covers_at_runtime, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,11 +430,4 @@ mod tests {
         // The un-erased subtype check over a missing list snapshot defers.
         assert_eq!(covers_at_runtime_inner(&item, &sup, true, &res), None);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #745: subtypes.covers_at_runtime (runtime isinstance coverage).
-    m.add_function(wrap_pyfunction!(rust_covers_at_runtime, m)?)?;
-    Ok(())
 }

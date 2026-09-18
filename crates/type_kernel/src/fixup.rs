@@ -1055,16 +1055,6 @@ pub fn rust_fixup_decorator(
     Ok(true)
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        // The fixup functions operate on live mypy objects which require
-        // the full mypy import chain. Parity is verified via the Python
-        // test suite (testtypes.py, testcheck.py) with the gate on.
-    }
-}
-
 /// Register this module's Python-facing seam surface (#1677).
 pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
     // Issue #539: fixup.py NodeFixer/TypeFixer port.
@@ -1080,4 +1070,14 @@ pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(rust_fixup_decorator, m)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn smoke() {
+        // The fixup functions operate on live mypy objects which require
+        // the full mypy import chain. Parity is verified via the Python
+        // test suite (testtypes.py, testcheck.py) with the gate on.
+    }
 }

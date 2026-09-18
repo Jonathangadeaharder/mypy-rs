@@ -161,6 +161,12 @@ pub fn rust_linearize_hierarchy(
     linearize(&info_fullname, resolver.resolver(), &mut visited)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_linearize_hierarchy, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,10 +409,4 @@ mod tests {
             Some(vec!["A".to_string(), "B".to_string()])
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_linearize_hierarchy, m)?)?;
-    Ok(())
 }

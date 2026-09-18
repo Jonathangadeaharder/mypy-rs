@@ -1491,6 +1491,28 @@ pub fn rust_get_arg_infer_passes(
     Some(res)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_classify_call, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_calibrate_type_obj_return, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_normalize_callable, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_real_union, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_possible_none_type_var_overlap, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_solve_generic_call, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_check_callable_call, m)?)?;
+
+    // Issue #1000: two-pass argument-inference classifier. Rust decides
+    // pass 1 vs pass 2 per actual; Python applies the results.
+    m.add_function(wrap_pyfunction!(rust_get_arg_infer_passes, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3036,26 +3058,4 @@ mod tests {
             "expected fully-resolved callable"
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_classify_call, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_calibrate_type_obj_return, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_normalize_callable, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_real_union, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_possible_none_type_var_overlap, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_solve_generic_call, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_check_callable_call, m)?)?;
-
-    // Issue #1000: two-pass argument-inference classifier. Rust decides
-    // pass 1 vs pass 2 per actual; Python applies the results.
-    m.add_function(wrap_pyfunction!(rust_get_arg_infer_passes, m)?)?;
-    Ok(())
 }

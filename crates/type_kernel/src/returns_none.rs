@@ -168,6 +168,15 @@ fn always_returns_none_inner(
     Ok(Some(false))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #1070: always_returns_none / defn_returns_none live-object port.
+    // Rust walks the recursive node kinds via PyO3 (zero wire bytes); the shim
+    // pre-resolves the MemberExpr owner type, and any unreadable fact defers.
+    m.add_function(wrap_pyfunction!(rust_always_returns_none, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod returns_none_tests {
     use super::{all_items_return_none, var_returns_none_decision};
@@ -251,13 +260,4 @@ mod returns_none_tests {
             Some(false)
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #1070: always_returns_none / defn_returns_none live-object port.
-    // Rust walks the recursive node kinds via PyO3 (zero wire bytes); the shim
-    // pre-resolves the MemberExpr owner type, and any unreadable fact defers.
-    m.add_function(wrap_pyfunction!(rust_always_returns_none, m)?)?;
-    Ok(())
 }

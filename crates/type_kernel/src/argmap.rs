@@ -269,6 +269,16 @@ fn read_type_lone(blob: &[u8]) -> Option<Type> {
     read_type(&mut buf, None).ok()
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_map_actuals_to_formals, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_map_formals_to_actuals, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_map_actuals_to_formals_with_types, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,14 +783,4 @@ mod tests {
         );
         assert_eq!(r, None);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_map_actuals_to_formals, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_map_formals_to_actuals, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_map_actuals_to_formals_with_types, m)?)?;
-    Ok(())
 }

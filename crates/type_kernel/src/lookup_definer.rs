@@ -79,6 +79,14 @@ fn lookup_definer_inner(typ: &PyAny, attr_name: &str) -> PyResult<Option<Option<
     Ok(lookup_definer_fold(entries))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #1075: lookup_definer live-object MRO walk. Rust reads
+    // typ.type.mro via PyO3 (zero wire bytes); any unreadable fact defers.
+    m.add_function(wrap_pyfunction!(rust_lookup_definer, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod lookup_definer_tests {
     use super::lookup_definer_fold;
@@ -145,12 +153,4 @@ mod lookup_definer_tests {
         let entries = vec![Some((false, "mod.B".to_string())), None];
         assert_eq!(lookup_definer_fold(entries.into_iter()), None);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #1075: lookup_definer live-object MRO walk. Rust reads
-    // typ.type.mro via PyO3 (zero wire bytes); any unreadable fact defers.
-    m.add_function(wrap_pyfunction!(rust_lookup_definer, m)?)?;
-    Ok(())
 }

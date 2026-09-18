@@ -146,6 +146,14 @@ pub fn rust_resolve_plugin_hook(
     Ok(None)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_class::<PluginHookRegistry>()?;
+
+    m.add_function(wrap_pyfunction!(rust_resolve_plugin_hook, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,12 +218,4 @@ mod tests {
         assert!(reg.has_call_hook("builtins.len"));
         assert!(!reg.has_hook_for("get_something_else", "should.not.count"));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_class::<PluginHookRegistry>()?;
-
-    m.add_function(wrap_pyfunction!(rust_resolve_plugin_hook, m)?)?;
-    Ok(())
 }

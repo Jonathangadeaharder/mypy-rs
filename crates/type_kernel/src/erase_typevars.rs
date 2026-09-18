@@ -854,6 +854,14 @@ fn is_builtins_tuple(t: &Type) -> bool {
     matches!(t, Type::Instance { type_ref, args, .. } if type_ref == "builtins.tuple" && args.is_empty())
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_erase_typevars, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_replace_meta_vars, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1109,12 +1117,4 @@ mod tests {
             other => panic!("expected AnyType, got {other}"),
         }
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_erase_typevars, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_replace_meta_vars, m)?)?;
-    Ok(())
 }

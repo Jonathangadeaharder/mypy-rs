@@ -2750,7 +2750,7 @@ mod g1_serving_tests {
             obj.setattr("fullname", "mod.x").unwrap();
             // Another field's record mints the entry; the five scalars stay
             // `Default`, which must never be served as if recorded.
-            capture_field_value(obj, "name".into(), FieldValue::Text("x".into())).unwrap();
+            capture_field_value(obj, "name", FieldValue::Text("x".into())).unwrap();
             assert_eq!(serve_ref_scalars(obj), None);
             let (_, served, _, unrecorded, _, _, _) = served_counters();
             assert_eq!((served, unrecorded), (0, 1));
@@ -2799,7 +2799,7 @@ mod g1_serving_tests {
             obj.setattr("kind", 1i64).unwrap();
             obj.setattr("fullname", "mod.x").unwrap();
             capture_ref(obj, Some(1), None, "mod.x".into(), false, false, None).unwrap();
-            assert_eq!(serve_ref_scalars(obj).is_some(), true);
+            assert!(serve_ref_scalars(obj).is_some());
             let (_, served, _, _, compared, mismatched, errors) = served_counters();
             assert_eq!((served, compared, mismatched, errors), (1, 1, 0, 0));
         });

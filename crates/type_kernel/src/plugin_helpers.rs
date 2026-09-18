@@ -192,6 +192,16 @@ pub fn rust_find_shallow_matching_overload_item(
     Ok(None)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #394: pure plugin common helpers.
+    m.add_function(wrap_pyfunction!(
+        rust_find_shallow_matching_overload_item,
+        m
+    )?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,14 +214,4 @@ mod tests {
         assert!(!is_required(1));
         assert!(!is_required(5));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #394: pure plugin common helpers.
-    m.add_function(wrap_pyfunction!(
-        rust_find_shallow_matching_overload_item,
-        m
-    )?)?;
-    Ok(())
 }

@@ -3270,6 +3270,14 @@ pub(crate) fn extra_attrs_record_in_order(
     w.into_bytes()
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(read_type_to_str, m)?)?;
+
+    m.add_function(wrap_pyfunction!(read_alias_recursion_flag, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4522,12 +4530,4 @@ mod tests {
             "[*a: builtins.int, builtins.int]"
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(read_type_to_str, m)?)?;
-
-    m.add_function(wrap_pyfunction!(read_alias_recursion_flag, m)?)?;
-    Ok(())
 }

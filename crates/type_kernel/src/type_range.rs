@@ -186,6 +186,15 @@ pub(crate) fn rust_classify_type_range(
     }
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #1464 C1: get_type_range_of_type leaf dispatch. Rust classifies
+    // the non-union, non-typevar proper type into a branch tag; the
+    // fill_typevars/erase tail, is_subtype gate, and union-item fold stay in Python.
+    m.add_function(wrap_pyfunction!(rust_classify_type_range, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod type_range_tests {
     use super::*;
@@ -324,13 +333,4 @@ mod type_range_tests {
             (TYPE_RANGE_REST, false)
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #1464 C1: get_type_range_of_type leaf dispatch. Rust classifies
-    // the non-union, non-typevar proper type into a branch tag; the
-    // fill_typevars/erase tail, is_subtype gate, and union-item fold stay in Python.
-    m.add_function(wrap_pyfunction!(rust_classify_type_range, m)?)?;
-    Ok(())
 }
