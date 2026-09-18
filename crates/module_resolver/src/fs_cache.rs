@@ -31,6 +31,11 @@
 //! the dual-cache hazard that today forces `_native_gate_active` to exclude
 //! daemon and Bazel modes).
 
+// The pyo3 `#[pyclass]`/`#[pymethods]` macros generate impls nested inside
+// a trampoline fn; rustc flags those as non-local and the allow cannot be
+// narrowed below file level (same pattern as type_kernel/src/modulefinder.rs).
+#![allow(non_local_definitions)]
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -60,6 +65,10 @@ struct StatResult {
     dev: u64,
     nlink: u64,
 }
+
+/// Stat tuple returned to Python by `FsCache.stat_or_none`:
+/// `(st_mode, st_size, st_mtime, st_ino, st_dev, st_nlink)`.
+type StatTuple = (u32, u64, f64, u64, u64, u64);
 
 impl StatResult {
     fn is_file(&self) -> bool {
@@ -197,6 +206,8 @@ impl PyOSErrorEntry {
     }
 }
 
+// The `#[pymethods]` macro generates impl blocks nested in a trampoline
+// fn, which rustc flags as non-local; the allow cannot go deeper.
 #[pymethods]
 impl FsCache {
     #[new]
@@ -242,11 +253,7 @@ impl FsCache {
     ///
     /// Returns a tuple `(st_mode, st_size, st_mtime, st_ino, st_dev, st_nlink)`
     /// matching the fields mypy reads off `os.stat_result`.
-    fn stat_or_none(
-        &self,
-        _py: Python<'_>,
-        path: String,
-    ) -> PyResult<Option<(u32, u64, f64, u64, u64, u64)>> {
+    fn stat_or_none(&self, _py: Python<'_>, path: String) -> PyResult<Option<StatTuple>> {
         if let Some(cached) = self.stat_cache.borrow().get(&path) {
             return Ok(cached.map(|s| (s.mode, s.size, s.mtime, s.ino, s.dev, s.nlink)));
         }
@@ -254,10 +261,7 @@ impl FsCache {
             Ok(meta) => Some(StatResult::from_metadata(meta)),
             Err(_) => {
                 if self.init_under_package_root(&path) {
-                    match self.fake_init(&path) {
-                        Ok(st) => Some(st),
-                        Err(_) => None,
-                    }
+                    self.fake_init(&path).ok()
                 } else {
                     None
                 }
@@ -754,18 +758,9 @@ fn fs_cache(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
 mod tests {
     use super::*;
     use std::fs;
-    use std::path::PathBuf;
 
     fn tmpdir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
-    }
-
-    fn write_file(root: &PathBuf, rel: &str, content: &[u8]) {
-        let full = root.join(rel);
-        if let Some(parent) = full.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::write(&full, content).unwrap();
     }
 
     #[test]
@@ -888,7 +883,7 @@ mod tests {
             file_path.to_string_lossy().to_string(),
             hardlink.to_string_lossy().to_string(),
         );
-        assert_eq!(same, true);
+        assert!(same);
 
         let other = dir.path().join("other.py");
         fs::write(&other, b"").unwrap();
@@ -896,7 +891,7 @@ mod tests {
             file_path.to_string_lossy().to_string(),
             other.to_string_lossy().to_string(),
         );
-        assert_eq!(diff, false);
+        assert!(!diff);
     }
 
     #[test]

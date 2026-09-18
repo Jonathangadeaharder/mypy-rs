@@ -22,6 +22,11 @@
 //!     and `exists_case`.
 //!   * `HashMapFs` — an in-memory store used by the Rust unit tests.
 
+// The pyo3 `#[pyclass]`/`#[pymethods]` macros generate impls nested inside
+// a trampoline fn; rustc flags those as non-local and the allow cannot be
+// narrowed below file level (same pattern as type_kernel/src/modulefinder.rs).
+#![allow(non_local_definitions)]
+
 mod fs_cache;
 
 use std::cell::RefCell;
@@ -306,6 +311,52 @@ impl FsProbe for HashMapFs {
 }
 
 // ---------------------------------------------------------------------------
+// Shared type aliases
+// ---------------------------------------------------------------------------
+
+/// stdlib version-gating table: module_name -> ((min, max) version range),
+/// as consumed by `use_typeshed_for`.
+type StdlibVersions = HashMap<String, ((u8, u8), Option<(u8, u8)>)>;
+
+/// One stdlib version entry as it crosses the PyO3 boundary in
+/// `NativeResolver::new`: (module_name, min_version, max_version).
+type StdlibVersionSpec = (String, (u8, u8), Option<(u8, u8)>);
+
+/// `initial_components` cache: lib_path tuple key -> toplevel component ->
+/// list of dirs (mirrors `FindModuleCache.initial_components`).
+type InitialComponentsMap = HashMap<Vec<String>, HashMap<String, Vec<String>>>;
+
+/// One dependency record returned to Python: (priority, module_id, line).
+type DepRecord = (i32, String, i32);
+
+/// Result of the dependency-record walk: the records plus an optional
+/// blocking `(line, message)` relative-import error reported via `Errors`.
+type DepRecords = (Vec<DepRecord>, Option<(i32, String)>);
+
+/// Stable resolver config, borrowed from `NativeResolver` (or a test bundle):
+/// search paths, stdlib version table, stub tables, and flags that are fixed
+/// for the lifetime of a `FindModuleCache`.
+struct ResolverConfig<'a> {
+    python_path: &'a [String],
+    mypy_path: &'a [String],
+    package_path: &'a [String],
+    typeshed_path: &'a [String],
+    stdlib_versions: &'a StdlibVersions,
+    python_version: (u8, u8),
+    stub_flat: &'a BTreeSet<String>,
+    stub_namespace: &'a BTreeMap<String, String>,
+    namespace_packages: bool,
+    use_builtins_fixtures: bool,
+}
+
+/// Cross-call resolution caches, borrowed from their owner
+/// (`NativeResolver` in production, local cells in tests).
+struct ResolverCaches<'a> {
+    initial_components: &'a RefCell<InitialComponentsMap>,
+    ns_ancestors: &'a RefCell<HashMap<String, String>>,
+}
+
+// ---------------------------------------------------------------------------
 // NativeResolver — production resolver backed by a shared FsCache
 // ---------------------------------------------------------------------------
 
@@ -344,7 +395,7 @@ struct NativeResolver {
     /// `is_module` mirrors Python's `find_module`/`_typeshed_has_version`:
     /// a stdlib module outside the target version range is NOT looked up in
     /// typeshed, so it resolves as NOT_FOUND (matching Python).
-    stdlib_versions: HashMap<String, ((u8, u8), Option<(u8, u8)>)>,
+    stdlib_versions: StdlibVersions,
     /// Clamped Python target version (`max(python_version, (3, 10))`),
     /// mirroring `typeshed_py_version`. Used for stdlib version gating in
     /// `use_typeshed_for`.
@@ -357,12 +408,14 @@ struct NativeResolver {
     /// Cache for get_toplevel_possibilities: lib_path tuple key ->
     /// toplevel component -> list of dirs. Persists across find_module calls,
     /// mirroring FindModuleCache.initial_components.
-    initial_components: RefCell<HashMap<Vec<String>, HashMap<String, Vec<String>>>>,
+    initial_components: RefCell<InitialComponentsMap>,
     /// namespace-package ancestor paths (pkg_id -> path). Persists across
     /// find_module calls, mirroring FindModuleCache.ns_ancestors.
     ns_ancestors: RefCell<HashMap<String, String>>,
 }
 
+// The `#[pymethods]` macro generates impl blocks nested in a trampoline
+// fn, which rustc flags as non-local; the allow cannot go deeper.
 #[pymethods]
 impl NativeResolver {
     /// Construct a `NativeResolver` with all stable config. Called once by
@@ -373,6 +426,13 @@ impl NativeResolver {
     /// `FileSystemCache` delegate (`fscache._rust`). The resolver borrows it
     /// per call so it reads through the same transactional snapshot as the
     /// rest of mypy — eliminating the dual-cache hazard.
+    // PyO3 `#[new]` constructor: the 11-arg signature is the Python-facing
+    // wire contract (FindModuleCache._resolve builds it from Options), so the
+    // arg list must mirror the Python call site one-to-one.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "PyO3 #[new] wire contract: mirrors the FindModuleCache._resolve call site"
+    )]
     #[new]
     #[pyo3(signature = (
         fs_cache,
@@ -396,7 +456,7 @@ impl NativeResolver {
         package_path: Vec<String>,
         typeshed_path: Vec<String>,
         python_version: (u8, u8),
-        stdlib_versions: Vec<(String, (u8, u8), Option<(u8, u8)>)>,
+        stdlib_versions: Vec<StdlibVersionSpec>,
         stub_flat: Vec<String>,
         stub_namespace: Vec<(String, String)>,
     ) -> Self {
@@ -506,24 +566,30 @@ impl NativeResolver {
         known_modules: HashSet<String>,
     ) -> PyResult<(PyObject, PyObject)> {
         let fs = self.fs_cache.borrow(py);
+        let caches = ResolverCaches {
+            initial_components: &self.initial_components,
+            ns_ancestors: &self.ns_ancestors,
+        };
+        let cfg = ResolverConfig {
+            python_path: &self.python_path,
+            mypy_path: &self.mypy_path,
+            package_path: &self.package_path,
+            typeshed_path: &self.typeshed_path,
+            stdlib_versions: &self.stdlib_versions,
+            python_version: self.python_version,
+            stub_flat: &self.stub_flat,
+            stub_namespace: &self.stub_namespace,
+            namespace_packages: self.namespace_packages,
+            use_builtins_fixtures: self.use_builtins_fixtures,
+        };
         let (res, error) = dep_records_with(
             &*fs,
             file_id,
             file_path,
             &imports,
             &known_modules,
-            &self.initial_components,
-            &self.ns_ancestors,
-            &self.python_path,
-            &self.mypy_path,
-            &self.package_path,
-            &self.typeshed_path,
-            &self.stdlib_versions,
-            self.python_version,
-            &self.stub_flat,
-            &self.stub_namespace,
-            self.namespace_packages,
-            self.use_builtins_fixtures,
+            &caches,
+            &cfg,
         )?;
         Ok((res.into_py(py), error.into_py(py)))
     }
@@ -545,70 +611,59 @@ impl NativeResolver {
         ids_with_follow: Vec<(String, bool)>,
     ) -> PyResult<Vec<(u8, Option<String>, bool)>> {
         let fs = self.fs_cache.borrow(py);
-        let res = resolve_many_with(
-            &*fs,
-            &ids_with_follow,
-            &self.initial_components,
-            &self.ns_ancestors,
-            &self.python_path,
-            &self.mypy_path,
-            &self.package_path,
-            &self.typeshed_path,
-            &self.stdlib_versions,
-            self.python_version,
-            &self.stub_flat,
-            &self.stub_namespace,
-            self.namespace_packages,
-            self.use_builtins_fixtures,
-        )?;
+        let caches = ResolverCaches {
+            initial_components: &self.initial_components,
+            ns_ancestors: &self.ns_ancestors,
+        };
+        let cfg = ResolverConfig {
+            python_path: &self.python_path,
+            mypy_path: &self.mypy_path,
+            package_path: &self.package_path,
+            typeshed_path: &self.typeshed_path,
+            stdlib_versions: &self.stdlib_versions,
+            python_version: self.python_version,
+            stub_flat: &self.stub_flat,
+            stub_namespace: &self.stub_namespace,
+            namespace_packages: self.namespace_packages,
+            use_builtins_fixtures: self.use_builtins_fixtures,
+        };
+        let res = resolve_many_with(&*fs, &ids_with_follow, &caches, &cfg)?;
         Ok(res)
     }
 }
 
-/// Batched resolution core, generic over the `FsProbe` implementation so it can
-/// be unit-tested with `HashMapFs` (mirroring `dep_records_with`). The resolver
-/// config is passed in so each id resolves against the same config as a real
-/// `find_module` call. `initial_components` and `ns_ancestors` are `RefCell`s
-/// so the caller controls cross-call cache lifetime — a single
-/// `resolve_many_with` call shares one cache borrow across all ids, exactly as
-/// `dep_records_with` does across one file's import list.
-#[allow(clippy::too_many_arguments)]
+/// Batched resolution core, generic over the `FsProbe` implementation so it
+/// can be unit-tested with `HashMapFs` (mirroring `dep_records_with`). The
+/// resolver config is passed in so each id resolves against the same config as
+/// a real `find_module` call. A single `resolve_many_with` call shares one
+/// cache borrow across all ids, exactly as `dep_records_with` does across one
+/// file's import list.
 fn resolve_many_with<F: FsProbe>(
     fs: &F,
     ids_with_follow: &[(String, bool)],
-    initial_components: &RefCell<HashMap<Vec<String>, HashMap<String, Vec<String>>>>,
-    ns_ancestors: &RefCell<HashMap<String, String>>,
-    python_path: &[String],
-    mypy_path: &[String],
-    package_path: &[String],
-    typeshed_path: &[String],
-    stdlib_versions: &HashMap<String, ((u8, u8), Option<(u8, u8)>)>,
-    python_version: (u8, u8),
-    stub_flat: &BTreeSet<String>,
-    stub_namespace: &BTreeMap<String, String>,
-    namespace_packages: bool,
-    use_builtins_fixtures: bool,
-) -> PyResult<Vec<(u8, Option<String>, bool)>> {
-    let mut out: Vec<(u8, Option<String>, bool)> = Vec::with_capacity(ids_with_follow.len());
-    let mut initial_components = initial_components.borrow_mut();
-    let mut ns_ancestors = ns_ancestors.borrow_mut();
+    caches: &ResolverCaches<'_>,
+    cfg: &ResolverConfig<'_>,
+) -> PyResult<Vec<ResolveResult>> {
+    let mut out: Vec<ResolveResult> = Vec::with_capacity(ids_with_follow.len());
+    let mut initial_components = caches.initial_components.borrow_mut();
+    let mut ns_ancestors = caches.ns_ancestors.borrow_mut();
 
     for (id, follow_untyped_imports) in ids_with_follow {
-        let use_typeshed = use_typeshed_for(id, python_version, stdlib_versions);
+        let use_typeshed = use_typeshed_for(id, cfg.python_version, cfg.stdlib_versions);
         let inputs = ResolveInputs {
             id,
             use_typeshed,
-            namespace_packages,
-            use_builtins_fixtures,
+            namespace_packages: cfg.namespace_packages,
+            use_builtins_fixtures: cfg.use_builtins_fixtures,
             follow_untyped_imports: *follow_untyped_imports,
-            python_path,
-            mypy_path,
-            package_path,
-            typeshed_path,
-            stdlib_versions,
-            stub_flat,
-            stub_namespace,
-            fs: &*fs,
+            python_path: cfg.python_path,
+            mypy_path: cfg.mypy_path,
+            package_path: cfg.package_path,
+            typeshed_path: cfg.typeshed_path,
+            stdlib_versions: cfg.stdlib_versions,
+            stub_flat: cfg.stub_flat,
+            stub_namespace: cfg.stub_namespace,
+            fs,
         };
         let mut resolver = Resolver::new(&inputs, &mut initial_components, &mut ns_ancestors);
         let (kind, path, can_cache) = resolver.find_module(id, use_typeshed);
@@ -617,30 +672,20 @@ fn resolve_many_with<F: FsProbe>(
 
     Ok(out)
 }
-/// it can be unit-tested with `HashMapFs`. The resolver config (search paths,
-/// stub tables, flags) is passed in so `is_module` lookups use the same config
-/// as a real `find_module` call. `initial_components` and `ns_ancestors` are
-/// `RefCell`s so the caller controls cross-call cache lifetime.
+
+/// Dependency-record extraction core, generic over the `FsProbe` implementation
+/// so it can be unit-tested with `HashMapFs`. Mirrors
+/// `mypy.build.all_imported_modules_in_file` (`mypy/build.py:1202-1262`).
 fn dep_records_with<F: FsProbe>(
     fs: &F,
     file_id: &str,
     file_path: &str,
     imports: &[ImportRecord],
     known_modules: &HashSet<String>,
-    initial_components: &RefCell<HashMap<Vec<String>, HashMap<String, Vec<String>>>>,
-    ns_ancestors: &RefCell<HashMap<String, String>>,
-    python_path: &[String],
-    mypy_path: &[String],
-    package_path: &[String],
-    typeshed_path: &[String],
-    stdlib_versions: &HashMap<String, ((u8, u8), Option<(u8, u8)>)>,
-    python_version: (u8, u8),
-    stub_flat: &BTreeSet<String>,
-    stub_namespace: &BTreeMap<String, String>,
-    namespace_packages: bool,
-    use_builtins_fixtures: bool,
-) -> PyResult<(Vec<(i32, String, i32)>, Option<(i32, String)>)> {
-    let mut res: Vec<(i32, String, i32)> = Vec::new();
+    caches: &ResolverCaches<'_>,
+    cfg: &ResolverConfig<'_>,
+) -> PyResult<DepRecords> {
+    let mut res: Vec<DepRecord> = Vec::new();
     let mut error: Option<(i32, String)> = None;
 
     for imp in imports {
@@ -670,23 +715,7 @@ fn dep_records_with<F: FsProbe>(
                 let ancestor_pri = import_priority(is_top_level, is_mypy_only, PRI_LOW);
                 for (id, _asname) in ids {
                     if include_only_if_resolvable
-                        && !is_module_inline(
-                            fs,
-                            id,
-                            known_modules,
-                            initial_components,
-                            ns_ancestors,
-                            python_path,
-                            mypy_path,
-                            package_path,
-                            typeshed_path,
-                            stdlib_versions,
-                            python_version,
-                            stub_flat,
-                            stub_namespace,
-                            namespace_packages,
-                            use_builtins_fixtures,
-                        )?
+                        && !is_module_inline(fs, id, known_modules, caches, cfg)?
                     {
                         continue;
                     }
@@ -713,23 +742,7 @@ fn dep_records_with<F: FsProbe>(
                     }
                 };
                 if include_only_if_resolvable
-                    && !is_module_inline(
-                        fs,
-                        &cur_id,
-                        known_modules,
-                        initial_components,
-                        ns_ancestors,
-                        python_path,
-                        mypy_path,
-                        package_path,
-                        typeshed_path,
-                        stdlib_versions,
-                        python_version,
-                        stub_flat,
-                        stub_namespace,
-                        namespace_packages,
-                        use_builtins_fixtures,
-                    )?
+                    && !is_module_inline(fs, &cur_id, known_modules, caches, cfg)?
                 {
                     continue;
                 }
@@ -737,23 +750,7 @@ fn dep_records_with<F: FsProbe>(
                 let pri_sub = import_priority(is_top_level, is_mypy_only, PRI_MED);
                 for (name, _asname) in ids {
                     let sub_id = format!("{}.{}", cur_id, name);
-                    if is_module_inline(
-                        fs,
-                        &sub_id,
-                        known_modules,
-                        initial_components,
-                        ns_ancestors,
-                        python_path,
-                        mypy_path,
-                        package_path,
-                        typeshed_path,
-                        stdlib_versions,
-                        python_version,
-                        stub_flat,
-                        stub_namespace,
-                        namespace_packages,
-                        use_builtins_fixtures,
-                    )? {
+                    if is_module_inline(fs, &sub_id, known_modules, caches, cfg)? {
                         res.push((pri_sub, sub_id, line));
                     } else {
                         all_are_submodules = false;
@@ -785,23 +782,7 @@ fn dep_records_with<F: FsProbe>(
                     }
                 };
                 if include_only_if_resolvable
-                    && !is_module_inline(
-                        fs,
-                        &cur_id,
-                        known_modules,
-                        initial_components,
-                        ns_ancestors,
-                        python_path,
-                        mypy_path,
-                        package_path,
-                        typeshed_path,
-                        stdlib_versions,
-                        python_version,
-                        stub_flat,
-                        stub_namespace,
-                        namespace_packages,
-                        use_builtins_fixtures,
-                    )?
+                    && !is_module_inline(fs, &cur_id, known_modules, caches, cfg)?
                 {
                     continue;
                 }
@@ -814,7 +795,7 @@ fn dep_records_with<F: FsProbe>(
 
     // Sort by descending dot count so modules come before their ancestors
     // (mirrors build.py:1261). This primes FindModuleCache.ns_ancestors.
-    res.sort_by(|a, b| b.1.matches('.').count().cmp(&a.1.matches('.').count()));
+    res.sort_by_key(|r| std::cmp::Reverse(r.1.matches('.').count()));
 
     Ok((res, error))
 }
@@ -828,45 +809,34 @@ fn dep_records_with<F: FsProbe>(
 /// require a per-id callback across the PyO3 boundary, defeating the purpose of
 /// running the walk in Rust. The computation mirrors
 /// `FindModuleCache.find_module` + `_typeshed_has_version` exactly.
-#[allow(clippy::too_many_arguments)]
 fn is_module_inline<F: FsProbe>(
     fs: &F,
     id: &str,
     known_modules: &HashSet<String>,
-    initial_components: &RefCell<HashMap<Vec<String>, HashMap<String, Vec<String>>>>,
-    ns_ancestors: &RefCell<HashMap<String, String>>,
-    python_path: &[String],
-    mypy_path: &[String],
-    package_path: &[String],
-    typeshed_path: &[String],
-    stdlib_versions: &HashMap<String, ((u8, u8), Option<(u8, u8)>)>,
-    python_version: (u8, u8),
-    stub_flat: &BTreeSet<String>,
-    stub_namespace: &BTreeMap<String, String>,
-    namespace_packages: bool,
-    use_builtins_fixtures: bool,
+    caches: &ResolverCaches<'_>,
+    cfg: &ResolverConfig<'_>,
 ) -> PyResult<bool> {
     if known_modules.contains(id) {
         return Ok(true);
     }
-    let use_typeshed = use_typeshed_for(id, python_version, stdlib_versions);
+    let use_typeshed = use_typeshed_for(id, cfg.python_version, cfg.stdlib_versions);
     let inputs = ResolveInputs {
         id,
         use_typeshed,
-        namespace_packages,
-        use_builtins_fixtures,
+        namespace_packages: cfg.namespace_packages,
+        use_builtins_fixtures: cfg.use_builtins_fixtures,
         follow_untyped_imports: false,
-        python_path,
-        mypy_path,
-        package_path,
-        typeshed_path,
-        stdlib_versions,
-        stub_flat,
-        stub_namespace,
+        python_path: cfg.python_path,
+        mypy_path: cfg.mypy_path,
+        package_path: cfg.package_path,
+        typeshed_path: cfg.typeshed_path,
+        stdlib_versions: cfg.stdlib_versions,
+        stub_flat: cfg.stub_flat,
+        stub_namespace: cfg.stub_namespace,
         fs,
     };
-    let mut ic = initial_components.borrow_mut();
-    let mut ns = ns_ancestors.borrow_mut();
+    let mut ic = caches.initial_components.borrow_mut();
+    let mut ns = caches.ns_ancestors.borrow_mut();
     let mut resolver = Resolver::new(&inputs, &mut ic, &mut ns);
     let (kind, _path, _can_cache) = resolver.find_module(id, use_typeshed);
     Ok(kind == FOUND)
@@ -880,11 +850,7 @@ fn is_module_inline<F: FsProbe>(
 /// typeshed. This is what makes `import tomllib` (added in 3.11) resolve as
 /// NOT_FOUND when targeting 3.10, so the dependency walk skips it via
 /// `include_only_if_resolvable`.
-fn use_typeshed_for(
-    id: &str,
-    python_version: (u8, u8),
-    stdlib_versions: &HashMap<String, ((u8, u8), Option<(u8, u8)>)>,
-) -> bool {
+fn use_typeshed_for(id: &str, python_version: (u8, u8), stdlib_versions: &StdlibVersions) -> bool {
     let top_level = id.split('.').next().unwrap_or(id);
     let key = if stdlib_versions.contains_key(id) {
         id
@@ -896,7 +862,7 @@ fn use_typeshed_for(
     };
     let (min_version, max_version) = &stdlib_versions[key];
     // python_version is already clamped to (3, 10) at construction time.
-    python_version >= *min_version && max_version.map_or(true, |max| python_version <= max)
+    python_version >= *min_version && max_version.is_none_or(|max| python_version <= max)
 }
 
 // ---------------------------------------------------------------------------
@@ -930,7 +896,7 @@ struct ResolveInputs<'a, F: FsProbe> {
     /// `use_typeshed_for`. Kept in the struct so `resolve()` and the
     /// dependency walk share one input bundle.
     #[allow(dead_code)]
-    stdlib_versions: &'a HashMap<String, ((u8, u8), Option<(u8, u8)>)>,
+    stdlib_versions: &'a StdlibVersions,
     /// Top-level module names with a flat stub-distribution lookup
     /// (mirrors mypy.stubinfo.non_bundled_packages_flat keys + legacy bundled).
     stub_flat: &'a BTreeSet<String>,
@@ -976,11 +942,7 @@ impl<'a, F: FsProbe> Resolver<'a, F> {
     // Mirrors FindModuleCache.find_lib_path_dirs.
     fn find_lib_path_dirs(&mut self, id: &str, lib_path: &[String]) -> Vec<(String, bool)> {
         let components = split_dot(id);
-        let dir_chain: String = components[..components.len() - 1]
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("/");
+        let dir_chain: String = components[..components.len() - 1].join("/");
         let toplevel = self.get_toplevel_possibilities(lib_path, &components[0]);
         let mut dirs = Vec::new();
         for pathitem in toplevel {
@@ -1116,10 +1078,7 @@ impl<'a, F: FsProbe> Resolver<'a, F> {
     // Mirrors mypy.stubinfo.stub_distribution_name. Returns an owned String
     // to avoid lifetime entanglement between the two source tables.
     fn stub_distribution_name(&self, module: &str) -> Option<String> {
-        let top_level = match module.split('.').next() {
-            Some(t) => t,
-            None => return None,
-        };
+        let top_level = module.split('.').next()?;
         // Flat lookup is keyed by top-level. The approved-stubs branch only
         // needs to know whether a dist exists, not its name. So a flat match
         // means approved.
@@ -1152,11 +1111,7 @@ impl<'a, F: FsProbe> Resolver<'a, F> {
         // Rust, so we skip find_module_via_source_set here.
 
         let components = split_dot(id);
-        let dir_chain: String = components[..components.len() - 1]
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("/");
+        let dir_chain: String = components[..components.len() - 1].join("/");
 
         // Third-party stub/typed package collection.
         let mut third_party_inline_dirs: Vec<(String, bool)> = Vec::new();
@@ -1392,7 +1347,7 @@ mod tests {
         let myp: Vec<String> = mypy_path.iter().map(|s| s.to_string()).collect();
         let flat_set: BTreeSet<String> = approved.iter().map(|s| s.to_string()).collect();
         let ns_map: BTreeMap<String, String> = BTreeMap::new();
-        let stdlib_map: HashMap<String, ((u8, u8), Option<(u8, u8)>)> = HashMap::new();
+        let stdlib_map = StdlibVersions::new();
         let inputs = ResolveInputs {
             id,
             use_typeshed: false,
@@ -1406,7 +1361,7 @@ mod tests {
             stdlib_versions: &stdlib_map,
             stub_flat: &flat_set,
             stub_namespace: &ns_map,
-            fs: &*fs,
+            fs,
         };
         let mut ic: HashMap<Vec<String>, HashMap<String, Vec<String>>> = HashMap::new();
         let mut ns: HashMap<String, String> = HashMap::new();
@@ -1576,34 +1531,31 @@ mod tests {
         imports: &[ImportRecord],
         known: &[&str],
         search_path: &[&str],
-    ) -> (Vec<(i32, String, i32)>, Option<(i32, String)>) {
+    ) -> DepRecords {
         let myp: Vec<String> = search_path.iter().map(|s| s.to_string()).collect();
         let flat = BTreeSet::<String>::new();
         let ns_map = BTreeMap::<String, String>::new();
-        let stdlib_map = HashMap::<String, ((u8, u8), Option<(u8, u8)>)>::new();
+        let stdlib_map = StdlibVersions::new();
         let known_set: HashSet<String> = known.iter().map(|s| s.to_string()).collect();
         let ic = TestRefCell::new(HashMap::new());
         let ns = TestRefCell::new(HashMap::new());
-        dep_records_with(
-            &*fs,
-            file_id,
-            file_path,
-            imports,
-            &known_set,
-            &ic,
-            &ns,
-            &[],
-            &myp,
-            &[],
-            &[],
-            &stdlib_map,
-            (3, 10),
-            &flat,
-            &ns_map,
-            false,
-            false,
-        )
-        .unwrap()
+        let caches = ResolverCaches {
+            initial_components: &ic,
+            ns_ancestors: &ns,
+        };
+        let cfg = ResolverConfig {
+            python_path: &[],
+            mypy_path: &myp,
+            package_path: &[],
+            typeshed_path: &[],
+            stdlib_versions: &stdlib_map,
+            python_version: (3, 10),
+            stub_flat: &flat,
+            stub_namespace: &ns_map,
+            namespace_packages: false,
+            use_builtins_fixtures: false,
+        };
+        dep_records_with(fs, file_id, file_path, imports, &known_set, &caches, &cfg).unwrap()
     }
 
     fn imp(id: &str, line: i32) -> ImportRecord {
@@ -1918,49 +1870,52 @@ mod tests {
     // as NOT_FOUND. When targeting 3.10, the dependency walk skips it via
     // `include_only_if_resolvable` instead of including it as a phantom dep.
 
+    /// (python_version, stdlib version table) for `dep_records_versioned`.
+    type VersionedSpecs<'a> = ((u8, u8), &'a [(&'a str, (u8, u8), Option<(u8, u8)>)]);
+
+    /// Like `dep_records`, but with an explicit target `python_version` and
+    /// stdlib version table: `versions` is
+    /// `(python_version, [(module, min_version, max_version)])`.
     fn dep_records_versioned(
         fs: &HashMapFs,
         file_id: &str,
         file_path: &str,
         imports: &[ImportRecord],
-        known: &[&str],
         mypy_path: &[&str],
         typeshed_path: &[&str],
-        python_version: (u8, u8),
-        stdlib_versions: &[(&str, (u8, u8), Option<(u8, u8)>)],
-    ) -> Vec<(i32, String, i32)> {
+        versions: VersionedSpecs<'_>,
+    ) -> Vec<DepRecord> {
         let myp: Vec<String> = mypy_path.iter().map(|s| s.to_string()).collect();
         let tsp: Vec<String> = typeshed_path.iter().map(|s| s.to_string()).collect();
         let flat = BTreeSet::<String>::new();
         let ns_map = BTreeMap::<String, String>::new();
-        let stdlib_map: HashMap<String, ((u8, u8), Option<(u8, u8)>)> = stdlib_versions
+        let (python_version, stdlib_versions) = versions;
+        let stdlib_map: StdlibVersions = stdlib_versions
             .iter()
             .map(|(n, lo, hi)| (n.to_string(), (*lo, *hi)))
             .collect();
-        let known_set: HashSet<String> = known.iter().map(|s| s.to_string()).collect();
+        let known_set: HashSet<String> = HashSet::new();
         let ic = TestRefCell::new(HashMap::new());
         let ns = TestRefCell::new(HashMap::new());
-        dep_records_with(
-            &*fs,
-            file_id,
-            file_path,
-            imports,
-            &known_set,
-            &ic,
-            &ns,
-            &[],
-            &myp,
-            &[],
-            &tsp,
-            &stdlib_map,
+        let caches = ResolverCaches {
+            initial_components: &ic,
+            ns_ancestors: &ns,
+        };
+        let cfg = ResolverConfig {
+            python_path: &[],
+            mypy_path: &myp,
+            package_path: &[],
+            typeshed_path: &tsp,
+            stdlib_versions: &stdlib_map,
             python_version,
-            &flat,
-            &ns_map,
-            false,
-            false,
-        )
-        .unwrap()
-        .0
+            stub_flat: &flat,
+            stub_namespace: &ns_map,
+            namespace_packages: false,
+            use_builtins_fixtures: false,
+        };
+        dep_records_with(fs, file_id, file_path, imports, &known_set, &caches, &cfg)
+            .unwrap()
+            .0
     }
 
     #[test]
@@ -1980,10 +1935,8 @@ mod tests {
             "/src/config_parser.py",
             &[r],
             &[],
-            &[],
             &["/typeshed/stdlib"],
-            (3, 10),
-            &[("tomllib", (3, 11), None)],
+            ((3, 10), &[("tomllib", (3, 11), None)]),
         );
         // Skipped: tomllib is outside the target version range → NOT_FOUND →
         // include_only_if_resolvable drops it.
@@ -2004,10 +1957,8 @@ mod tests {
             "/src/config_parser.py",
             &[r],
             &[],
-            &[],
             &["/typeshed/stdlib"],
-            (3, 11),
-            &[("tomllib", (3, 11), None)],
+            ((3, 11), &[("tomllib", (3, 11), None)]),
         );
         assert_eq!(recs, vec![(PRI_MED, "tomllib".to_string(), 1)]);
     }
@@ -2025,34 +1976,34 @@ mod tests {
         ids_with_follow: &[(&str, bool)],
         search: &[&str],
         ns: bool,
-    ) -> Vec<(u8, Option<String>, bool)> {
+    ) -> Vec<ResolveResult> {
         let myp: Vec<String> = search.iter().map(|s| s.to_string()).collect();
         let flat = BTreeSet::<String>::new();
         let ns_map = BTreeMap::<String, String>::new();
-        let stdlib_map = HashMap::<String, ((u8, u8), Option<(u8, u8)>)>::new();
+        let stdlib_map = StdlibVersions::new();
         let input: Vec<(String, bool)> = ids_with_follow
             .iter()
             .map(|(id, fu)| (id.to_string(), *fu))
             .collect();
         let ic = TestRefCell::new(HashMap::new());
         let ns_anc = TestRefCell::new(HashMap::new());
-        resolve_many_with(
-            &*fs,
-            &input,
-            &ic,
-            &ns_anc,
-            &[],
-            &myp,
-            &[],
-            &[],
-            &stdlib_map,
-            (3, 10),
-            &flat,
-            &ns_map,
-            ns,
-            false,
-        )
-        .unwrap()
+        let caches = ResolverCaches {
+            initial_components: &ic,
+            ns_ancestors: &ns_anc,
+        };
+        let cfg = ResolverConfig {
+            python_path: &[],
+            mypy_path: &myp,
+            package_path: &[],
+            typeshed_path: &[],
+            stdlib_versions: &stdlib_map,
+            python_version: (3, 10),
+            stub_flat: &flat,
+            stub_namespace: &ns_map,
+            namespace_packages: ns,
+            use_builtins_fixtures: false,
+        };
+        resolve_many_with(fs, &input, &caches, &cfg).unwrap()
     }
 
     #[test]
@@ -2110,30 +2061,30 @@ mod tests {
         let pkg: Vec<String> = vec!["/lib/pkg1".to_string()];
         let flat = BTreeSet::<String>::new();
         let ns_map = BTreeMap::<String, String>::new();
-        let stdlib_map = HashMap::<String, ((u8, u8), Option<(u8, u8)>)>::new();
+        let stdlib_map = StdlibVersions::new();
         let input: Vec<(String, bool)> = vec![
             ("untyped".to_string(), false),
             ("untyped".to_string(), true),
         ];
         let ic = TestRefCell::new(HashMap::new());
         let ns_anc = TestRefCell::new(HashMap::new());
-        let res = resolve_many_with(
-            &f,
-            &input,
-            &ic,
-            &ns_anc,
-            &[],
-            &[],
-            &pkg,
-            &[],
-            &stdlib_map,
-            (3, 10),
-            &flat,
-            &ns_map,
-            false,
-            false,
-        )
-        .unwrap();
+        let caches = ResolverCaches {
+            initial_components: &ic,
+            ns_ancestors: &ns_anc,
+        };
+        let cfg = ResolverConfig {
+            python_path: &[],
+            mypy_path: &[],
+            package_path: &pkg,
+            typeshed_path: &[],
+            stdlib_versions: &stdlib_map,
+            python_version: (3, 10),
+            stub_flat: &flat,
+            stub_namespace: &ns_map,
+            namespace_packages: false,
+            use_builtins_fixtures: false,
+        };
+        let res = resolve_many_with(&f, &input, &caches, &cfg).unwrap();
         assert_eq!(res.len(), 2);
         assert_eq!(res[0].0, REASON_FOUND_WITHOUT_TYPE_HINTS);
         assert_eq!(res[0].1, None);
