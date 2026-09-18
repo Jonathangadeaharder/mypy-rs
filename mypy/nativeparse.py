@@ -362,11 +362,15 @@ def parse_to_binary_ast(
             cache_version=AST_WIRE_VERSION,
             include_docstrings=options.include_docstrings,
             custom_typing_module=options.custom_typing_module,
+            # Parallel mode has no fastparse counterpart (upstream mypy also
+            # force-enables the native parser under --num-workers), so the
+            # native parser must emit ruff's own messages there.
+            cpython_error_messages=options.num_workers == 0,
         )
     except TypeError as err:
-        # A stale real wheel rejects include_docstrings before the wire guard
-        # can run; any other TypeError is a genuine bug and must propagate.
-        if "include_docstrings" not in str(err):
+        # A stale real wheel rejects newer kwargs before the wire guard can
+        # run; any other TypeError is a genuine bug and must propagate.
+        if "include_docstrings" not in str(err) and "cpython_error_messages" not in str(err):
             raise
         _raise_stale_extension(err)
     except AttributeError as err:

@@ -46,6 +46,7 @@ def parse(
     cache_version: int = 0,
     include_docstrings: bool = False,
     custom_typing_module: str | None = None,
+    cpython_error_messages: bool = True,
 ) -> tuple[bytes, list[ParseError], _TypeIgnores, bytes, _ASTData]: ...
 
 def write_cache_data(
