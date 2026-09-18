@@ -127,13 +127,12 @@ _native_subtype_resolver: Any = None
 def _set_native_subtype_active(active: bool) -> None:
     """Called by the build manager to enable/disable the Rust subtype path.
 
-    Also resets the batch accumulator: a stale buffer from a previous
-    build must never answer a later build (per-build context and resolver
+    Also resets the answer cache: a stale answer from a previous build
+    must never answer a later build (per-build context and resolver
     differ).
     """
-    global _native_subtype_active, _subtype_batch, _subtype_answers
+    global _native_subtype_active, _subtype_answers
     _native_subtype_active = active
-    _subtype_batch = []
     _subtype_answers = {}
 
 
@@ -387,34 +386,26 @@ def _restore_protocol_member_definition(left: Instance, member: str, decoded: Pr
     return _restore_definition(node_type, decoded)
 
 
-# Batch accumulator for the native `_is_subtype` path (measurement: ~171K
-# calls, ~85K identical-pair repeats). Pairs are buffered as
-# (left_bytes, right_bytes, ctx_key) and flushed in one
+# Persistent answer cache for the native `_is_subtype` path, keyed by
+# (left_bytes, right_bytes, ctx_key). Every pair Rust decided this build
+# lands here via the coded single-pair call, so an identical repeat hits
 
-# `rust_is_subtype_batch` call once the threshold is reached, or when a
-# new context key arrives (the batch call takes a single shared flag
-# set). `_set_native_subtype_active` resets the buffer at each build
-
-# start so stale pairs never answer a later build; only pairs that
-# passed the exact single-pair gate are buffered, so a batched answer is
-# semantically identical to the single-pair `rust_is_subtype` call.
-_SUBTYPE_BATCH_THRESHOLD: Final = 512
-_subtype_batch: list[tuple[bytes, bytes, tuple[bool, ...]]] = []
-# Persistent answer cache keyed by (left_bytes, right_bytes, ctx_key):
-# every pair Rust decided this build lands here, so an identical repeat
-# (the ~85K) hits the dict instead of a fresh single-pair Rust call.
+# the dict instead of a fresh Rust call. Code-3 answers (true via a
+# registry consult cut) are never persisted: they hold only for the
+# derivation that took the cut (#33).
 _subtype_answers: dict[tuple[bytes, bytes, tuple[bool, ...]], bool] = {}
 
 
 def _clear_subtype_batch() -> None:
-    """Drop buffered pairs (never flush-answer them) at build boundaries.
+    """Drop decided answers at build boundaries.
 
     Called alongside `_clear_subtype_decode_cache` on daemon recheck and
     manager reset: bytes serialized against a previous build's TypeInfo
-    graph must not be answered against a later build's resolver.
+    graph must not be answered against a later build's resolver. The
+    name predates the removal of the batch buffer (#33) and is kept for
+    its callers (build.py, wirefixup.py, the wire-traffic audit).
     """
-    global _subtype_batch, _subtype_answers
-    _subtype_batch = []
+    global _subtype_answers
     _subtype_answers = {}
 
 
@@ -423,78 +414,6 @@ def _strict_concatenate_flag(subtype_context: SubtypeContext) -> bool:
     if subtype_context.options is None:
         return False
     return bool(subtype_context.options.extra_checks or subtype_context.options.strict_concatenate)
-
-
-def _flush_subtype_batch() -> dict[tuple[bytes, bytes, tuple[bool, ...]], bool]:
-    """Flush buffered pairs through `rust_is_subtype_batch`.
-
-    Returns a dict mapping (left_bytes, right_bytes, ctx_key) -> decided
-    bool for the pairs Rust answered; pairs Rust deferred (-1) are left
-    out so the caller falls through to the single-pair path. Clears the
-    buffer even when the Rust call raises (the caller re-runs those pairs
-    singly). Also folds every decided answer into the build-global
-    `_subtype_answers` so an identical later pair under the same flags is
-    answered from the dict — except code 3 answers (true via a registry
-    consult cut): those hold only for the derivation that took the cut,
-    so they are returned to the caller but never persisted, mirroring
-    Python's assuming-matrix hit which is likewise not cached.
-    """
-    global _subtype_batch, _subtype_answers
-    if not _subtype_batch:
-        return {}
-    pairs = _subtype_batch
-    _subtype_batch = []
-    flat: list[bytes] = []
-    for left_b, right_b, _ in pairs:
-        flat.append(left_b)
-        flat.append(right_b)
-    # All buffered pairs share one ctx key (the accumulating caller only
-    # buffers under the key it holds), so take the first entry's flags.
-    _, _, ctx_key = pairs[0]
-    (
-        ignore_type_params,
-        ignore_declared_variance,
-        always_covariant,
-        ignore_promotions,
-        proper_subtype,
-        strict_optional,
-        ignore_pos_arg_names,
-        strict_concatenate,
-        infer_unions,
-    ) = ctx_key
-    try:
-        answers = _type_kernel.rust_is_subtype_batch(
-            flat,
-            ignore_type_params,
-            ignore_declared_variance,
-            always_covariant,
-            ignore_promotions,
-            proper_subtype,
-            strict_optional,
-            ignore_pos_arg_names,
-            strict_concatenate,
-            _native_subtype_resolver,
-            infer_unions,
-        )
-    except (AssertionError, NotImplementedError):
-        # Unserializable variant reached the Rust edge; nothing was
-        # answered, fall through per-pair.
-        return {}
-    result: dict[tuple[bytes, bytes, tuple[bool, ...]], bool] = {}
-    cacheable: dict[tuple[bytes, bytes, tuple[bool, ...]], bool] = {}
-    for (left_b, right_b, k), answer in zip(pairs, answers):
-        if answer == 1:
-            result[(left_b, right_b, k)] = True
-            cacheable[(left_b, right_b, k)] = True
-        elif answer == 0:
-            result[(left_b, right_b, k)] = False
-            cacheable[(left_b, right_b, k)] = False
-        elif answer == 3:
-            # True via a consult cut: valid only for this derivation,
-            # returned to the caller but never persisted.
-            result[(left_b, right_b, k)] = True
-    _subtype_answers.update(cacheable)
-    return result
 
 
 # Flags for detected protocol members
@@ -863,11 +782,11 @@ def _is_subtype(
     # `left`/`right` are proper types and the AnyType/UnionType/
     # TypeVarType-with-values right short-circuits have fired, matching
 
-    # the Rust `is_subtype` contract. Rust returns `None` for any case
-    # it does not handle (generics needing `expand_type_by_instance`,
-    # protocols, tuples, callables, etc.); we then fall through to
+    # the Rust `is_subtype` contract. The coded entry returns -1 for any
+    # case it does not handle (generics needing `expand_type_by_instance`,
 
-    # `SubtypeVisitor`. Mirrors `erasetype.py:80-86`.
+    # undecidable protocol members, tuples, callables, etc.); we then
+    # fall through to `SubtypeVisitor`. Mirrors `erasetype.py:80-86`.
     if (
         _HAS_TYPE_KERNEL
         and _native_subtype_active
@@ -883,15 +802,11 @@ def _is_subtype(
         except (AssertionError, NotImplementedError):
             left_bytes = None
             right_bytes = None
+        ctx_key: tuple[bool, ...] | None = None
         if left_bytes is not None and right_bytes is not None:
-            # Batch-accumulator path: queue the pair and flush when the
-            # threshold is reached or the flag set changes. Each pair is
-            # answered by `rust_is_subtype_batch` with exactly the flags
-
-            # the single-pair call below would use; the batched answer is
-            # identical to the single-pair answer. A also-buffered
-            # identical pair is answered from the same dict (dedup).
-            ctx_key: tuple[bool, ...] = (
+            # Same key the single-pair call's flags resolve to, so a
+            # cached answer is always the answer this call would get.
+            ctx_key = (
                 subtype_context.ignore_type_params,
                 subtype_context.ignore_declared_variance,
                 subtype_context.always_covariant,
@@ -902,43 +817,20 @@ def _is_subtype(
                 _strict_concatenate_flag(subtype_context),
                 # Ambient flag consumed by the kernel's wave-37 unify port
                 # (#1426): two pairs differing only here must not share a
-                # batched answer.
+                # cached answer.
                 type_state.infer_unions,
             )
-            if _subtype_batch:
-                prev_flags = _subtype_batch[0][2]
-                if prev_flags != ctx_key:
-                    # The buffered pairs use a different flag set than this
-                    # call; flush them first so this pair's buffer slots
-                    # start fresh. The batch call takes one shared flag
-
-                    # set, so pairs can only be batched under one key;
-                    # the just-flushed dict holds other-flag answers only.
-                    _flush_subtype_batch()
             if (left_bytes, right_bytes, ctx_key) in _subtype_answers:
                 # Decided this build under this exact flag set; identical
                 # bytes under identical flags give the identical answer
                 # (the cache is reset at build boundaries).
                 return _subtype_answers[(left_bytes, right_bytes, ctx_key)]
-            _subtype_batch.append((left_bytes, right_bytes, ctx_key))
-            if len(_subtype_batch) < _SUBTYPE_BATCH_THRESHOLD:
-                # Not flushed yet: the current pair's answer is not known;
-                # fall through to the single-pair path for THIS call so the
-                # caller still gets a bool.
-
-                # The buffered duplicate is what the next identical call
-                # will look up.
-                pass
-            else:
-                answers = _flush_subtype_batch()
-                if (left_bytes, right_bytes, ctx_key) in answers:
-                    return answers[(left_bytes, right_bytes, ctx_key)]
-        # Verify the still-serializable assertions and run the single-pair
-        # path when the batch path did not decide (deferred pair, or the
-        # buffer did not include this pair).
+        # Single-pair native path through the coded entry: the i8 code
+        # (1/0/3/-1, matching `rust_is_subtype_batch`) lets the answer be
+        # persisted here directly, with no buffered re-evaluation (#33).
         try:
-            result = _type_kernel.rust_is_subtype(
-                # Reuse the batch attempt's wire bytes when it produced
+            code = _type_kernel.rust_is_subtype_coded(
+                # Reuse the cache attempt's wire bytes when it produced
                 # them; re-serialize only if that attempt declined.
                 left_bytes if left_bytes is not None else _serialize_type(left),
                 right_bytes if right_bytes is not None else _serialize_type(right),
@@ -949,23 +841,29 @@ def _is_subtype(
                 proper_subtype,
                 state.strict_optional,
                 subtype_context.ignore_pos_arg_names,
-                (
-                    (
-                        subtype_context.options.extra_checks
-                        or subtype_context.options.strict_concatenate
-                    )
-                    if subtype_context.options
-                    else False
-                ),
+                _strict_concatenate_flag(subtype_context),
                 _native_subtype_resolver,
                 type_state.infer_unions,
             )
         except (AssertionError, NotImplementedError):
             # Type tree contains an unserializable variant (e.g.
             # TypeGuardedType nested in a Union). Defer to Python.
-            result = None
-        if result is not None:
-            return result
+            code = -1
+        if code >= 0:
+            # ctx_key is built only when both serializations succeeded, so
+            # this check both excludes the failed-serialization case (nothing
+            # to key on) and narrows the bytes for the dict write.
+            if (
+                code != 3
+                and ctx_key is not None
+                and left_bytes is not None
+                and right_bytes is not None
+            ):
+                # A code-3 answer (true via a consult cut) holds only for
+                # the derivation that took the cut and is never persisted
+                # (same exclusion the retired batch flush applied).
+                _subtype_answers[(left_bytes, right_bytes, ctx_key)] = code == 1
+            return code != 0
     return left.accept(SubtypeVisitor(orig_right, subtype_context, proper_subtype))
 
 

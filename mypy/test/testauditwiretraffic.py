@@ -714,10 +714,18 @@ class UnconsumedCauseSplitSuite(unittest.TestCase):
         # A buffer this probe cannot read must say so: printing "0 blobs" for
         # it would be a structural zero (#1827, AGENTS.md).
         self.seed_pending("mypy/subtypes.py:1:f", 1)
-        absent = types.SimpleNamespace()
-        with mock.patch.dict(sys.modules, {"mypy.subtypes": absent}):
+        # mypy.subtypes not imported: the share is unmeasured, not zero.
+        with mock.patch.dict(sys.modules, {"mypy.subtypes": None}):
             self.assertIsNone(self.audit._buffered_blob_ids())
             self.assertIn("NOT READABLE", self.report_text())
+        # An imported module without the attribute is the deleted-buffer
+        # case (#33): the report must say the buffer is gone, not that
+        # the share is unmeasured or zero.
+        deleted = types.SimpleNamespace()
+        with mock.patch.dict(sys.modules, {"mypy.subtypes": deleted}):
+            self.assertIsNone(self.audit._buffered_blob_ids())
+            self.assertIn("deleted (#33)", self.report_text())
+            self.assertNotIn("NOT READABLE", self.report_text())
         # A readable but empty buffer is a real zero, and stays a number.
         empty = types.SimpleNamespace(_subtype_batch=[])
         with mock.patch.dict(sys.modules, {"mypy.subtypes": empty}):

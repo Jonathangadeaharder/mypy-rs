@@ -15,7 +15,9 @@ time, so the proxy is seen by both.
 
 `rust_is_subtype_batch` returns a per-pair decision list (1/0 answered,
 -1 deferred); its slots are unwrapped so each decision counts as native
-or fallback, matching how the direct seams are counted per call. This
+or fallback, matching how the direct seams are counted per call. The
+single-pair `rust_is_subtype_coded` (#33) returns one code per call
+(1/0/3 answered, -1 deferred) and is classified the same way. This
 keeps the metric per-unit-of-work rather than per-seam-call.
 
 Usage:
@@ -49,6 +51,11 @@ CLASSIFIER_NEGATIVE_SEAMS: tuple[str, ...] = (
 # Batch seam returning a per-pair list: 1/0 = native, -1 = deferral.
 # Count per-decision, not per-call, so deferred slots stay visible.
 _BATCH_SLOT_SEAMS: frozenset[str] = frozenset({"rust_is_subtype_batch"})
+
+# Coded single-pair seam (#33): 1/0/3 = native decision (3 = consult
+# cut, still decided), -1 = deferral. Never None, so without this rule
+# every deferral would count as native.
+_CODED_DECISION_SEAMS: frozenset[str] = frozenset({"rust_is_subtype_coded"})
 
 # Unit-handled seams: Rust returns None (PyOk unit) as the HANDLED result,
 # not a deferral (semanal_classprop full ports; shim returns on success).
@@ -88,6 +95,12 @@ class CountingProxy:
                         self.fallback += 1
                     else:
                         self.native += 1
+            else:
+                self.native += 1
+        elif self.name in _CODED_DECISION_SEAMS:
+            # Per-decision single-pair code: 1/0/3 native, -1 deferral.
+            if result == -1:
+                self.fallback += 1
             else:
                 self.native += 1
         elif result is None and self.name not in CLASSIFIER_NEGATIVE_SEAMS:
