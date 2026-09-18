@@ -300,6 +300,17 @@ pub(crate) fn rust_classify_recalculate_metaclass(defn: &PyAny) -> PyResult<Opti
     ))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // semanal_metaclass: get_declared_metaclass gate chain +
+    // recalculate_metaclass decision heads (issue #1037). Rust owns the
+    // tags; fails, fill_typevars, and metaclass writes stay in Python.
+    m.add_function(wrap_pyfunction!(rust_classify_declared_metaclass, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_classify_recalculate_metaclass, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,15 +649,4 @@ mod tests {
             }
         }
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // semanal_metaclass: get_declared_metaclass gate chain +
-    // recalculate_metaclass decision heads (issue #1037). Rust owns the
-    // tags; fails, fill_typevars, and metaclass writes stay in Python.
-    m.add_function(wrap_pyfunction!(rust_classify_declared_metaclass, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_classify_recalculate_metaclass, m)?)?;
-    Ok(())
 }

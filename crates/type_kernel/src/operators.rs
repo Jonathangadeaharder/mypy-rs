@@ -438,6 +438,12 @@ pub(crate) fn is_operator_method_name(short_name: &str) -> bool {
     matches!(short_name, "__pos__" | "__neg__" | "__invert__")
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_operator_tables, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,10 +483,4 @@ mod tests {
         assert_eq!(neg_op("<"), Some(">="));
         assert_eq!(neg_op("+"), None);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_operator_tables, m)?)?;
-    Ok(())
 }

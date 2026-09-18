@@ -1176,6 +1176,14 @@ pub(crate) fn is_callable_compatible(
     )
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_callables_compatible, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_are_parameters_compatible, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1425,12 +1433,4 @@ mod tests {
         let got = callable_corresponding_argument(&arg_types, &arg_kinds, &arg_names, &model);
         assert!(matches!(got, Err(Defer)));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_callables_compatible, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_are_parameters_compatible, m)?)?;
-    Ok(())
 }

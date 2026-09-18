@@ -520,6 +520,13 @@ pub(crate) fn rust_arg_approximate_similarity(
     approx(&actual, &formal, strict_optional, resolver.resolver())
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #432: overload-ambiguity approximate-similarity.
+    m.add_function(wrap_pyfunction!(rust_arg_approximate_similarity, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,11 +600,4 @@ mod tests {
         let res = TypeResolver::new();
         assert!(erase_type(&Type::Overloaded { items: vec![] }, true, &res).is_none());
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #432: overload-ambiguity approximate-similarity.
-    m.add_function(wrap_pyfunction!(rust_arg_approximate_similarity, m)?)?;
-    Ok(())
 }

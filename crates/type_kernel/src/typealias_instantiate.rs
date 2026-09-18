@@ -393,6 +393,15 @@ fn sequence_len(obj: &PyAny) -> Result<usize, DeferError> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // instantiate_type_alias: normalize a TypeAlias node + type args. Any
+    // path that would emit an error or call set_any_tvars defers (None); the
+    // success paths return a branch tag + wire blobs for the shim.
+    m.add_function(wrap_pyfunction!(rust_instantiate_type_alias, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,13 +448,4 @@ mod tests {
             is_recursive: false
         })));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // instantiate_type_alias: normalize a TypeAlias node + type args. Any
-    // path that would emit an error or call set_any_tvars defers (None); the
-    // success paths return a branch tag + wire blobs for the shim.
-    m.add_function(wrap_pyfunction!(rust_instantiate_type_alias, m)?)?;
-    Ok(())
 }

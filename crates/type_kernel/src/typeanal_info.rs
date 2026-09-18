@@ -96,6 +96,15 @@ pub(crate) fn rust_classify_type_with_info(
     Ok(Some(TAG_INSTANCE))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // analyze_type_with_type_info: decision front (tuple-with-args,
+    // named-tuple/TypedDict tails, NoneType, plain Instance, ...). Rust
+    // returns a branch tag; Python applies effects, other tags re-run.
+    m.add_function(wrap_pyfunction!(rust_classify_type_with_info, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,13 +212,4 @@ mod tests {
             Some(TAG_INSTANCE)
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // analyze_type_with_type_info: decision front (tuple-with-args,
-    // named-tuple/TypedDict tails, NoneType, plain Instance, ...). Rust
-    // returns a branch tag; Python applies effects, other tags re-run.
-    m.add_function(wrap_pyfunction!(rust_classify_type_with_info, m)?)?;
-    Ok(())
 }

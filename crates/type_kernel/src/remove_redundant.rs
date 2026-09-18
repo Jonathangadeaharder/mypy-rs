@@ -457,6 +457,13 @@ pub(crate) fn rust_remove_redundant_union_items(
     encode_type_list(&current).map(|bytes| (bytes, out_prov, out_widen))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // typeops._remove_redundant_union_items (two-pass union dedup).
+    m.add_function(wrap_pyfunction!(rust_remove_redundant_union_items, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,11 +736,4 @@ mod tests {
         ));
         assert_eq!(prov, vec![1]);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // typeops._remove_redundant_union_items (two-pass union dedup).
-    m.add_function(wrap_pyfunction!(rust_remove_redundant_union_items, m)?)?;
-    Ok(())
 }

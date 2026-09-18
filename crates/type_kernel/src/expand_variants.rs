@@ -170,6 +170,12 @@ fn expand_variants(c: &Type, strict_optional: bool) -> Option<Vec<Type>> {
     Some(variants)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_expand_callable_variants, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,10 +336,4 @@ mod tests {
             _ => unreachable!(),
         }
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_expand_callable_variants, m)?)?;
-    Ok(())
 }

@@ -295,6 +295,12 @@ fn decode_type(bytes: &[u8]) -> Option<Type> {
     wire::read_type(&mut buf, None).ok()
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_lookup_qualified, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,10 +424,4 @@ mod tests {
             WalkOutcome::NotFound
         ));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_lookup_qualified, m)?)?;
-    Ok(())
 }

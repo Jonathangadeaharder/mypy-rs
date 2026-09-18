@@ -512,6 +512,12 @@ pub(crate) fn rust_dangerous_comparison(
 // Unit tests for the alias-aware `remove_optional` port
 // ---------------------------------------------------------------------------
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_dangerous_comparison, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,10 +625,4 @@ mod tests {
         // the item itself), so the bare alias node is the result.
         assert_eq!(out, alias);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_dangerous_comparison, m)?)?;
-    Ok(())
 }

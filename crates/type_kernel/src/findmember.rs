@@ -138,6 +138,15 @@ pub(crate) fn rust_classify_find_member(
     Ok(find_member_prelude_inner(name, itype, is_operator, class_obj).ok())
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #1074: find_member prelude live-object port. Rust classifies
+    // the miss path into PROCEED / ANY_SPECIAL_FORM / EXTRA_ATTR /
+    // NOT_FOUND; Python applies the verdicts, unreadable facts defer.
+    m.add_function(wrap_pyfunction!(rust_classify_find_member, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod findmember_tests {
     use super::{
@@ -218,13 +227,4 @@ mod findmember_tests {
             TAG_ANY_SPECIAL_FORM
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #1074: find_member prelude live-object port. Rust classifies
-    // the miss path into PROCEED / ANY_SPECIAL_FORM / EXTRA_ATTR /
-    // NOT_FOUND; Python applies the verdicts, unreadable facts defer.
-    m.add_function(wrap_pyfunction!(rust_classify_find_member, m)?)?;
-    Ok(())
 }

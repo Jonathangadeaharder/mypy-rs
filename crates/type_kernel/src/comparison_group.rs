@@ -197,6 +197,13 @@ pub(crate) fn rust_group_comparison_operands(
     simplified_operator_list
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // #566: checker.group_comparison_operands (pure-data union-find port).
+    m.add_function(wrap_pyfunction!(rust_group_comparison_operands, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,11 +290,4 @@ mod tests {
             ]
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // #566: checker.group_comparison_operands (pure-data union-find port).
-    m.add_function(wrap_pyfunction!(rust_group_comparison_operands, m)?)?;
-    Ok(())
 }

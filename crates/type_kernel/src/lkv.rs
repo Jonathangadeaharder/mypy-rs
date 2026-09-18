@@ -381,6 +381,12 @@ pub(crate) fn remove_instance_last_known_values(py: Python<'_>, typ: &PyAny) -> 
     lkv_translate_one(py, typ, &refs)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(remove_instance_last_known_values, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,10 +491,4 @@ expected = str(py_lkv(typ))
             assert_eq!(result_str, expected);
         });
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(remove_instance_last_known_values, m)?)?;
-    Ok(())
 }

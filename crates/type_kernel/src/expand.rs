@@ -139,6 +139,12 @@ pub fn rust_expand_actual_type(
     }
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_expand_actual_type, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,10 +387,4 @@ mod tests {
         let r = rust_expand_actual_type(vec![0xFF; 16], ARG_STAR, None, 0, false, 0, vec![]);
         assert_eq!(r, None);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_expand_actual_type, m)?)?;
-    Ok(())
 }

@@ -268,6 +268,12 @@ pub(crate) fn rust_check_operator(
     ))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_check_operator, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,10 +555,4 @@ mod tests {
         let rb = make_instance("b.B", vec![]);
         assert_eq!(plan("__add__", &la, &rb, &r), Some(2));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_check_operator, m)?)?;
-    Ok(())
 }

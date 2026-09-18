@@ -121,6 +121,15 @@ pub(crate) fn rust_classify_literal_param(
     Ok(TAG_INVALID)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // analyze_literal_param: 9-way Literal-param dispatch head. Rust
+    // returns a branch tag from scalar facts; Python applies the side
+    // effects (LiteralType build, errors, recursion, union merge).
+    m.add_function(wrap_pyfunction!(rust_classify_literal_param, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,13 +375,4 @@ mod tests {
         };
         assert_eq!(classify(&f), TAG_STR_LITERAL);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // analyze_literal_param: 9-way Literal-param dispatch head. Rust
-    // returns a branch tag from scalar facts; Python applies the side
-    // effects (LiteralType build, errors, recursion, union merge).
-    m.add_function(wrap_pyfunction!(rust_classify_literal_param, m)?)?;
-    Ok(())
 }

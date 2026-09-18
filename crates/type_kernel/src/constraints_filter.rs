@@ -488,6 +488,21 @@ pub(crate) fn skip_reverse_union_kernel(
     skip_reverse_union_inner(constraints)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #474: pure constraint-list filtering functions.
+    m.add_function(wrap_pyfunction!(rust_skip_reverse_union_constraints, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_filter_imprecise_kinds, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_is_type_type, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_unwrap_type_type, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_infer_directed_arg_constraints, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -991,19 +1006,4 @@ mod tests {
         assert_eq!(i0, 0);
         assert_eq!(i1, 0);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #474: pure constraint-list filtering functions.
-    m.add_function(wrap_pyfunction!(rust_skip_reverse_union_constraints, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_filter_imprecise_kinds, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_is_type_type, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_unwrap_type_type, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_infer_directed_arg_constraints, m)?)?;
-    Ok(())
 }

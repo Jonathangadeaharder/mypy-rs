@@ -170,6 +170,14 @@ pub fn rust_pretty_seq(args: Vec<String>, conjunction: &str) -> String {
     format!("{}{}{}", init.join(", "), last_sep, last[0])
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_best_matches, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_pretty_seq, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -280,12 +288,4 @@ mod tests {
             "\"a\", \"b\", \"c\", and \"d\""
         );
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_best_matches, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_pretty_seq, m)?)?;
-    Ok(())
 }

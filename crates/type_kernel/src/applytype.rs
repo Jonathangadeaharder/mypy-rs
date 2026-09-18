@@ -784,6 +784,16 @@ fn decode_optional_type_list(bytes: &[u8]) -> Option<Vec<Option<Type>>> {
     Some(result)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_apply_generic_arguments, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_has_no_typevars, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_get_target_type, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1469,14 +1479,4 @@ mod tests {
         let got = result.expect("should decide").expect("should not skip");
         assert!(matches!(got, Type::UninhabitedType { ambiguous: false }));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_apply_generic_arguments, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_has_no_typevars, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_get_target_type, m)?)?;
-    Ok(())
 }

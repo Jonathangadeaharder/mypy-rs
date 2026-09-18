@@ -1353,6 +1353,14 @@ pub fn rust_find_possibly_undefined(
     Ok(visitor.result)
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #537: partially-defined variable detection
+    // (port of mypy.partially_defined.PossiblyUndefinedVariableVisitor).
+    m.add_function(wrap_pyfunction!(rust_find_possibly_undefined, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1505,12 +1513,4 @@ node = MypyFile([
             assert!(result.is_empty(), "got {:?}", result);
         });
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #537: partially-defined variable detection
-    // (port of mypy.partially_defined.PossiblyUndefinedVariableVisitor).
-    m.add_function(wrap_pyfunction!(rust_find_possibly_undefined, m)?)?;
-    Ok(())
 }

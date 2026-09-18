@@ -1692,6 +1692,20 @@ pub(crate) fn read_type_to_str_with_native_resolver(
     Ok(render_type(py, &typ, Some(dict)))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(build_resolver, m)?)?;
+
+    m.add_function(wrap_pyfunction!(read_type_to_str_with_resolver, m)?)?;
+
+    m.add_function(wrap_pyfunction!(build_native_resolver, m)?)?;
+
+    m.add_function(wrap_pyfunction!(read_type_to_str_with_native_resolver, m)?)?;
+
+    m.add_class::<NativeTypeResolver>()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2091,18 +2105,4 @@ mod tests {
         assert!(r.get_module("pkg").is_some());
         assert!(r.get_module("other").is_none());
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(build_resolver, m)?)?;
-
-    m.add_function(wrap_pyfunction!(read_type_to_str_with_resolver, m)?)?;
-
-    m.add_function(wrap_pyfunction!(build_native_resolver, m)?)?;
-
-    m.add_function(wrap_pyfunction!(read_type_to_str_with_native_resolver, m)?)?;
-
-    m.add_class::<NativeTypeResolver>()?;
-    Ok(())
 }

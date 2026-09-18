@@ -933,6 +933,16 @@ fn encode_type(typ: &Type) -> Option<Vec<u8>> {
     Some(wbuf.into_bytes())
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_freshen_all_functions_type_vars, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_freshen_function_type_vars, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_match_generic_callables, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1332,14 +1342,4 @@ mod tests {
         assert!(freshen_type(&alias, &mut next_raw_id, &mut changed, true).is_none());
         assert_eq!(next_raw_id, 7);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_freshen_all_functions_type_vars, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_freshen_function_type_vars, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_match_generic_callables, m)?)?;
-    Ok(())
 }

@@ -3570,6 +3570,20 @@ pub(crate) fn infer_directed_arg_constraints_native(
     )
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_infer_constraints, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_infer_constraints_full, m)?)?;
+
+    // Issue #490: callable-arguments constraint inference.
+    m.add_function(wrap_pyfunction!(
+        rust_infer_callable_arguments_constraints,
+        m
+    )?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5667,18 +5681,4 @@ mod tests {
         let res = visit_instance_native(&template, &actual, SUBTYPE_OF, &resolver, &aliases, true);
         assert_eq!(res, Some(vec![]));
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_infer_constraints, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_infer_constraints_full, m)?)?;
-
-    // Issue #490: callable-arguments constraint inference.
-    m.add_function(wrap_pyfunction!(
-        rust_infer_callable_arguments_constraints,
-        m
-    )?)?;
-    Ok(())
 }

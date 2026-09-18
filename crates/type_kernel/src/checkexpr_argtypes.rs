@@ -350,6 +350,12 @@ fn encode_plan(
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(rust_check_argument_types_plan, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,10 +664,4 @@ mod tests {
         assert_eq!(at.len(), 2);
         assert_eq!(ak, vec![ARG_POS, ARG_POS]);
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(rust_check_argument_types_plan, m)?)?;
-    Ok(())
 }

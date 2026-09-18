@@ -1127,6 +1127,52 @@ pub(crate) fn rust_symtable_mirror_meta_entry_count() -> usize {
     meta_entry_count()
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Phase G3.0a (#1581): namespace dual-write capture shadow. One
+    // record per (owner table handle, name) with generation + seq;
+    // capture-only, same identity base as the type mirror.
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_put, m)?)?;
+
+    // G3.2b (#1773): load-time seed for C-level-populated namespaces.
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_seed, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_delete, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_refresh_flags, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_lookup, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_entry_count, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_total_entry_count, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_names, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_generation, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_reset, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_handle_of, m)?)?;
+
+    // G3.1 (#1670): read-flip evidence counters for the mirror gate.
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_flip_counts, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_flip_counts_reset, m)?)?;
+
+    // Phase G3.0c (#1581): TypeInfo meta-field capture.
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_put, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_put_field, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_lookup, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_delete, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_entry_count, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod symtable_mirror_tests {
     use super::*;
@@ -1838,50 +1884,4 @@ table = R({'a': object(), 'b': sym})
             assert_eq!(flip_counts().put_entries, 1);
         });
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Phase G3.0a (#1581): namespace dual-write capture shadow. One
-    // record per (owner table handle, name) with generation + seq;
-    // capture-only, same identity base as the type mirror.
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_put, m)?)?;
-
-    // G3.2b (#1773): load-time seed for C-level-populated namespaces.
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_seed, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_delete, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_refresh_flags, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_lookup, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_entry_count, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_total_entry_count, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_names, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_generation, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_reset, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_handle_of, m)?)?;
-
-    // G3.1 (#1670): read-flip evidence counters for the mirror gate.
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_flip_counts, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_flip_counts_reset, m)?)?;
-
-    // Phase G3.0c (#1581): TypeInfo meta-field capture.
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_put, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_put_field, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_lookup, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_delete, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_symtable_mirror_meta_entry_count, m)?)?;
-    Ok(())
 }

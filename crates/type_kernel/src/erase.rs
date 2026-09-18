@@ -355,6 +355,14 @@ fn shallow_erase_union(py: Python<'_>, obj: &PyAny, refs: &TypeRefs<'_>) -> PyRe
     Ok(result.into())
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(erase_type, m)?)?;
+
+    m.add_function(wrap_pyfunction!(shallow_erase_type_for_equality, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,12 +476,4 @@ expected = str(py_erase(typ))
             assert_eq!(result_str, expected);
         });
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(erase_type, m)?)?;
-
-    m.add_function(wrap_pyfunction!(shallow_erase_type_for_equality, m)?)?;
-    Ok(())
 }

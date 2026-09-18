@@ -342,6 +342,15 @@ pub(crate) fn rust_or_conditional_maps(
     Ok(Some((out_keys, out_vals)))
 }
 
+/// Register this module's Python-facing seam surface (#1677).
+pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
+    // Issue #488: conditional type-map algebra.
+    m.add_function(wrap_pyfunction!(rust_and_conditional_maps, m)?)?;
+
+    m.add_function(wrap_pyfunction!(rust_or_conditional_maps, m)?)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,13 +434,4 @@ mod tests {
             other => panic!("expected AnyType, got {other:?}"),
         }
     }
-}
-
-/// Register this module's Python-facing seam surface (#1677).
-pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
-    // Issue #488: conditional type-map algebra.
-    m.add_function(wrap_pyfunction!(rust_and_conditional_maps, m)?)?;
-
-    m.add_function(wrap_pyfunction!(rust_or_conditional_maps, m)?)?;
-    Ok(())
 }
