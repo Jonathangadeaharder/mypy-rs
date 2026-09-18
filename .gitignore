@@ -64,4 +64,7 @@ test_capi
 # Rust build output
 /target/
 /mypyc/lib-rt/librt/
-type_kernel.cpython-313-darwin.so
+# root extension artifacts shadow scratch PYTHONPATH builds when cwd is the
+# repo root (sys.path[0]); keep them out of the tree (#1789, #37).
+/*.cpython-*.so
+/*.dylib
