@@ -1032,6 +1032,15 @@ class ShareReportDisplaySuite(unittest.TestCase):
         self.assertIn("  rust_is_subtype_batch: 1 calls, 1 fallbacks (50.00% defer)", defer_rows)
         self.assertIn("  rust_is_subtype_batch: 1 calls (50.00% native)", all_rows)
 
+    def test_zero_decision_batch_seam_does_not_crash_the_display(self) -> None:
+        # #46: a batch seam that answers zero pairs (empty list) has
+        # calls > 0 but zero decisions, so dividing by the decision total
+        # raised ZeroDivisionError and lost the whole report mid-print.
+        proxies = {"rust_is_subtype_batch": self.seeded("rust_is_subtype_batch", 1, 0, 0)}
+        defer_rows, all_rows = self.sections(self.share.per_seam_report(proxies))
+        self.assertEqual(defer_rows, [])
+        self.assertIn("  rust_is_subtype_batch: 1 calls (no decisions)", all_rows)
+
     def test_main_header_shares_divide_by_decisions_not_calls(self) -> None:
         # Same mismatch in main(): with calls (1) != decisions (2) the
         # per-call denominator printed 100% native and a zero fallback.
