@@ -81,7 +81,32 @@ RAISE_SEAMS = frozenset(
 )
 
 # Seams consumed directly with no exception guard: no defer mode exists.
-REFUSED_SEAMS = frozenset({"rust_quote_type_string"})
+# Audited via rg over mypy/ + mypyc/ for `return ...rust_x(...)` sites whose
+# only guard is a gate flag; extend only after a call-site audit.
+REFUSED_SEAMS = frozenset(
+    {
+        "rust_quote_type_string",
+        "rust_variance_string",
+        "rust_capitalize",
+        "rust_extract_type",
+        "rust_strip_quotes",
+        "rust_format_item_name_list",
+        "rust_wrong_type_arg_count",
+        "rust_pretty_seq",
+        "rust_best_matches",
+        "rust_format_key_list",
+        "rust_has_underscore_prefix",
+        "rust_compute_search_paths",
+        "rust_default_lib_path",
+        "rust_get_search_dirs",
+        "rust_is_init_file",
+        "rust_load_stdlib_py_versions",
+        "rust_matches_exclude",
+        "rust_mypy_path",
+        "rust_parse_version",
+        "rust_typeshed_py_version",
+    }
+)
 
 # Data/test subtrees never hold production seam aliases; importing them is
 # pure cost in the probe.
@@ -90,7 +115,7 @@ SKIP_PREFIXES = ("mypy.test", "mypy.typeshed", "mypyc.test")
 
 def _is_editable_finder(finder: object) -> bool:
     cls = finder if isinstance(finder, type) else type(finder)
-    return "editable" in cls.__module__.lower() or "editable" in cls.__name__.lower()
+    return "editable" in (cls.__module__ or "").lower() or "editable" in cls.__name__.lower()
 
 
 def _strip_foreign_import_channels() -> None:
@@ -108,7 +133,7 @@ def _host_modules(skipped: list[str]) -> Iterator[ModuleType]:
                 continue
             try:
                 yield importlib.import_module(info.name)
-            except ImportError:
+            except Exception:
                 skipped.append(info.name)
 
 
