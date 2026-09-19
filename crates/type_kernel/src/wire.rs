@@ -3570,7 +3570,8 @@ pub(crate) struct WirePhaseCounters {
     pub(crate) encode_nodes: u64,
     /// `Type::clone` invocations (nested clones included).
     pub(crate) clone_nodes: u64,
-    /// Bytes hashed on decode-side structure build (`ExtraAttrs` inserts).
+    /// Bytes hashed on decode-side `ExtraAttrs` inserts only; the
+    /// `read_typeddict_type` key-set builds are out of scope.
     pub(crate) hash_bytes: u64,
     /// Hash operations behind `hash_bytes`.
     pub(crate) hash_ops: u64,
