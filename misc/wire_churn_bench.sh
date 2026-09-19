@@ -27,6 +27,8 @@ echo "binary: $BIN  iters: $ITERS  reps: $REPS"
 OUT=/private/tmp/wire-churn/bench_matrix.txt
 mkdir -p "$(dirname "$OUT")"
 : > "$OUT"
+LOG=$(mktemp)
+trap 'rm -f "$LOG"' EXIT
 
 # Process-startup noise is ~+/-20M instructions, so every op runs REPS
 # times and all derived costs use the per-op median.
@@ -35,11 +37,24 @@ FIXTURES="any instance callable"
 for rep in $(seq 1 "$REPS"); do
     for fixture in $FIXTURES; do
         for op in $OPS; do
-            instr=$(WIRE_BENCH="$op-$fixture" WIRE_BENCH_ITERS="$ITERS" \
-                /usr/bin/time -l "$BIN" --ignored --exact wire::tests::bench_wire_phase_op 2>&1 \
-                | awk '/instructions retired/ {print $1}')
+            if ! WIRE_BENCH="$op-$fixture" WIRE_BENCH_ITERS="$ITERS" \
+                /usr/bin/time -l "$BIN" --ignored --exact wire::tests::bench_wire_phase_op \
+                >"$LOG" 2>&1; then
+                echo "bench run failed for $op-$fixture (rep $rep):" >&2
+                cat "$LOG" >&2
+                exit 1
+            fi
+            # A stale binary whose filter matches no test still exits 0 and
+            # would dress process-startup noise up as per-node costs.
+            if ! grep -q 'test result: ok\. 1 passed' "$LOG"; then
+                echo "bench harness did not run $op-$fixture (rep $rep):" >&2
+                cat "$LOG" >&2
+                exit 1
+            fi
+            instr=$(awk '/instructions retired/ {print $1}' "$LOG")
             if [[ -z "$instr" ]]; then
-                echo "no instruction count for $op-$fixture (rep $rep)" >&2
+                echo "no instruction count for $op-$fixture (rep $rep);" \
+                    "this bench needs macOS /usr/bin/time -l" >&2
                 exit 1
             fi
             printf '%s %s %s %s\n' "$op" "$fixture" "$instr" "$rep" | tee -a "$OUT"
@@ -48,7 +63,7 @@ for rep in $(seq 1 "$REPS"); do
 done
 
 echo "--- per-node costs from per-op medians (instructions) ---"
-awk -v iters="$ITERS" -v reps="$REPS" '
+awk -v iters="$ITERS" -v reps="$REPS" -v fixtures="$FIXTURES" '
     { v[$1 "-" $2, $4] = $3 }
     function median(key,    i, j, t, m, a) {
         for (i = 1; i <= reps; i++) a[i] = v[key, i]
@@ -61,10 +76,14 @@ awk -v iters="$ITERS" -v reps="$REPS" '
         return (reps % 2) ? a[m] : (a[m] + a[m + 1]) / 2
     }
     END {
-        split("any instance callable", fx, " ")
+        nfx = split(fixtures, fx, " ")
         nodes["any"] = 1; nodes["instance"] = 3; nodes["callable"] = 5
-        for (i = 1; i <= 3; i++) {
+        for (i = 1; i <= nfx; i++) {
             f = fx[i]
+            if (!(f in nodes)) {
+                printf "unknown fixture %s (no node count)\n", f > "/dev/stderr"
+                exit 1
+            }
             n = nodes[f]
             dec = (median("decode_forget-" f) - median("control-" f)) / (iters * n)
             drp = (median("decode_drop-" f) - median("decode_forget-" f)) / (iters * n)

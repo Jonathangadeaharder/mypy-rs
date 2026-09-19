@@ -1706,7 +1706,12 @@ pub(crate) fn read_alias_recursion_flag(bytes: &[u8]) -> Option<bool> {
     if tag != TYPE_ALIAS_TYPE {
         return None;
     }
-    read_type_alias_type_flagged(&mut buf).ok().map(|(_, r)| r)
+    // This seam bypasses read_type, so the node it materializes is counted
+    // here, mirroring the inline-reader bumps inside read_type.
+    read_type_alias_type_flagged(&mut buf).ok().map(|(_, r)| {
+        wire_phase_bump(|c| c.decode_nodes += 1);
+        r
+    })
 }
 
 /// Assert the next byte is `END_TAG`.
@@ -3583,6 +3588,8 @@ thread_local! {
         RefCell::new(WirePhaseCounters::default());
 }
 
+/// The counters borrow is held across `f`; bump closures must not re-enter
+/// this helper (the RefCell would panic on the same thread).
 #[inline]
 fn wire_phase_bump(f: impl FnOnce(&mut WirePhaseCounters)) {
     if WIRE_PHASE_MODE.get() == 0 {
@@ -3593,9 +3600,10 @@ fn wire_phase_bump(f: impl FnOnce(&mut WirePhaseCounters)) {
 
 /// `(mode, decode_calls, decode_bytes, decode_nodes, encode_calls,
 /// encode_bytes, encode_nodes, clone_nodes, hash_bytes, hash_ops)`.
-/// Dropped nodes are `decode_nodes + clone_nodes` (creation identity; see
-/// the `Clone` impl note). Order is load-bearing: the Python probe reads it
-/// positionally.
+/// Dropped nodes are `decode_nodes + clone_nodes`: a creation-identity
+/// LOWER BOUND, since nodes built outside decode/clone (e.g.
+/// `applytype::make_any`) drop uncounted. Order is load-bearing: the
+/// Python probe reads it positionally.
 pub(crate) type WirePhaseCounters10 = (u8, u64, u64, u64, u64, u64, u64, u64, u64, u64);
 
 fn wire_phase_read() -> WirePhaseCounters10 {

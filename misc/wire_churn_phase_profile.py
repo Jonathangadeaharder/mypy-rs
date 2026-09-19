@@ -4,7 +4,8 @@
 Enables the in-kernel counters (`type_kernel.rust_wire_phase_set_mode`),
 runs the same single-process cold self-check corpus the #61 battery used
 (`mypy_self_check.ini -n0 --no-incremental -p mypy -p mypyc`), and reports
-the counters on stderr on every exit path. The counters are the falsifier's
+the counters on stderr on every handled exit path (completed, failed,
+interrupted). The counters are the falsifier's
 deliverable: a probe that can exit silently is worse than no probe.
 
 The report refuses to be read as evidence when the run failed or when the
@@ -12,6 +13,8 @@ counters are hollow (all zero = the seam never engaged), mirroring the
 audit's evidence-refusal discipline (misc/audit_wire_traffic.py).
 
 Usage: .venv/bin/python misc/wire_churn_phase_profile.py [-- extra mypy args]
+Prereq: PYTHONPATH with the type_kernel and ast_serialize scratch dirs
+(AGENTS.md, native build order).
 Corpus class: /private/tmp/mypy-rs-sem.sh run 2 <this script>.
 """
 
@@ -62,7 +65,7 @@ def evidence_refusals(counters: tuple[int, ...], run_status: str) -> list[str]:
     reasons = []
     if counters[0] != 1:
         reasons.append("mode is not 1: the profile was disabled mid-run")
-    if run_status.startswith(("FAILED", "INTERRUPTED")):
+    if run_status.startswith("FAILED"):
         reasons.append(f"run status {run_status!r} is not a completed check")
     if counters[3] == 0:
         reasons.append("hollow profile: decode_nodes is 0 (seam never engaged)")
@@ -79,7 +82,11 @@ def main() -> int:
     for finder in list(sys.meta_path):
         if "editable" in (type(finder).__module__ or "") or "editable" in repr(finder):
             sys.meta_path.remove(finder)
-    argv = list(sys.argv[1:]) or list(DEFAULT_ARGS)
+    argv = list(sys.argv[1:])
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1 :]
+    if not argv:
+        argv = list(DEFAULT_ARGS)
     os.environ["MYPY_NUM_WORKERS"] = "0"
     import mypy
 
@@ -108,11 +115,11 @@ def main() -> int:
             run_status = f"FAILED, mypy exit {exc.code!r}"
     except KeyboardInterrupt:
         # A Ctrl-C is an operator action, not the run's own failure (#1846):
-        # report the partial counters, never classify the abort as mypy's,
-        # then re-raise.
+        # report the partial counters, mark them refused, then re-raise.
         report(type_kernel.rust_wire_phase_counters(), "INTERRUPTED, operator Ctrl-C")
+        print("[phase] EVIDENCE REFUSED: run was interrupted before completion", file=sys.stderr)
         raise
-    except BaseException as exc:
+    except Exception as exc:
         run_status = f"FAILED, raised {type(exc).__name__}: {exc}"
         import traceback
 
