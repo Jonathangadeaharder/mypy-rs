@@ -98,6 +98,12 @@ def parent() -> int:
     only: set[str] | None = None
     if "--only" in sys.argv:
         only = {n.strip() for n in sys.argv[sys.argv.index("--only") + 1].split(",") if n.strip()}
+        unknown = only - {b[0] for b in BENCHES}
+        if unknown or not only:
+            raise SystemExit(
+                f"unknown or empty --only selection: {sorted(unknown)}; "
+                f"known benches: {sorted(b[0] for b in BENCHES)}"
+            )
     os.makedirs(OUT_DIR, exist_ok=True)
     env = dict(os.environ)
     # Prepend the extension dir rather than replacing PYTHONPATH so a lane

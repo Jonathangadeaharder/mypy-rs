@@ -21,10 +21,11 @@ pre-registered definitions used below); parent attribution
 - Corpus: cold self-check, `mypy_self_check.ini -n0 --no-incremental
   -p mypy -p mypyc`, single process (`MYPY_NUM_WORKERS=0`), 378 files,
   "Success: no issues found in 378 source files" on every counted run.
-- Evidence: `/private/tmp/residency-step0/` (probe runs 1-2, ledger,
-  baseline, microbench table).
-- Load during all counted runs: load1 39-54 (sibling lanes active);
-  instructions are the load-invariant currency, wall seconds recorded only.
+- Evidence: `/private/tmp/residency-step0/` (probe runs 1-2, post-fix
+  re-measurement run 3, ledger, baseline, microbench table).
+- Load during counted runs: load1 39-54 for runs 1-2 (sibling lanes
+  active), ~12 for run 3 (idle machine); instructions are the
+  load-invariant currency, wall seconds recorded only.
 
 ## The pre-registered gates (from #71, verbatim in brief section 5)
 
@@ -65,7 +66,8 @@ New probe counters measure the family's serialize-outcome split per operand
 appearance (prediction replicates `_serialize_type`'s decision order
 exactly; the 21 `ser_failed` entries' 42 predicted appearances are excluded
 from the event model): hit 180,623, builtin shortcut 29,429, miss 89,506 of
-299,558 classified appearances (run 1; run 2 within 0.1%). Microbench
+299,558 classified appearances (run 1; run 2 within 0.1%; the post-fix
+re-measurement below confirms the split). Microbench
 re-derived on this head, private scratch: ser_hit 1,815.3, ser_miss_any
 15,265.2, ser_miss_instance 16,071.9 instr/call (all within 0.5-2.2% of the
 #61 table). The builtin shortcut has no bench; folded as hit (lower bound)
@@ -143,6 +145,33 @@ servability predicate (F3-cache hit at arrival) is what excludes.
 **Exclusion rate among repeats = 1 - 153,939/182,903 = 15.84%.** Only 84.2%
 of repeat appearances would be served by the residency table at all.
 
+### Post-fix re-measurement (run 3)
+
+The OCR pass on the measurement PR reclassified five probe defects (the
+anomaly-class counter path that would raise `KeyError` mid-run, the decode
+window left open by an exception escaping the coded call, the missing
+mirror-serve ser class, the failed-entry appearances left outside operand
+accounting, and the pre-warm right-operand ser prediction, which
+mislabeled the second serialization of a same-object pair). All five were
+fixed and one post-fix counted run was taken (self-check success, exit 0,
+no evidence refusals, wire-phase mode 1, classification sum reconciled:
+`op_unclassified` 38 = 2 x `ser_failed` 19). The fixes' effect on this
+corpus sits inside the run-1/run-2 spread, so every number above stands:
+
+| counter | run 3 (post-fix) | run 1-2 band |
+| --- | --- | --- |
+| op_ser hit / builtin / miss / mirror | 180,602 / 29,418 / 89,542 / 0 | ~180.6k / ~29.4k / ~89.5k / n/a |
+| op_repeat_servable (exclusion 15.83%) | 153,927 | 153,929-153,939 |
+| memoable_servable_both (75.18% of identity hits) | 31,365 | 31,353-31,376 |
+| B1b / B1b upper (event model re-derived on run 3) | 1.75e9 / 2.24e9 | 1.75e9 / 2.24e9 |
+| D / class A pairs / coded calls | 116,659 / 59,366 / 22,652 | unchanged by construction |
+
+The self-pair bias the pre-warm prediction carried is therefore
+negligible here: reclassifying a same-object pair's second serialization
+from pre-warm miss to hit moves the split by less than the run-to-run
+noise. The verdict's hard population bound (class-A ceiling) reads the
+pair-level repeat populations, which the ser-class timing never touched.
+
 ## Gate arithmetic
 
 **Gate 1, reading 1 (>=95% of repeat-class wire disappears).** The
@@ -200,10 +229,14 @@ evidence-critical:
 - the operand-level extension of the identity probe in `mypy/subtypes.py`
   (env gate `MYPY_SUBTYPE_IDENTITY_PROBE` unchanged, default off): operand
   distinctness against recycling, storable-class split, the family's own
-  serialize hit/miss split, coded-call count, and decode-window attribution
-  with skip/inconsistency accounting;
+  serialize hit/miss split (mirror serves and failed-entry appearances are
+  their own classes, so a mirror-on run is detectable instead of misread
+  and the appearance accounting always reconciles), coded-call count, and
+  decode-window attribution with skip/inconsistency accounting;
 - `misc/residency_step0_probe.py`, the run driver (reports on every exit
-  path, refuses its own evidence on the pre-registered conditions);
+  path, refuses its own evidence on the pre-registered conditions,
+  including an off wire-phase profile and a classification-sum mismatch,
+  and fails loudly on a stale extension that predates the seam);
 - `stubs/type_kernel_misc.pyi`: the `rust_wire_phase_*` declarations the
   self-check needs (the extension has exported them since #63);
 - `misc/gap_attrib_microbench.py`: env-overridable scratch/output dirs and
@@ -232,8 +265,10 @@ evidence-critical:
 - The builtin-shortcut serialize class (9.8% of appearances) has no dedicated
   bench; B1b is reported as a fold-as-hit/fold-as-miss band.
 - 21/19 ser_failed entries per run leave 42/38 appearances outside operand
-  classification (D's base is stated per run); the ledger's blob-keyed
-  "entries" are a different accounting and never compared to probe counts.
+  classification (D's base is stated per run; the probe now counts them as
+  `op_unclassified` and the driver refuses on a classification-sum
+  mismatch); the ledger's blob-keyed "entries" are a different accounting
+  and never compared to probe counts.
 
 ## Reproduction
 

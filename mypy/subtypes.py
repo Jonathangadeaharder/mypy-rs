@@ -440,6 +440,9 @@ _identity_probe: dict[str, int] = {
     # Operand ids whose earlier bytes differ: a recycled id(), not a repeat.
     "op_recycled": 0,
     "op_overflow": 0,
+    # Appearances at a failed entry whose operands the pass never classified,
+    # so the classification sum reconciles with op_appearances.
+    "op_unclassified": 0,
     # First-sight storable classes (the residency design's F3 predicate).
     "op_first_plain": 0,
     "op_first_fingerprinted": 0,
@@ -464,6 +467,7 @@ _identity_probe: dict[str, int] = {
     "op_ser_hit": 0,
     "op_ser_fp_stale": 0,
     "op_ser_builtin": 0,
+    "op_ser_mirror": 0,
     "op_ser_miss": 0,
     "op_ser_cache_off": 0,
     # Pair-level repeat split at the content serve: both operands
@@ -527,9 +531,15 @@ def _identity_probe_ser_class(t: Type) -> str:
     the family's hit/miss split (#71 Step 0, B1 route b) is measured by the
     probe alone. A fingerprint-stale entry is its own class: the real
     funnel downgrades it to a fresh walk (a miss), and so would a
-    residency table (re-serialize plus fresh mint).
+    residency table (re-serialize plus fresh mint). A mirror serve is its
+    own class too (the F2 read sits between the builtin shortcut and the
+    walk): it serves bytes without an F3 store, so it is not servable by
+    the F3-keyed residency table this probe measures, but counting it
+    separately keeps a mirror-on run detectable instead of misread as a
+    miss. The operand pass counts op_appearances, so a class taken here
+    for an appearance whose serialization then failed stays reconcilable
+    via op_unclassified.
     """
-    _identity_probe["op_appearances"] += 1
     if not _wire_cache_enabled():
         _identity_probe["op_ser_cache_off"] += 1
         return "cache_off"
@@ -550,6 +560,9 @@ def _identity_probe_ser_class(t: Type) -> str:
     ):
         _identity_probe["op_ser_builtin"] += 1
         return "builtin"
+    if _read_mirror_blob(t) is not None:
+        _identity_probe["op_ser_mirror"] += 1
+        return "mirror"
     _identity_probe["op_ser_miss"] += 1
     return "miss"
 
@@ -1169,15 +1182,23 @@ def _is_subtype(
         if _identity_probe_on:
             ikey = _identity_probe_entry(left, right, subtype_context, proper_subtype)
             ser_left = _identity_probe_ser_class(left)
-            ser_right = _identity_probe_ser_class(right)
         try:
             left_bytes = _serialize_type(left)
+            if ikey is not None:
+                # Right's prediction must reflect the cache state its own
+                # upcoming serialization will see (left may warm it).
+                ser_right = _identity_probe_ser_class(right)
             right_bytes = _serialize_type(right)
         except (AssertionError, NotImplementedError):
             left_bytes = None
             right_bytes = None
+        if ikey is not None:
+            _identity_probe["op_appearances"] += 2
         if ikey is not None and (left_bytes is None or right_bytes is None):
             _identity_probe["ser_failed"] += 1
+            # The operand pass never runs for a failed entry: count both
+            # appearances unclassified so the classification sum reconciles.
+            _identity_probe["op_unclassified"] += 2
         ctx_key: tuple[bool, ...] | None = None
         if left_bytes is not None and right_bytes is not None:
             # Same key the single-pair call's flags resolve to, so a
@@ -1235,10 +1256,13 @@ def _is_subtype(
             # Type tree contains an unserializable variant (e.g.
             # TypeGuardedType nested in a Union). Defer to Python.
             code = -1
-        if ikey is not None:
-            _identity_probe_wire_close(wire_before)
-            if code < 0:
-                _identity_probe["coded_defers"] += 1
+        finally:
+            # Close the window even on an escaping exception, or the next
+            # window's delta silently absorbs the leaked decode work.
+            if ikey is not None:
+                _identity_probe_wire_close(wire_before)
+        if ikey is not None and code < 0:
+            _identity_probe["coded_defers"] += 1
         if code >= 0:
             # ctx_key is built only when both serializations succeeded, so
             # this check both excludes the failed-serialization case (nothing

@@ -13,8 +13,9 @@ mirroring misc/wire_churn_phase_profile.py. Evidence is refused when the
 run failed, the probe never engaged, the operand-class anomaly counter is
 nonzero (a class the F3 predicate cannot explain), an id cap overflowed
 (distinctness would silently undercount), the decode windows do not cover
-exactly the coded calls (a skipped window would read as zero), or the wire
-phase counters are off (family decode deltas would read zero).
+exactly the coded calls (a skipped window would read as zero), the wire
+phase counters are off (family decode deltas would read zero), or the
+operand classification sum does not reconcile with op_appearances.
 
 Usage: MYPY_SUBTYPE_IDENTITY_PROBE=1 .venv/bin/python misc/residency_step0_probe.py
 Prereq: PYTHONPATH with the type_kernel and ast_serialize scratch dirs
@@ -68,6 +69,18 @@ def evidence_refusals(
         reasons.append(
             f"operand accounting: op_appearances {probe['op_appearances']} != "
             f"2 x entries {probe['entries']}"
+        )
+    classified = (
+        probe["op_first_seen"]
+        + probe["op_repeat"]
+        + probe["op_recycled"]
+        + probe["op_overflow"]
+        + probe["op_unclassified"]
+    )
+    if classified != probe["op_appearances"]:
+        reasons.append(
+            f"operand classification sum {classified} != op_appearances "
+            f"{probe['op_appearances']}"
         )
     if probe["op_class_anomaly"]:
         reasons.append(f"{probe['op_class_anomaly']} operand appearances no F3 class explains")
