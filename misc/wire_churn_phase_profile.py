@@ -62,7 +62,7 @@ def evidence_refusals(counters: tuple[int, ...], run_status: str) -> list[str]:
     reasons = []
     if counters[0] != 1:
         reasons.append("mode is not 1: the profile was disabled mid-run")
-    if run_status.startswith(("FAILED", "refused")):
+    if run_status.startswith(("FAILED", "INTERRUPTED")):
         reasons.append(f"run status {run_status!r} is not a completed check")
     if counters[3] == 0:
         reasons.append("hollow profile: decode_nodes is 0 (seam never engaged)")
@@ -107,8 +107,10 @@ def main() -> int:
         else:
             run_status = f"FAILED, mypy exit {exc.code!r}"
     except KeyboardInterrupt:
-        # A Ctrl-C is an operator action, not the run's own failure
-        # (#1846): reporting it as one would attribute the abort to mypy.
+        # A Ctrl-C is an operator action, not the run's own failure (#1846):
+        # report the partial counters, never classify the abort as mypy's,
+        # then re-raise.
+        report(type_kernel.rust_wire_phase_counters(), "INTERRUPTED, operator Ctrl-C")
         raise
     except BaseException as exc:
         run_status = f"FAILED, raised {type(exc).__name__}: {exc}"

@@ -6,6 +6,10 @@ set -euo pipefail
 BIN="${1:-}"
 ITERS="${2:-1000000}"
 REPS="${3:-3}"
+if ! [[ "$ITERS" =~ ^[1-9][0-9]*$ && "$REPS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "iters and reps must be positive integers (got iters=$ITERS reps=$REPS)" >&2
+    exit 1
+fi
 cd "$(git rev-parse --show-toplevel)"
 
 if [[ -z "$BIN" ]]; then
