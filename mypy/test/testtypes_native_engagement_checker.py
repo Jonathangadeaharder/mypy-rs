@@ -7227,6 +7227,136 @@ class NativeSimpleAssignmentSuite(Suite):
 
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
+class NativeSimpleAssignmentLiveSuite(NativeSimpleAssignmentSuite):
+    """Parity for `rust_classify_simple_assignment_live` (#1624 dir-1).
+
+    The gated live-object variant passes the live proper lvalue plus the
+    union scalar instead of wire bytes, so the live path never calls
+    `_serialize_type_for_checker`. Arming `_NATIVE_LIVE_SEAMS` re-runs every
+    inherited wire-vs-Python differential with the live entry in the on arm
+    (off arm stays the pure-Python head); the added direct tests pin the
+    same tag per branch as the wire entry, plus the alias defer.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Loud failure on a stale extension build: the live entry must
+        # exist or every differential below is a hollow green.
+        assert _type_kernel.rust_classify_simple_assignment_live is not None
+        from mypy import checker as _checker_mod
+
+        self._checker_mod = _checker_mod
+        self._saved_live = _checker_mod._NATIVE_LIVE_SEAMS
+        _checker_mod._NATIVE_LIVE_SEAMS = True
+
+    def tearDown(self) -> None:
+        self._checker_mod._NATIVE_LIVE_SEAMS = self._saved_live
+        super().tearDown()
+
+    def _live(self, t: Type | None, *flags: bool) -> int | None:
+        union = t is not None and isinstance(get_proper_type(t), UnionType)
+        return _type_kernel.rust_classify_simple_assignment_live(t, union, *flags)
+
+    def test_live_stub(self) -> None:
+        from mypy.checker import NATIVE_SA_STUB
+
+        tag = self._live(None, True, True, True, True, False)
+        assert tag == NATIVE_SA_STUB, f"{tag}"
+
+    def test_live_direct_no_lvalue(self) -> None:
+        from mypy.checker import NATIVE_SA_DIRECT
+
+        tag = self._live(None, False, False, False, False, False)
+        assert tag == NATIVE_SA_DIRECT, f"{tag}"
+
+    def test_live_direct_via_simple_rvalue(self) -> None:
+        from mypy.checker import NATIVE_SA_DIRECT
+
+        fx = TypeFixture()
+        tag = self._live(Instance(fx.ai, []), False, False, True, False, True)
+        assert tag == NATIVE_SA_DIRECT, f"{tag}"
+
+    def test_live_direct_via_typeddict_context(self) -> None:
+        from mypy.checker import NATIVE_SA_DIRECT
+
+        fx = TypeFixture()
+        td = TypedDictType({}, set(), set(), fx.a)
+        tag = self._live(td, False, False, True, False, False)
+        assert tag == NATIVE_SA_DIRECT, f"{tag}"
+        # A union with a TypedDictType item is also a TypedDict context.
+        un = UnionType([Instance(fx.ai, []), td])
+        tag = self._live(un, False, False, True, False, False)
+        assert tag == NATIVE_SA_DIRECT, f"{tag}"
+
+    def test_live_direct_union_simple_rvalue(self) -> None:
+        from mypy.checker import NATIVE_SA_DIRECT
+
+        fx = TypeFixture()
+        un = UnionType([Instance(fx.ai, []), Instance(fx.bi, [])])
+        tag = self._live(un, False, False, False, False, True)
+        assert tag == NATIVE_SA_DIRECT, f"{tag}"
+
+    def test_live_fallback_no_preferred(self) -> None:
+        from mypy.checker import NATIVE_SA_FALLBACK_NO_PREFERRED
+
+        fx = TypeFixture()
+        tag = self._live(Instance(fx.ai, []), False, False, True, False, False)
+        assert tag == NATIVE_SA_FALLBACK_NO_PREFERRED, f"{tag}"
+
+    def test_live_fallback_lvalue_preferred(self) -> None:
+        from mypy.checker import NATIVE_SA_FALLBACK_LVALUE_PREFERRED
+
+        fx = TypeFixture()
+        un = UnionType([Instance(fx.ai, []), Instance(fx.bi, [])])
+        tag = self._live(un, False, False, False, False, False)
+        assert tag == NATIVE_SA_FALLBACK_LVALUE_PREFERRED, f"{tag}"
+        # Function-argument inferred Var (is_argument).
+        tag = self._live(Instance(fx.ai, []), False, False, True, True, False)
+        assert tag == NATIVE_SA_FALLBACK_LVALUE_PREFERRED, f"{tag}"
+
+    def test_live_defers_on_alias(self) -> None:
+        from mypy.nodes import TypeAlias
+
+        fx = TypeFixture()
+        alias = TypeAlias(Instance(fx.ai, []), "mod.A", "mod", -1, -1)
+        # try_fallback holds (has_inferred, not simple_rvalue); the live
+        # entry must defer on the alias instead of guessing its shape.
+        tag = self._live(TypeAliasType(alias, []), False, False, True, False, False)
+        assert tag is None, f"{tag}"
+        # An alias nested in a union item defers too.
+        un = UnionType([TypeAliasType(alias, []), Instance(fx.bi, [])])
+        tag = self._live(un, False, False, False, False, False)
+        assert tag is None, f"{tag}"
+
+    def test_live_engagement_in_differential(self) -> None:
+        # A shim exception would fall back to the Python head and still
+        # compare equal, so the on arm must prove the live entry crossed
+        # and decided (hollow-green guard for the differentials above).
+        calls: list[int | None] = []
+        orig = cast(
+            "Callable[..., int | None]",
+            getattr(self._checker_mod, "_rust_classify_simple_assignment_live"),
+        )
+
+        def counted(*args: object) -> int | None:
+            tag = orig(*args)
+            calls.append(tag)
+            return tag
+
+        setattr(self._checker_mod, "_rust_classify_simple_assignment_live", counted)
+        try:
+            fx = TypeFixture()
+            lvalue = Instance(fx.ai, [])
+            var = Var("v")
+            var.type = None
+            self._assert_par(lvalue, self._nonsimple_call(), lvalue, inferred=var)
+        finally:
+            setattr(self._checker_mod, "_rust_classify_simple_assignment_live", orig)
+        assert calls, "live entry never called in the on arm"
+        assert any(t is not None for t in calls), f"live entry never decided: {calls}"
+
+
+@skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
 class NativeAllSupersGateSuite(Suite):
     """Parity for the Rust `check_compatibility_all_supers` gate-head port.
 

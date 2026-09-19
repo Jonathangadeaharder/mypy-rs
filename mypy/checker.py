@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import os
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set as AbstractSet
 from contextlib import ExitStack, contextmanager
@@ -374,6 +375,7 @@ try:
         rust_classify_return_stmt_variant as _rust_classify_return_stmt_variant,
         rust_classify_rvalue_count as _rust_classify_rvalue_count,
         rust_classify_simple_assignment as _rust_classify_simple_assignment,
+        rust_classify_simple_assignment_live as _rust_classify_simple_assignment_live,
         rust_classify_truthy_type as _rust_classify_truthy_type,
         rust_classify_type_check_raise as _rust_classify_type_check_raise,
         rust_classify_type_range as _rust_classify_type_range,
@@ -470,6 +472,7 @@ except ImportError:
     _rust_check_match_args = None  # type: ignore[assignment]
     _rust_classify_rvalue_count = None  # type: ignore[assignment]
     _rust_classify_simple_assignment = None  # type: ignore[assignment]
+    _rust_classify_simple_assignment_live = None  # type: ignore[assignment]
     _rust_classify_truthy_type = None  # type: ignore[assignment]
     _rust_classify_type_check_raise = None  # type: ignore[assignment]
     _rust_classify_type_range = None  # type: ignore[assignment]
@@ -699,6 +702,11 @@ _native_checker_stmts_active: bool = False
 # `MYPY_TK_H1_STATS` is set, so production pays one boolean test per
 # statement; the Rust driver counts the same events in checker_driver.rs.
 _H1_STATS: bool = _checker_driver.stats_enabled()
+
+# Direction-1 prototype (#1624): arm the live-object seam entries
+# (currently only classify_simple_assignment). Default off; the wire
+# entries stay the production path.
+_NATIVE_LIVE_SEAMS: bool = os.environ.get("MYPY_NATIVE_LIVE_SEAMS") is not None
 
 
 def _set_native_checker_active(active: bool) -> None:
@@ -6537,25 +6545,47 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi, SplittingVisitor):
             and _rust_classify_simple_assignment is not None
         ):
             proper_lvalue = get_proper_type(lvalue_type) if lvalue_type is not None else None
-            try:
-                tag = _rust_classify_simple_assignment(
-                    (
-                        _serialize_type_for_checker(proper_lvalue)
-                        if proper_lvalue is not None
-                        else None
-                    ),
-                    self.is_stub,
-                    isinstance(rvalue, EllipsisExpr),
-                    inferred is not None,
-                    inferred is not None and inferred.is_argument,
-                    # simple_rvalue only feeds try_fallback, which is
-                    # short-circuited off without an inferred Var or a
-                    # union lvalue; passing False there preserves the value.
-                    (inferred is not None or isinstance(proper_lvalue, UnionType))
-                    and self.simple_rvalue(rvalue),
+            if _NATIVE_LIVE_SEAMS and _rust_classify_simple_assignment_live is not None:
+                # Direction-1 prototype (#1624): pass the live proper lvalue
+                # plus the union fact as a scalar; no serialize, no wire.
+                lvalue_is_union = proper_lvalue is not None and isinstance(
+                    proper_lvalue, UnionType
                 )
-            except (AssertionError, NotImplementedError, ValueError, TypeError):
-                tag = None
+                try:
+                    tag = _rust_classify_simple_assignment_live(
+                        proper_lvalue,
+                        lvalue_is_union,
+                        self.is_stub,
+                        isinstance(rvalue, EllipsisExpr),
+                        inferred is not None,
+                        inferred is not None and inferred.is_argument,
+                        # simple_rvalue only feeds try_fallback, which is
+                        # short-circuited off without an inferred Var or a
+                        # union lvalue; passing False there preserves the value.
+                        (inferred is not None or lvalue_is_union) and self.simple_rvalue(rvalue),
+                    )
+                except (AssertionError, NotImplementedError, ValueError, TypeError):
+                    tag = None
+            else:
+                try:
+                    tag = _rust_classify_simple_assignment(
+                        (
+                            _serialize_type_for_checker(proper_lvalue)
+                            if proper_lvalue is not None
+                            else None
+                        ),
+                        self.is_stub,
+                        isinstance(rvalue, EllipsisExpr),
+                        inferred is not None,
+                        inferred is not None and inferred.is_argument,
+                        # simple_rvalue only feeds try_fallback, which is
+                        # short-circuited off without an inferred Var or a
+                        # union lvalue; passing False there preserves the value.
+                        (inferred is not None or isinstance(proper_lvalue, UnionType))
+                        and self.simple_rvalue(rvalue),
+                    )
+                except (AssertionError, NotImplementedError, ValueError, TypeError):
+                    tag = None
             if tag is not None:
                 if tag == NATIVE_SA_STUB:
                     # '...' is always a valid initializer in a stub. The

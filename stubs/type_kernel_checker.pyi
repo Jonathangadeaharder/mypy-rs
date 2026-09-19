@@ -306,6 +306,19 @@ def rust_classify_simple_assignment(
     simple_rvalue: bool,
 ) -> int | None: ...
 
+# #1624 direction-1 prototype: live-object variant of the SA head. The
+# lvalue is the live proper type (or None); lvalue_is_union is a scalar
+# the shim computes. Same tag contract as the wire entry.
+def rust_classify_simple_assignment_live(
+    lvalue: Any | None,
+    lvalue_is_union: bool,
+    is_stub: bool,
+    rvalue_is_ellipsis: bool,
+    has_inferred: bool,
+    inferred_is_argument: bool,
+    simple_rvalue: bool,
+) -> int | None: ...
+
 # Issue #1090: check_assignment decision front. Returns
 # (special_tag, branch_tag) or None.
 def rust_classify_check_assignment(
@@ -1015,6 +1028,7 @@ __all__ = [
     "rust_classify_visit_op_expr",
     "rust_classify_check_arg",
     "rust_classify_simple_assignment",
+    "rust_classify_simple_assignment_live",
     "rust_classify_check_assignment",
     "rust_classify_check_boolean_op",
     "rust_classify_index_with_type",

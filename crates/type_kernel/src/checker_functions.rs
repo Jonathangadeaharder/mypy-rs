@@ -4953,6 +4953,93 @@ pub(crate) fn rust_classify_simple_assignment(
     ))
 }
 
+/// `is_typeddict_type_context` (checker.py:12842) over the live lvalue
+/// object: TypedDictType -> true, UnionType -> any qualifying item,
+/// anything else -> false. A TypeAliasType defers; the live path never
+/// calls back into Python's get_proper_type to expand aliases.
+fn is_typeddict_type_context_live(py: Python<'_>, lvalue: &PyAny) -> PyResult<Option<bool>> {
+    let types_mod = py.import("mypy.types")?;
+    let td_cls: &PyType = types_mod.getattr("TypedDictType")?.downcast()?;
+    let union_cls: &PyType = types_mod.getattr("UnionType")?.downcast()?;
+    let alias_cls: &PyType = types_mod.getattr("TypeAliasType")?.downcast()?;
+    typeddict_context_live_inner(lvalue, td_cls, union_cls, alias_cls)
+}
+
+fn typeddict_context_live_inner(
+    obj: &PyAny,
+    td_cls: &PyType,
+    union_cls: &PyType,
+    alias_cls: &PyType,
+) -> PyResult<Option<bool>> {
+    if obj.is_instance(alias_cls)? {
+        return Ok(None);
+    }
+    if obj.is_instance(td_cls)? {
+        return Ok(Some(true));
+    }
+    if !obj.is_instance(union_cls)? {
+        return Ok(Some(false));
+    }
+    for item in obj.getattr("items")?.iter()? {
+        match typeddict_context_live_inner(item?, td_cls, union_cls, alias_cls)? {
+            Some(true) => return Ok(Some(true)),
+            None => return Ok(None),
+            Some(false) => {}
+        }
+    }
+    Ok(Some(false))
+}
+
+/// Gated live-object variant of `rust_classify_simple_assignment`
+/// (#1624 direction-1 prototype): same four-way dispatch, but the lvalue
+/// arrives as the live proper type object instead of wire bytes, so the
+/// shim skips `_serialize_type_for_checker`. The union fact is a scalar
+/// the shim already computes; the only object reads are the
+/// `is_typeddict_type_context` isinstance chain above. Defers on a
+/// TypeAliasType exactly where the wire entry defers on an
+/// unexpandable alias; the wire entry stays the default.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (
+    lvalue,
+    lvalue_is_union,
+    is_stub,
+    rvalue_is_ellipsis,
+    has_inferred,
+    inferred_is_argument,
+    simple_rvalue
+))]
+pub(crate) fn rust_classify_simple_assignment_live(
+    py: Python<'_>,
+    lvalue: Option<&PyAny>,
+    lvalue_is_union: bool,
+    is_stub: bool,
+    rvalue_is_ellipsis: bool,
+    has_inferred: bool,
+    inferred_is_argument: bool,
+    simple_rvalue: bool,
+) -> PyResult<Option<i64>> {
+    if is_stub && rvalue_is_ellipsis {
+        return Ok(Some(SIMPLE_ASSIGNMENT_STUB));
+    }
+    let try_fallback = (has_inferred || lvalue_is_union) && !simple_rvalue;
+    if !try_fallback || lvalue.is_none() {
+        return Ok(Some(SIMPLE_ASSIGNMENT_DIRECT));
+    }
+    // Python evaluates is_typeddict_type_context only when try_fallback
+    // holds and the lvalue type is present (checker.py:6325-6436).
+    let td_ctx = is_typeddict_type_context_live(py, lvalue.unwrap())?;
+    Ok(match td_ctx {
+        None => None,
+        Some(false) => Some(if has_inferred && !inferred_is_argument {
+            SIMPLE_ASSIGNMENT_FALLBACK_NO_PREFERRED
+        } else {
+            SIMPLE_ASSIGNMENT_FALLBACK_LVALUE_PREFERRED
+        }),
+        Some(true) => Some(SIMPLE_ASSIGNMENT_DIRECT),
+    })
+}
+
 /// Decision tags for the `check_assignment` special-name front
 /// (checker.py:4692-4720):
 /// - `CA_SPECIAL_NONE`: no special-name check applies.
@@ -7597,6 +7684,10 @@ pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
     // arbitrates the stub / direct / fallback-context dispatch; the accept
     // recursion and the Python-side blocks stay in Python (see checker_functions.rs).
     m.add_function(wrap_pyfunction!(rust_classify_simple_assignment, m)?)?;
+
+    // #1624 direction-1 prototype: gated live-object variant of the
+    // check_simple_assignment head (zero wire bytes; see checker_functions.rs).
+    m.add_function(wrap_pyfunction!(rust_classify_simple_assignment_live, m)?)?;
 
     // Issue #1090: check_assignment decision-front port. Rust arbitrates
     // the special-name front and the lvalue_type branch; arm bodies stay
