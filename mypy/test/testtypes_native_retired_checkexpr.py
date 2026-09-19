@@ -32,7 +32,7 @@ from mypy.nodes import (
 from mypy.test.helpers import Suite
 from mypy.test.testtypes import _NATIVE_WIRE_ENABLED
 from mypy.test.typefixture import TypeFixture
-from mypy.types import CallableType, Type, TypedDictType
+from mypy.types import CallableType, Type, TypedDictType, TypeVarType
 
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
@@ -606,7 +606,7 @@ class NativePossibleNoneTypeVarOverlapRetiredSuite(Suite):
         return cast(ExpressionChecker, None)
 
     def _callable(
-        self, arg_types: list[Type], variables: list[Type] | None = None
+        self, arg_types: list[Type], variables: list[TypeVarType] | None = None
     ) -> CallableType:
         return CallableType(
             arg_types,
@@ -614,7 +614,7 @@ class NativePossibleNoneTypeVarOverlapRetiredSuite(Suite):
             [None] * len(arg_types),
             self.fx.anyt,
             self.fx.function,
-            variables=variables or [],  # type: ignore[arg-type]
+            variables=variables or [],
         )
 
     def test_shim_source_removed(self) -> None:
