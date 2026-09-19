@@ -1,8 +1,20 @@
 # ADR-0007: Rust-owned Type representation (ownership inversion)
 
-- Status: Proposed (design record for epic #72 roadmap step 1; no production
-  change in this lane). The bounded first experiment this decision enables is
-  `docs/plans/2026-09-19-type-owner-inversion-brief.md`, in the same PR.
+- Status: Proposed, first experiment falsified (design record for epic
+  #72 roadmap step 1; no production change in that lane). The bounded
+  first experiment this decision enabled,
+  `docs/plans/2026-09-19-type-owner-inversion-brief.md`, ran its
+  pre-registered Step 0 and returned NO-GO (#81,
+  `docs/plans/2026-09-19-type-arena-amortization-step0.md`):
+  constructions outnumber serialize-funnel appearances 19.61 to 1 for the
+  immutable-leaf set, so eager mint adds a crossing on a hot path most
+  constructed objects never reach. With #71 (residency NO-GO) and #54 /
+  ADR-0006 (storage move rejected), the incremental Type-ownership route
+  is closed in its cheap forms: every hybrid-resident form keeps Python
+  canonical and gives Rust a second copy. The arena/facade architecture is
+  retained as the eventual plugin-compatibility bridge for the standalone
+  path; the sequencing of the next ownership flip is decided by ADR-0008
+  (`docs/adrs/0008-standalone-path-ownership.md`, issue #83).
 - Date: 2026-09-19
 - Issue: #72 (step 1: "Rust owns `Type`")
 - Supersedes: the "shadow, never replacement" premise of ADR-0004 Decision 1
