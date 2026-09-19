@@ -101,6 +101,8 @@ def parent() -> int:
             default_iters = int(sys.argv[_iters_idx])
         except ValueError:
             raise SystemExit(f"--iters needs an integer, got {sys.argv[_iters_idx]!r}") from None
+        if default_iters <= 0:
+            raise SystemExit(f"--iters must be positive, got {default_iters}")
     only: set[str] | None = None
     if "--only" in sys.argv:
         _only_idx = sys.argv.index("--only") + 1

@@ -406,14 +406,14 @@ _identity_probe_on: bool = _env_flag("MYPY_SUBTYPE_IDENTITY_PROBE")
 # The #71 Step-0 extension adds operand-level distinctness (see
 # _identity_probe_operand_note) and the family's wire-cost split the B
 # battery's event model consumes.
-_IDENTITY_PROBE_CAP: Final = 1_000_000
 # One pair entry is a 3-tuple holding two wire blobs (~350 bytes with the
 # key), so this caps the probe at ~350 MB; pairs past the cap are counted,
 # not stored.
-_IDENTITY_OPERAND_CAP: Final = 2_000_000
+_IDENTITY_PROBE_CAP: Final = 1_000_000
 # One operand entry holds a single wire blob (~100 bytes with the key); both
 # operands of every entry share this namespace, so the cap is 2x the pair
 # cap in entries but a smaller footprint per entry.
+_IDENTITY_OPERAND_CAP: Final = 2_000_000
 _identity_probe: dict[str, int] = {
     # Native-path entries reaching the serialization step.
     "entries": 0,
