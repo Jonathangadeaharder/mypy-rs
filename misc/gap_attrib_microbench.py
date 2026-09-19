@@ -28,6 +28,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 
 # Worktree prelude (same as scripts/measure_wire_prep.py): the shared .venv
 # is an editable install whose finder maps `mypy` to a possibly-deleted
@@ -115,6 +116,43 @@ def noop(*args: object) -> None:
     return None
 
 
+# One measured-loop helper per call arity: a shared tail would union every
+# branch's op and arg at one `f(*a)` site, which static analysis misreads as
+# arity mismatches. The loop body is byte-identical in every helper.
+
+
+def loop0(iters: int, control: bool, op: Callable[[], object], a: tuple) -> None:
+    f = noop if control else op
+    for _ in range(iters):
+        f(*a)
+
+
+def loop1(iters: int, control: bool, op: Callable[[object], object], a: tuple) -> None:
+    f = noop if control else op
+    for _ in range(iters):
+        f(*a)
+
+
+def loop2(iters: int, control: bool, op: Callable[[object, object], object], a: tuple) -> None:
+    f = noop if control else op
+    for _ in range(iters):
+        f(*a)
+
+
+def loop4(
+    iters: int, control: bool, op: Callable[[object, object, object, object], object], a: tuple
+) -> None:
+    f = noop if control else op
+    for _ in range(iters):
+        f(*a)
+
+
+def loop13(iters: int, control: bool, op: Callable[..., object], a: tuple) -> None:
+    f = noop if control else op
+    for _ in range(iters):
+        f(*a)
+
+
 def fixture_info(fullname: str):
     from mypy.nodes import Block, ClassDef, SymbolTable, TypeInfo
 
@@ -131,9 +169,6 @@ def child(name: str, iters: int, control: bool) -> int:
     from mypy import subtypes, types
 
     types._set_type_wire_cache_enabled(True)
-
-    op = noop
-    arg: tuple = ()
 
     if name == "gate_check":
         from mypy.state import state
@@ -159,9 +194,8 @@ def child(name: str, iters: int, control: bool) -> int:
                 and not isinstance(r, ErasedType)
             )
 
-        op = gate
-        arg = (l,)
         assert gate(l) is True, "gate unexpectedly false"
+        loop1(iters, control, gate, (l,))
 
     elif name == "ser_hit":
         info = fixture_info("mod.A")
@@ -169,12 +203,11 @@ def child(name: str, iters: int, control: bool) -> int:
         b1 = subtypes._serialize_type(t)
         assert isinstance(b1, bytes) and b1, "prewarm failed"
         before = len(subtypes._type_wire_cache)
-        op = subtypes._serialize_type
-        arg = (t,)
         for _ in range(3):
             subtypes._serialize_type(t)
         assert len(subtypes._type_wire_cache) == before, "hit path wrote to the cache"
         assert subtypes._type_wire_cache.get(id(t), (None,))[1] is b1 or before >= 1
+        loop1(iters, control, subtypes._serialize_type, (t,))
 
     elif name == "ser_miss_any":
         objs = [types.AnyType(types.TypeOfAny.unannotated) for _ in range(iters + 1)]
@@ -185,10 +218,9 @@ def child(name: str, iters: int, control: bool) -> int:
             idx[0] = i + 1
             return subtypes._serialize_type(objs[i])
 
-        op = ser_any
-        arg = (None,)
         ser_any(None)
         assert len(subtypes._type_wire_cache) >= 1, "miss path did not populate the cache"
+        loop1(iters, control, ser_any, (None,))
 
     elif name == "ser_miss_instance":
         info = fixture_info("mod.A")
@@ -200,10 +232,9 @@ def child(name: str, iters: int, control: bool) -> int:
             idx[0] = i + 1
             return subtypes._serialize_type(objs[i])
 
-        op = ser_inst
-        arg = (None,)
         ser_inst(None)
         assert len(subtypes._type_wire_cache) >= 1, "miss path did not populate the cache"
+        loop1(iters, control, ser_inst, (None,))
 
     elif name == "ser_visitor_hit":
         info = fixture_info("mod.A")
@@ -211,11 +242,10 @@ def child(name: str, iters: int, control: bool) -> int:
         b1 = types._serialize_type_for_visitor(t)
         assert isinstance(b1, bytes) and b1
         before = len(types._type_wire_cache)
-        op = types._serialize_type_for_visitor
-        arg = (t,)
         for _ in range(3):
             types._serialize_type_for_visitor(t)
         assert len(types._type_wire_cache) == before, "hit path wrote to the cache"
+        loop1(iters, control, types._serialize_type_for_visitor, (t,))
 
     elif name == "ser_visitor_miss":
         info = fixture_info("mod.A")
@@ -227,10 +257,9 @@ def child(name: str, iters: int, control: bool) -> int:
             idx[0] = i + 1
             return types._serialize_type_for_visitor(objs[i])
 
-        op = ser_v
-        arg = (None,)
         ser_v(None)
         assert len(types._type_wire_cache) >= 1, "miss path did not populate the cache"
+        loop1(iters, control, ser_v, (None,))
 
     elif name == "wire_store":
         next_key = [10**7]
@@ -240,10 +269,9 @@ def child(name: str, iters: int, control: bool) -> int:
             next_key[0] = k + 1
             types._type_wire_cache[k] = (None, b"x", None)
 
-        op = store
-        arg = (None,)
         store(None)
         assert len(types._type_wire_cache) >= 1, "store did not run"
+        loop1(iters, control, store, (None,))
 
     elif name == "content_probe":
         key = (b"l", b"r", (False,) * 6)
@@ -252,27 +280,24 @@ def child(name: str, iters: int, control: bool) -> int:
         def probe(t: object) -> bool:
             return key in subtypes._subtype_answers
 
-        op = probe
-        arg = (key,)
         assert probe(key) is True, "probe missed a present key"
+        loop1(iters, control, probe, (key,))
 
     elif name == "content_store":
 
         def cstore(t: object) -> None:
             subtypes._subtype_answers[(b"l", t, (False,) * 6)] = True
 
-        op = cstore
-        arg = (b"r",)
         cstore(b"r")
         assert len(subtypes._subtype_answers) >= 1, "store did not run"
+        loop1(iters, control, cstore, (b"r",))
 
     elif name == "pyo3_noarg":
         import type_kernel as tk
 
         v = tk.rust_checker_driver_counters()
         assert isinstance(v, tuple) and len(v) == 9, f"unexpected counters {v!r}"
-        op = tk.rust_checker_driver_counters
-        arg = ()
+        loop0(iters, control, tk.rust_checker_driver_counters, ())
 
     elif name == "pyo3_1arg":
         import type_kernel as tk
@@ -281,8 +306,7 @@ def child(name: str, iters: int, control: bool) -> int:
         tk.rust_checker_driver_record(0)
         after = tk.rust_checker_driver_counters()[0]
         assert after == before + 1, "counter did not move"
-        op = tk.rust_checker_driver_record
-        arg = (0,)
+        loop1(iters, control, tk.rust_checker_driver_record, (0,))
 
     elif name == "pyo3_13args":
         import type_kernel as tk
@@ -302,9 +326,8 @@ def child(name: str, iters: int, control: bool) -> int:
         def coded13(*a: object) -> int:
             return tk.rust_is_subtype_coded(*a)  # type: ignore[attr-defined]
 
-        op = coded13
-        arg = args
         assert coded13(*args) == 1, "crossing stopped answering"
+        loop13(iters, control, coded13, args)
 
     elif name == "callback_r2p":
         import type_kernel as tk
@@ -314,9 +337,12 @@ def child(name: str, iters: int, control: bool) -> int:
                 return False
 
         reg = Reg()
-        op = tk.rust_resolve_plugin_hook
-        arg = (reg, "mod.A.f", [], "get_function_hook")
-        assert op(*arg) is None, "expected None from the Rust callback path"
+        assert (
+            tk.rust_resolve_plugin_hook(reg, "mod.A.f", [], "get_function_hook") is None
+        ), "expected None from the Rust callback path"
+        loop4(
+            iters, control, tk.rust_resolve_plugin_hook, (reg, "mod.A.f", [], "get_function_hook")
+        )
 
     elif name == "callback_p_direct":
 
@@ -325,9 +351,8 @@ def child(name: str, iters: int, control: bool) -> int:
                 return False
 
         reg = Reg()
-        op = reg.has_hook_for
-        arg = ("get_function_hook", "mod.A.f")
-        assert op(*arg) is False
+        assert reg.has_hook_for("get_function_hook", "mod.A.f") is False
+        loop2(iters, control, reg.has_hook_for, ("get_function_hook", "mod.A.f"))
 
     elif name.startswith("is_subtype_e2e_"):
         import type_kernel as tk
@@ -355,9 +380,8 @@ def child(name: str, iters: int, control: bool) -> int:
             assert subtypes.is_subtype(la, ra) is True, "warm call failed"
             if name.endswith("_on"):
                 assert len(subtypes._subtype_answers) >= 1, "native path did not engage"
-            op = subtypes.is_subtype
-            arg = (la, ra)
             assert subtypes.is_subtype(la, ra) is True
+            loop2(iters, control, subtypes.is_subtype, (la, ra))
         else:  # distinct
             infos = [sub_info(f"mod.C{i}") for i in range(iters + 1)]
             # Every info must be in the resolver snapshot: the coded entry
@@ -374,20 +398,13 @@ def child(name: str, iters: int, control: bool) -> int:
                 idx[0] = i + 1
                 return subtypes.is_subtype(pairs[i][0], pairs[i][1])
 
-            op = e2e
-            arg = (None,)
             assert e2e(None) is True, "first distinct call failed"
             if name.endswith("_on"):
                 assert len(subtypes._subtype_answers) >= 1, "native distinct path did not engage"
             idx[0] = 0  # re-measure pair 0 too; identical work either way
+            loop1(iters, control, e2e, (None,))
     else:
         raise SystemExit(f"unknown bench {name}")
-
-    target = noop if control else op
-    f = target
-    a = arg
-    for _ in range(iters):
-        f(*a)
     return 0
 
 
