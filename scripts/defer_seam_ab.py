@@ -37,6 +37,9 @@ a wrong mode silently biases the delta instead of failing loudly:
            *handled* (semanal_classprop full ports), get a wrapper
            raising NotImplementedError instead: those sites already
            treat that exception as the defer signal.
+  tuple    TUPLE_SEAMS (audited): `(decided, value)` wire answers the
+           host unpacks (binder.py get_declaration); the defer returns
+           `(False, None)` = "not decided", falling through to Python.
   refused  REFUSED_SEAMS (audited): consumed directly with no exception
            guard, no valid defer mode exists (a None would be returned
            as a value, a raise would crash the run).
@@ -83,19 +86,13 @@ RAISE_SEAMS = frozenset(
     }
 )
 
-# Seams whose call sites treat a None return as "fall back to Python",
-# audited for the #1878 16-seam sweep and for the classifier-negative
-# decisions (measure_native_share.py); _live sites were part of the audit.
+# Seams whose call sites treat a None return as "fall back to Python";
+# live entries audited for the #1878 16-seam sweep and the classifier
+# decisions (measure_native_share.py), _live sites included.
 NONE_SEAMS = frozenset(
     {
-        "rust_freshen_function_type_vars",
-        "rust_possible_none_type_var_overlap",
-        "rust_get_declaration",
         "rust_find_self_type",
-        "rust_check_overload_call",
         "rust_classify_simple_assignment",
-        "rust_is_subtype",
-        "rust_expand_type",
         "rust_custom_special_method",
         "rust_get_target_type",
         "rust_narrow_declared_type",
@@ -105,9 +102,22 @@ NONE_SEAMS = frozenset(
         "rust_get_typevarlike_declaration",
         "rust_find_dataclass_transform_spec",
         "rust_find_duplicate",
+        # No production crossing in this tree (retired by this PR,
+        # #1879/#1739; plain rust_is_subtype is parity-test-only):
+        # an A/B measures ~0, the retirement-confirmation signal.
+        "rust_freshen_function_type_vars",
+        "rust_possible_none_type_var_overlap",
+        "rust_expand_type",
+        "rust_check_overload_call",
         "rust_classify_protocol_test_callee",
+        "rust_is_subtype",
     }
 )
+
+# (decided, value) wire-answer seams: the host unpacks the return
+# (binder.py get_declaration); the faithful defer is (False, None).
+# A bare None raises inside the unpack and survives only via except.
+TUPLE_SEAMS = frozenset({"rust_get_declaration"})
 
 # Seams consumed directly with no exception guard: no defer mode exists.
 # Audited via rg over mypy/ + mypyc/ for `return ...rust_x(...)` sites whose
@@ -174,17 +184,23 @@ def patch_seam(name: str) -> str:
             "contract (no valid None/raise defer mode); audit its call site "
             "and add an explicit classification before measuring it"
         )
-    if name not in NONE_SEAMS and name not in RAISE_SEAMS:
+    if name not in NONE_SEAMS | RAISE_SEAMS | TUPLE_SEAMS:
         sys.exit(
             f"refusing: seam {name} has no audited defer classification; "
             "audit every call site (plain and _live) and add it to "
-            "NONE_SEAMS, RAISE_SEAMS or REFUSED_SEAMS before measuring it"
+            "NONE_SEAMS, RAISE_SEAMS, TUPLE_SEAMS or REFUSED_SEAMS "
+            "before measuring it"
         )
     defer: Callable[..., object]
     if name in RAISE_SEAMS:
 
         def defer(*args: object, **kwargs: object) -> object:
             raise NotImplementedError("hard defer (defer_seam_ab)")
+
+    elif name in TUPLE_SEAMS:
+
+        def defer(*args: object, **kwargs: object) -> object:
+            return (False, None)
 
     else:
 
