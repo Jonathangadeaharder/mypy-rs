@@ -74,6 +74,7 @@ from mypy.types import (
     _serialize_stats,
     _serialize_stats_on,
     _serialize_with_taint_check,
+    _tvar_fingerprint_valid,
     _type_wire_cache,
     _wire_cache_enabled,
     _wire_cache_lookup,
@@ -402,9 +403,17 @@ _subtype_answers: dict[tuple[bytes, bytes, tuple[bool, ...]], bool] = {}
 # (default off; hook sites check the bool, production behavior is unchanged).
 # See _identity_probe_entry for why keys verify against wire bytes.
 _identity_probe_on: bool = _env_flag("MYPY_SUBTYPE_IDENTITY_PROBE")
-# One entry is a 3-tuple holding two wire blobs (~350 bytes with the key),
-# so this caps the probe at ~350 MB; pairs past the cap are counted, not stored.
+# The #71 Step-0 extension adds operand-level distinctness (see
+# _identity_probe_operand_note) and the family's wire-cost split the B
+# battery's event model consumes.
+# One pair entry is a 3-tuple holding two wire blobs (~350 bytes with the
+# key), so this caps the probe at ~350 MB; pairs past the cap are counted,
+# not stored.
 _IDENTITY_PROBE_CAP: Final = 1_000_000
+# One operand entry holds a single wire blob (~100 bytes with the key); both
+# operands of every entry share this namespace, so the cap is 2x the pair
+# cap in entries but a smaller footprint per entry.
+_IDENTITY_OPERAND_CAP: Final = 2_000_000
 _identity_probe: dict[str, int] = {
     # Native-path entries reaching the serialization step.
     "entries": 0,
@@ -422,14 +431,79 @@ _identity_probe: dict[str, int] = {
     "recycled": 0,
     "inserted": 0,
     "overflow": 0,
+    # Operand appearances at the native block (2 per entry, both sides).
+    "op_appearances": 0,
+    # Distinct operand objects first seen on the native path this build.
+    "op_first_seen": 0,
+    # Operand repeats: an id seen before whose wire bytes are equal.
+    "op_repeat": 0,
+    # Operand ids whose earlier bytes differ: a recycled id(), not a repeat.
+    "op_recycled": 0,
+    "op_overflow": 0,
+    # Appearances at a failed entry whose operands the pass never classified,
+    # so the classification sum reconciles with op_appearances.
+    "op_unclassified": 0,
+    # First-sight storable classes (the residency design's F3 predicate).
+    "op_first_plain": 0,
+    "op_first_fingerprinted": 0,
+    "op_first_prefixup": 0,
+    "op_first_tvar_root": 0,
+    "op_first_cache_off": 0,
+    # Repeat storable classes: plain and fingerprinted are servable,
+    # prefixup / tvar_root / cache_off appearances cannot be served.
+    # Staleness at arrival is the ser prediction's op_ser_fp_stale only.
+    "op_repeat_plain": 0,
+    "op_repeat_fingerprinted": 0,
+    "op_repeat_prefixup": 0,
+    "op_repeat_tvar_root": 0,
+    "op_repeat_cache_off": 0,
+    # Repeats a residency table would serve without serialization.
+    "op_repeat_servable": 0,
+    # No-entry class after a cache-on storable appearance: impossible
+    # while the mirror is off; a nonzero value refuses the run's evidence.
+    "op_class_anomaly": 0,
+    # Wire-prep cost class per appearance, replicating _serialize_type's
+    # own decision order (never calling into it, so the audit's own
+    # MYPY_SERIALIZE_STATS counters are not perturbed).
+    "op_ser_hit": 0,
+    "op_ser_fp_stale": 0,
+    "op_ser_builtin": 0,
+    "op_ser_mirror": 0,
+    "op_ser_miss": 0,
+    "op_ser_cache_off": 0,
+    # Pair-level repeat split at the content serve: both operands
+    # native-path repeats (class A) vs at least one first sight (class B).
+    "content_hits_oprepeat_both": 0,
+    "content_hits_opfresh_any": 0,
+    # Memoable pair repeats a residency table would serve (both operands
+    # servable at this appearance), and the unservable complement.
+    "memoable_servable_both": 0,
+    "memoable_unservable": 0,
+    # Coded crossings the family made, and how many deferred (code -1).
+    "coded_calls": 0,
+    "coded_defers": 0,
+    # Family-attributed decode inside the coded crossing, from
+    # WirePhaseCounters deltas snapped around each call.
+    "fam_windows": 0,
+    "fam_window_skipped": 0,
+    "fam_window_inconsistent": 0,
+    "fam_decode_calls": 0,
+    "fam_decode_bytes": 0,
+    "fam_decode_nodes": 0,
 }
 _identity_seen: dict[tuple[int, int, tuple[bool, ...]], tuple[bytes, bytes, bool]] = {}
+_operand_seen: dict[int, bytes] = {}
+# WirePhaseCounters availability, cached at the first coded call: 0 means
+# the counters are off or the extension predates them, so decode windows
+# are skipped and counted rather than silently reading as zero.
+_identity_wire_mode: int = -1
 
 
 def _identity_probe_reset() -> None:
     """Drop probe state at the same build boundaries as _subtype_answers."""
-    global _identity_seen
+    global _identity_seen, _operand_seen
     _identity_seen = {}
+    _operand_seen = {}
     for key in _identity_probe:
         _identity_probe[key] = 0
 
@@ -448,6 +522,191 @@ def _identity_probe_entry(
     """
     _identity_probe["entries"] += 1
     return (id(left), id(right), _subtype_ctx_key(subtype_context, proper_subtype))
+
+
+def _identity_probe_ser_class(t: Type) -> str:
+    """Predict the wire-prep cost class of `t`'s upcoming serialization.
+
+    Replicates `_serialize_type`'s own decision order without calling into
+    it, so the funnel's MYPY_SERIALIZE_STATS counters stay unperturbed and
+    the family's hit/miss split (#71 Step 0, B1 route b) is measured by the
+    probe alone. A fingerprint-stale entry is its own class: the real
+    funnel downgrades it to a fresh walk (a miss), and so would a
+    residency table (re-serialize plus fresh mint). A mirror serve is its
+    own class too (the F2 read sits between the builtin shortcut and the
+    walk): it serves bytes without an F3 store, so it is not servable by
+    the F3-keyed residency table this probe measures, but counting it
+    separately keeps a mirror-on run detectable instead of misread as a
+    miss. The mirror prediction is not a pure read: `_read_mirror_blob`
+    is `types_mirror.read_fresh_bytes`, which on the epoch-drift path
+    re-serializes and mutates mirror state, the same call the real
+    funnel makes right after — acceptable because a mirror-on run is
+    refused as evidence anyway (the operand side's anomaly counter
+    fires when the mirror serves without an F3 store). The operand
+    pass counts op_appearances, so a class taken here
+    for an appearance whose serialization then failed stays reconcilable
+    via op_unclassified.
+    """
+    if not _wire_cache_enabled():
+        _identity_probe["op_ser_cache_off"] += 1
+        return "cache_off"
+    entry = _type_wire_cache.get(id(t))
+    if entry is not None and entry[0] is t:
+        fp = entry[2]
+        if fp is None or _tvar_fingerprint_valid(fp):
+            _identity_probe["op_ser_hit"] += 1
+            return "hit"
+        _identity_probe["op_ser_fp_stale"] += 1
+        return "fp_stale"
+    if (
+        type(t) is Instance
+        and not t.args
+        and not t.last_known_value
+        and not t.extra_attrs
+        and t.type.fullname in _BUILTIN_INSTANCE_BYTES
+    ):
+        _identity_probe["op_ser_builtin"] += 1
+        return "builtin"
+    if _read_mirror_blob(t) is not None:
+        _identity_probe["op_ser_mirror"] += 1
+        return "mirror"
+    _identity_probe["op_ser_miss"] += 1
+    return "miss"
+
+
+def _identity_probe_operand_class(t: Type) -> str:
+    """Storable class of one operand appearance, per the residency design's
+    adoption of the F3 acceptance predicate: phase gate, pre-fixup exclusion,
+    bare-tvar-root exclusion, tvar fingerprint.
+
+    plain / fingerprinted entries serve; prefixup instances, bare tvar
+    roots and cache-off-phase appearances are never stored. The class is
+    read after both operands' serializations: a fingerprint-stale entry
+    has already been re-stored with a fresh fingerprint by its re-walk, so
+    staleness at arrival is measured only by the ser prediction
+    (op_ser_fp_stale), and ser_class keeps such repeats out of the
+    servable predicate. A cache-on storable appearance that left no F3
+    entry is impossible while the mirror is off (`_serialize_type` stores
+    on every walk); it lands in the anomaly counter and refuses the run's
+    evidence when nonzero.
+    """
+    if isinstance(t, Instance) and t.type_ref is not None:  # type: ignore[misc]
+        return "prefixup"
+    if isinstance(t, TypeVarLikeType):
+        return "tvar_root"
+    if not _wire_cache_enabled():
+        return "cache_off"
+    entry = _type_wire_cache.get(id(t))
+    if entry is not None and entry[0] is t:
+        fp = entry[2]
+        if fp is None:
+            return "plain"
+        return "fingerprinted"
+    if (
+        type(t) is Instance
+        and not t.args
+        and not t.last_known_value
+        and not t.extra_attrs
+        and t.type.fullname in _BUILTIN_INSTANCE_BYTES
+    ):
+        # The builtin shortcut returns precomputed bytes without an F3
+        # store; the shape (no args) is tvar-free, so a residency table
+        # would store it plain.
+        return "plain"
+    _identity_probe["op_class_anomaly"] += 1
+    return "anomaly"
+
+
+def _identity_probe_operand_note(t: Type, t_bytes: bytes, ser_class: str) -> tuple[bool, bool]:
+    """Count one operand appearance's distinctness and storable class.
+
+    Returns (repeat, servable): repeat is True when the id appeared before
+    on the native path with equal wire bytes (a recycled id is not a
+    repeat); servable is True when the appearance's upcoming serialization
+    is served without a walk — an F3 cache hit, or the builtin shortcut's
+    precomputed bytes, which a residency table likewise serves free (the
+    operand class already buckets it plain).
+    """
+    probe = _identity_probe
+    cls = _identity_probe_operand_class(t)
+    key = id(t)
+    seen = _operand_seen.get(key)
+    repeat = False
+    if seen is None:
+        if len(_operand_seen) < _IDENTITY_OPERAND_CAP:
+            _operand_seen[key] = t_bytes
+            probe["op_first_seen"] += 1
+            key_name = "op_first_" + cls
+            if key_name in probe:
+                probe[key_name] += 1
+        else:
+            probe["op_overflow"] += 1
+    elif seen == t_bytes:
+        repeat = True
+        probe["op_repeat"] += 1
+        key_name = "op_repeat_" + cls
+        if key_name in probe:
+            probe[key_name] += 1
+    else:
+        # Same id, different wire bytes: recycled after GC. A new distinct
+        # object now owns the slot, so first-sight classes no longer apply.
+        probe["op_recycled"] += 1
+        _operand_seen[key] = t_bytes
+    servable = repeat and ser_class in ("hit", "builtin")
+    if servable:
+        probe["op_repeat_servable"] += 1
+    return repeat, servable
+
+
+def _identity_probe_operands(
+    left: Type, left_bytes: bytes, ser_left: str, right: Type, right_bytes: bytes, ser_right: str
+) -> tuple[bool, bool, bool, bool]:
+    """Operand-level pass over one entry's two appearances; returns the
+    (repeat, servable) flags per side for the pair-level class A/B split."""
+    left_repeat, left_servable = _identity_probe_operand_note(left, left_bytes, ser_left)
+    right_repeat, right_servable = _identity_probe_operand_note(right, right_bytes, ser_right)
+    return left_repeat, left_servable, right_repeat, right_servable
+
+
+def _identity_probe_wire_open() -> tuple[int, int, int] | None:
+    """Snapshot the in-kernel decode counters around one coded call.
+
+    Returns None when the WirePhaseCounters are off (or the extension
+    predates them): the skipped window is counted, never read as a zero.
+    """
+    global _identity_wire_mode
+    if _identity_wire_mode == 0:
+        return None
+    try:
+        counters = _type_kernel.rust_wire_phase_counters()
+    except AttributeError:
+        _identity_wire_mode = 0
+        return None
+    if _identity_wire_mode < 0:
+        _identity_wire_mode = counters[0]
+        if counters[0] == 0:
+            return None
+    # (decode_calls, decode_bytes, decode_nodes); positional per
+    # WirePhaseCounters10 in crates/type_kernel/src/wire.rs.
+    return (counters[1], counters[2], counters[3])
+
+
+def _identity_probe_wire_close(before: tuple[int, int, int] | None) -> None:
+    """Add one coded call's decode deltas to the family attribution."""
+    if before is None:
+        _identity_probe["fam_window_skipped"] += 1
+        return
+    counters = _type_kernel.rust_wire_phase_counters()
+    probe = _identity_probe
+    probe["fam_windows"] += 1
+    deltas = (counters[1] - before[0], counters[2] - before[1], counters[3] - before[2])
+    if min(deltas) < 0:
+        # Counters were reset mid-run: the delta is not evidence.
+        probe["fam_window_inconsistent"] += 1
+        return
+    probe["fam_decode_calls"] += deltas[0]
+    probe["fam_decode_bytes"] += deltas[1]
+    probe["fam_decode_nodes"] += deltas[2]
 
 
 def _identity_probe_verify(
@@ -475,17 +734,34 @@ def _identity_probe_verify(
 
 
 def _identity_probe_note(
-    key: tuple[int, int, tuple[bool, ...]], memoable: bool, *, content_hit: bool
+    key: tuple[int, int, tuple[bool, ...]],
+    memoable: bool,
+    *,
+    content_hit: bool,
+    opstat: tuple[bool, bool, bool, bool] | None = None,
 ) -> None:
     """Count a decided answer and mark the key's entry decided.
 
     content_hit=True additionally counts content-cache serves, split by
-    whether the memo could have answered the pair before serialization.
+    whether the memo could have answered the pair before serialization,
+    and by the #71 class A/B operand split. opstat (the entry's per-side
+    (repeat, servable) flags) additionally splits the memoable repeats a
+    residency table would serve from the unservable complement.
     """
     if content_hit:
         _identity_probe["content_hits"] += 1
         if memoable:
             _identity_probe["content_hits_identity"] += 1
+        if opstat is not None:
+            if opstat[0] and opstat[2]:
+                _identity_probe["content_hits_oprepeat_both"] += 1
+            else:
+                _identity_probe["content_hits_opfresh_any"] += 1
+    if memoable and opstat is not None:
+        if opstat[1] and opstat[3]:
+            _identity_probe["memoable_servable_both"] += 1
+        else:
+            _identity_probe["memoable_unservable"] += 1
     entry = _identity_seen.get(key)
     if entry is not None:
         _identity_seen[key] = (entry[0], entry[1], True)
@@ -916,16 +1192,28 @@ def _is_subtype(
     ):
         ikey: tuple[int, int, tuple[bool, ...]] | None = None
         memoable = False
+        ser_left = ser_right = ""
+        opstat: tuple[bool, bool, bool, bool] | None = None
         if _identity_probe_on:
             ikey = _identity_probe_entry(left, right, subtype_context, proper_subtype)
+            ser_left = _identity_probe_ser_class(left)
         try:
             left_bytes = _serialize_type(left)
+            if ikey is not None:
+                # Right's prediction must reflect the cache state its own
+                # upcoming serialization will see (left may warm it).
+                ser_right = _identity_probe_ser_class(right)
             right_bytes = _serialize_type(right)
         except (AssertionError, NotImplementedError):
             left_bytes = None
             right_bytes = None
+        if ikey is not None:
+            _identity_probe["op_appearances"] += 2
         if ikey is not None and (left_bytes is None or right_bytes is None):
             _identity_probe["ser_failed"] += 1
+            # The operand pass never runs for a failed entry: count both
+            # appearances unclassified so the classification sum reconciles.
+            _identity_probe["op_unclassified"] += 2
         ctx_key: tuple[bool, ...] | None = None
         if left_bytes is not None and right_bytes is not None:
             # Same key the single-pair call's flags resolve to, so a
@@ -933,12 +1221,15 @@ def _is_subtype(
             ctx_key = _subtype_ctx_key(subtype_context, proper_subtype)
             if ikey is not None:
                 memoable = _identity_probe_verify(ikey, left_bytes, right_bytes)
+                opstat = _identity_probe_operands(
+                    left, left_bytes, ser_left, right, right_bytes, ser_right
+                )
             if (left_bytes, right_bytes, ctx_key) in _subtype_answers:
                 # Decided this build under this exact flag set; identical
                 # bytes under identical flags give the identical answer
                 # (the cache is reset at build boundaries).
                 if ikey is not None:
-                    _identity_probe_note(ikey, memoable, content_hit=True)
+                    _identity_probe_note(ikey, memoable, content_hit=True, opstat=opstat)
                 return _subtype_answers[(left_bytes, right_bytes, ctx_key)]
         # Single-pair native path through the coded entry: the i8 code
         # (1/0/3/-1, matching `rust_is_subtype_batch`) lets the answer be
@@ -954,6 +1245,11 @@ def _is_subtype(
                 "the type_kernel on sys.path is not the in-repo extension: "
                 f"{err}. " + STALE_TYPE_KERNEL_REMEDY
             ) from err
+        if ikey is not None:
+            _identity_probe["coded_calls"] += 1
+            wire_before = _identity_probe_wire_open()
+        else:
+            wire_before = None
         try:
             code = coded_entry(
                 # Reuse the cache attempt's wire bytes when it produced
@@ -975,6 +1271,13 @@ def _is_subtype(
             # Type tree contains an unserializable variant (e.g.
             # TypeGuardedType nested in a Union). Defer to Python.
             code = -1
+        finally:
+            # Close the window even on an escaping exception, or the next
+            # window's delta silently absorbs the leaked decode work.
+            if ikey is not None:
+                _identity_probe_wire_close(wire_before)
+        if ikey is not None and code < 0:
+            _identity_probe["coded_defers"] += 1
         if code >= 0:
             # ctx_key is built only when both serializations succeeded, so
             # this check both excludes the failed-serialization case (nothing
@@ -990,7 +1293,7 @@ def _is_subtype(
                 # (same exclusion the retired batch flush applied).
                 _subtype_answers[(left_bytes, right_bytes, ctx_key)] = code == 1
             if ikey is not None and code in (0, 1):
-                _identity_probe_note(ikey, memoable, content_hit=False)
+                _identity_probe_note(ikey, memoable, content_hit=False, opstat=opstat)
             return code != 0
     return left.accept(SubtypeVisitor(orig_right, subtype_context, proper_subtype))
 

@@ -20,6 +20,10 @@ Run from the worktree root (needs the scratch type_kernel .so):
 Kernel benches use the in-repo extension via /private/tmp/mypy-rs-local-typekernel
 (the same build the paired rounds use; never the PyPI stub).
 Results print as a table and land in /private/tmp/gap-attrib/microbench.txt.
+Lanes with their own private scratch (e.g. #71 Step 0, which must not touch
+the shared typekernel dir a sibling lane builds) override the extension dir
+and the output dir through MYPY_MICROBENCH_TK_SO / MYPY_MICROBENCH_OUT_DIR
+and can filter benches with --only name1,name2.
 """
 
 from __future__ import annotations
@@ -42,8 +46,10 @@ for _f in list(sys.meta_path):
 
 PY = sys.executable
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = "/private/tmp/gap-attrib"
-TK_SO = "/private/tmp/mypy-rs-local-typekernel/type_kernel.cpython-313-darwin.so"
+OUT_DIR = os.environ.get("MYPY_MICROBENCH_OUT_DIR") or "/private/tmp/gap-attrib"
+TK_SO = os.environ.get("MYPY_MICROBENCH_TK_SO") or (
+    "/private/tmp/mypy-rs-local-typekernel/type_kernel.cpython-313-darwin.so"
+)
 
 # (name, needs_kernel_ext, iters)
 BENCHES = [
@@ -87,16 +93,42 @@ def run_measured(child_args: list[str], env: dict[str, str]) -> int:
 def parent() -> int:
     default_iters = None
     if "--iters" in sys.argv:
-        default_iters = int(sys.argv[sys.argv.index("--iters") + 1])
+        _iters_idx = sys.argv.index("--iters") + 1
+        if _iters_idx >= len(sys.argv):
+            raise SystemExit("--iters requires a positive integer")
+        try:
+            default_iters = int(sys.argv[_iters_idx])
+        except ValueError:
+            raise SystemExit(f"--iters needs an integer, got {sys.argv[_iters_idx]!r}") from None
+        if default_iters <= 0:
+            raise SystemExit(f"--iters must be positive, got {default_iters}")
+    only: set[str] | None = None
+    if "--only" in sys.argv:
+        _only_idx = sys.argv.index("--only") + 1
+        if _only_idx >= len(sys.argv):
+            raise SystemExit("--only requires a comma-separated list of bench names")
+        only = {n.strip() for n in sys.argv[_only_idx].split(",") if n.strip()}
+        unknown = only - {b[0] for b in BENCHES}
+        if unknown or not only:
+            raise SystemExit(
+                f"unknown or empty --only selection: {sorted(unknown)}; "
+                f"known benches: {sorted(b[0] for b in BENCHES)}"
+            )
     os.makedirs(OUT_DIR, exist_ok=True)
     env = dict(os.environ)
-    env["PYTHONPATH"] = "/private/tmp/mypy-rs-local-typekernel"
+    # Prepend the extension dir rather than replacing PYTHONPATH so a lane
+    # can add its own scratch dirs (e.g. the #71 Step 0 private typekernel)
+    # without losing the shared ast/resolver paths.
+    _tk_dir = os.path.dirname(TK_SO)
+    env["PYTHONPATH"] = _tk_dir if not env.get("PYTHONPATH") else _tk_dir + ":" + env["PYTHONPATH"]
     env["MYPY_NUM_WORKERS"] = "0"
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     print(f"{'bench':32} {'iters':>9} {'instr_op':>14} {'instr_ctl':>14} {'instr/call':>11}")
     rows = []
     t0 = time.time()
     for name, needs_ext, bench_iters in BENCHES:
+        if only is not None and name not in only:
+            continue
         iters = default_iters or bench_iters
         if needs_ext and not os.path.exists(TK_SO):
             raise SystemExit(f"bench {name} needs the scratch type_kernel .so at {TK_SO}")
