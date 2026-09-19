@@ -38,8 +38,8 @@ from mypy.types import (
     _serialize_stats_on,
     _serialize_with_taint_check,
     _type_wire_cache,
-    _type_wire_cache_hit,
     _wire_cache_enabled,
+    _wire_cache_lookup,
     _wire_cache_storable,
     get_proper_type,
     get_proper_types,
@@ -127,9 +127,9 @@ def _set_native_erase_typevars_active(active: bool) -> None:
 def _serialize_type(t: Type) -> bytes:
     key = id(t)
     if _wire_cache_enabled():
-        cached = _type_wire_cache_hit(key, t)
-        if cached is not None:
-            return cached
+        hit = _wire_cache_lookup(key, t)
+        if hit is not None:
+            return hit[0]
     if type(t) is Instance:
         fn = t.type.fullname
         if (

@@ -114,8 +114,8 @@ identity mint, guarantee 2 (idempotent per live object) inherited for free.
 `id(t)`, exactly the shape and protocol of the shipped F3 wire cache
 (`mypy/types.py:133-136`). A probe checks the dict, verifies `entry[0] is t`,
 and returns the TypeId. Hit cost is a dict probe plus an identity check, the
-same operations `_type_wire_cache_hit` performs today
-(`mypy/types.py:206-225`); no serialization, no crossing, no bytes.
+same operations `_wire_cache_lookup` performs today
+(`mypy/types.py:206-237`); no serialization, no crossing, no bytes.
 
 **What Rust stores.** Per TypeId: the decoded `Arc<wire::Type>` tree (owned
 for the lifetime of the check, the issue's requirement), fetched by id on
