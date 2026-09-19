@@ -22,21 +22,24 @@ probe is immune to both foreign-tree channels (#1789); it refuses to run if
 `mypy` resolves outside the pinned tree, and refuses unless
 MYPY_NUM_WORKERS=0 so the self-check cannot fork unpatched workers.
 
-Defer modes, per call-site contract (the default None arm assumes the
-`None = fall back to Python` contract; every seam must be audited
-against its call sites before its first A/B, cross-checking the
-classifications in scripts/measure_native_share.py):
+Defer modes, per call-site contract. Every seam must be audited against
+all of its call sites (plain and `_live`) before its first A/B and
+added to the matching table, cross-checking the classifications in
+scripts/measure_native_share.py; unclassified seams are refused, since
+a wrong mode silently biases the delta instead of failing loudly:
 
-  None     default: every host treats a None return as "fall back to
-           Python" (`if result is not None: ...` behind a defer-guard).
-  RAISE    seams whose call site consumes the return as a decided answer,
-           or whose success path is `try: _rust_x(...); return` where a
-           returned None means *handled* (semanal_classprop full ports),
-           get a wrapper raising NotImplementedError instead: those sites
-           already treat that exception as the defer signal.
-  refused  seams consumed directly with no exception guard have no valid
-           defer mode (a None would be returned as a value, a raise would
-           crash the run); the harness refuses to measure them.
+  None     NONE_SEAMS (audited): every host treats a None return as
+           "fall back to Python" (`if result is not None: ...` behind
+           a defer-guard).
+  RAISE    RAISE_SEAMS (audited): seams whose call site consumes the
+           return as a decided answer, or whose success path is
+           `try: _rust_x(...); return` where a returned None means
+           *handled* (semanal_classprop full ports), get a wrapper
+           raising NotImplementedError instead: those sites already
+           treat that exception as the defer signal.
+  refused  REFUSED_SEAMS (audited): consumed directly with no exception
+           guard, no valid defer mode exists (a None would be returned
+           as a value, a raise would crash the run).
 
 Live-variant dispatch: several typeanal seams call `<seam>_live` (or
 `_live_noresolver`) whenever the resolver is installed, which is the
@@ -77,6 +80,32 @@ RAISE_SEAMS = frozenset(
         "rust_check_protocol_status",
         "rust_calculate_class_vars",
         "rust_add_type_promotion",
+    }
+)
+
+# Seams whose call sites treat a None return as "fall back to Python",
+# audited for the #1878 16-seam sweep and for the classifier-negative
+# decisions (measure_native_share.py); _live sites were part of the audit.
+NONE_SEAMS = frozenset(
+    {
+        "rust_freshen_function_type_vars",
+        "rust_possible_none_type_var_overlap",
+        "rust_get_declaration",
+        "rust_find_self_type",
+        "rust_check_overload_call",
+        "rust_classify_simple_assignment",
+        "rust_is_subtype",
+        "rust_expand_type",
+        "rust_custom_special_method",
+        "rust_get_target_type",
+        "rust_narrow_declared_type",
+        "rust_infer_constraints_full",
+        "rust_analyze_instance_member_dispatch",
+        "rust_solve_generic_call",
+        "rust_get_typevarlike_declaration",
+        "rust_find_dataclass_transform_spec",
+        "rust_find_duplicate",
+        "rust_classify_protocol_test_callee",
     }
 )
 
@@ -144,6 +173,12 @@ def patch_seam(name: str) -> str:
             f"refusing: seam {name} is consumed directly with no defer "
             "contract (no valid None/raise defer mode); audit its call site "
             "and add an explicit classification before measuring it"
+        )
+    if name not in NONE_SEAMS and name not in RAISE_SEAMS:
+        sys.exit(
+            f"refusing: seam {name} has no audited defer classification; "
+            "audit every call site (plain and _live) and add it to "
+            "NONE_SEAMS, RAISE_SEAMS or REFUSED_SEAMS before measuring it"
         )
     defer: Callable[..., object]
     if name in RAISE_SEAMS:
