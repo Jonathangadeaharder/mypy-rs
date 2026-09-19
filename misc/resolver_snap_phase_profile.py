@@ -535,7 +535,9 @@ def install(state: State) -> None:
         state.collects += 1
         if not scc:
             state.empty_scc_collects += 1
-        first = self._native_resolver is None
+        # Kernel-off runs never install a resolver, so None alone would
+        # flag every collect "first" and trip the saw_first guard (#69).
+        first = self.options.native_type_kernel and self._native_resolver is None
         t0 = time.perf_counter()
         state.in_build = True
         state.in_first_build = first
