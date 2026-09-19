@@ -83,7 +83,7 @@ def run_measured(child_args: list[str], env: dict[str, str]) -> int:
         raise SystemExit(f"bench subprocess failed: {child_args}")
     for line in proc.stderr.splitlines():
         if "instructions retired" in line:
-            return int(line.split()[0].replace(",", "."))
+            return int(line.split()[0].replace(",", ""))
     raise SystemExit(f"no instructions line for {child_args}: {proc.stderr[-2000:]}")
 
 
