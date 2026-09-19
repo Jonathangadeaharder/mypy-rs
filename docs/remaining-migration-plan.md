@@ -1,6 +1,38 @@
 # Remaining Rust Migration Plan
 
-Date: 2026-08-13
+Date: 2026-08-13 (objective restated 2026-09-19)
+
+## Objective: standalone Rust port (full-port-first)
+
+The goal is to make mypy a Rust program, not to make a Rust kernel embedded in
+Python beat pure Python. Target architecture:
+
+```
+source -> Rust parser/AST -> Rust semantic analysis -> Rust type graph
+       -> Rust checker -> Rust diagnostics
+```
+
+Python reduces to an optional compatibility layer for Python-written mypy
+plugins. Epic with roadmap, definition of done, and phase mapping: #72.
+
+Performance gating rule (corrects earlier practice): correctness gates stay
+strict, but the performance parity gate lives at **architectural milestones
+where old work is actually deleted** (a wire path deleted, a Python fallback
+removed, a representation retired). Intermediate states that keep both
+representations alive legitimately regress: they pay
+`Python representation + Rust representation + synchronization`, whereas the
+target is `Rust representation` alone. Phase F shadow storage, the G4 mirror and
+the Instance replacement view were all measured under the old net-positive-now
+rule; their rejections stand as measurements of the *hybrid*, not of ownership
+itself (#72, #71).
+
+Definition of done (#72, verbatim): the main executable is Rust; parsing,
+semantic analysis, type representation, checking, dependency management,
+diagnostics and incremental state are Rust-owned; ordinary checking requires no
+Python interpreter; the upstream mypy test corpus has essentially complete
+behavioral parity; diagnostics identical or differences documented; Python
+plugins run through an optional compatibility bridge; no Python fallback
+participates in a normal check.
 
 ## Current State
 
