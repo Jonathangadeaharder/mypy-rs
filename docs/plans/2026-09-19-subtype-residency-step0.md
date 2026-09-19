@@ -112,7 +112,9 @@ reported as the serialize-leg floor.
   answer-cache content hits, so their B2/B3 share is zero): the addressable
   cost is the served population x the full repeat-path site cost
   (~24.6-28.1k instr/call: route-a per-entry average and the e2e bench) =
-  0.77-1.25e9, i.e. at most ~33% of B. This is what the gates act on.
+  0.97-1.58e9 on the run-7 populations (39,479 both-servable pairs up to
+  the 94.53% projection of the 59,430 class-A pairs), i.e. at most ~41%
+  of B. This is what the gates act on.
 
 ## Probe populations (two counted runs; spread <= 0.1%)
 
@@ -140,10 +142,14 @@ D share: 116,655 / 299,558 = 38.94% of classified appearances are
 first-sight (or recycled-id) objects. Repeat share: 61.06%.
 Repeat classes: plain 99.68%, fingerprinted 0.25%, tvar_root 0.07%,
 prefixup 0, cache_off 0 — the F3 store-class exclusions barely fire, but the
-servability predicate (F3-cache hit at arrival) is what excludes.
+servability predicate (F3-cache hit or builtin-shortcut serve at arrival)
+is what excludes.
 
-**Exclusion rate among repeats = 1 - 153,939/182,903 = 15.84%.** Only 84.2%
-of repeat appearances would be served by the residency table at all.
+Exclusion rate among repeats, as first measured, = 15.84%. A seventh
+review round then reclassified the servable predicate itself (see the
+post-fix section): the builtin shortcut's serve counts, and the corrected
+rate is **1 - 173,678/182,989 = 5.09%** (run 7). Only 94.9% of repeat
+appearances would be served by the residency table at all.
 
 ### Post-fix re-measurement (runs 3-4)
 
@@ -184,6 +190,21 @@ op_repeat_servable 153,943, memoable 31,366, D 116,675 — the
 single-sourced lookup policy leaves the operand classes within band,
 so every number above stands for the merged head.
 
+A seventh review round reclassified the servable predicate: the operand
+pass bucketed builtin-shortcut operands plain ("a residency table would
+store it plain") while the servable predicate still required an F3 cache
+hit, so the ~19.7k repeat-builtin appearances were counted unservable
+and inflated the exclusion rate. The same round removed the operand
+pass's fp_stale classes, which were structurally dead: the class is read
+after both serializations, so a fingerprint-stale entry was already
+re-stored by its re-walk; arrival-time staleness is the ser prediction's
+op_ser_fp_stale, which reads 0 on this corpus. Run 7 (post-fix): exit 0,
+mode 1, op_ser 180,629/29,446/89,557, op_repeat_servable 173,678
+(exclusion 5.09%), memoable 39,479/41,765 = 94.53%, D 116,623, class A
+59,430, coded 22,654 — every ser-side, distinctness and pair-level
+number stands; the servable populations move, and the gate arithmetic
+below is recomputed on run 7.
+
 The self-pair bias the pre-warm prediction carried is therefore
 negligible here: reclassifying a same-object pair's second serialization
 from pre-warm miss to hit moves the split by less than the run-to-run
@@ -195,10 +216,13 @@ pair-level repeat populations, which the ser-class timing never touched.
 **Gate 1, reading 1 (>=95% of repeat-class wire disappears).** The
 operationalization (brief section 3) needs repeat-class entries served
 without serialization / baseline repeat-class entries >= 0.95. Measured:
-per repeat appearance the table serves 84.2% (exclusion 15.84% >> the 5%
-headroom); per whole-pair repeat both operands are servable in only
-31,376/41,735 = 75.2% of cases; even against the full class-A population
-the projected serve rate is 44,640/59,377 = 75.2%. **Cannot fire.**
+per repeat appearance the table serves 173,678/182,989 = 94.91%
+(exclusion 5.09%, only 0.09 points inside the 5% headroom); per
+whole-pair repeat both operands are servable in only
+39,479/41,765 = 94.53% of cases; even against the full class-A population
+the projected serve rate stays 94.53% (56,170/59,430). **Cannot fire, but
+narrowly: the margin is 0.09-0.47 points, and these ratios are stable to
+~0.01 points across counted runs, so the miss is real but thin.**
 
 **Gate 1, reading 2 (>=95% of total family wire disappears).** Serialize-at-
 most-once per object makes deletion = 1 - D/appearances = 1 - 116,655/299,600
@@ -210,27 +234,30 @@ a different lever with its own falsifier. **Cannot fire.**
 
 **Gate 2 ((I0 - I1)/B >= 0.5).** Served lookups need both operands resident
 (first sights cannot be served in any architecture that leaves Python
-canonical) and the answer present: bounded by the 31,376 both-servable
-whole-pair repeats (floor; the brief's 41.7k floor shrinks to this once
-operand-level exclusion applies) and ~44,640 (ceiling: 59,377 class-A pairs
-x the measured 75.2% pair-servable rate). Savings at ~23-27k instr per
+canonical) and the answer present: bounded by the 39,479 both-servable
+whole-pair repeats (floor; the brief's 41.8k floor shrinks to this once
+operand-level exclusion applies) and ~56,170 (ceiling: 59,430 class-A pairs
+x the measured 94.53% pair-servable rate). Savings at ~23-27k instr per
 served lookup (brief cost model; the e2e repeat bench re-derived at 28,090.9
-bounds it) minus 0.1-0.2e9 new costs gives I0 - I1 = 0.52-1.11e9.
-Ratio against full-scope B = 3.84e9: **0.135 - 0.289 < 0.5.** Scope-consistent
+bounds it) minus 0.1-0.2e9 new costs gives I0 - I1 = 0.71-1.42e9.
+Ratio against full-scope B = 3.84e9: **0.18 - 0.37 < 0.5.** Scope-consistent
 serialize-leg ratio (serialize-leg savings / B1b): 0.05-0.09. The ratio is
 below the threshold under every scope reading.
 
 **The decisive number is the population itself:** reaching 0.5 x B = 1.92e9
 needs >= 71,000 served lookups at the most generous 27k saved each. The
-class-A ceiling is 59,377 pairs. Even with zero exclusions, zero new costs
-and every class-A pair served at the full e2e cost (59,377 x 28,090 =
+class-A ceiling is 59,430 pairs. Even with zero exclusions, zero new costs
+and every class-A pair served at the full e2e cost (59,430 x 28,090 =
 1.67e9), the ratio tops at 0.43 < 0.5. No measurement refinement rescues it;
 the repeat-class population is too small to carry gate 2.
 
 ## Verdict
 
-**NO-GO.** Gate 1 cannot fire under either reading (84.2%/75.2% vs 95%;
-61.1% vs 95%). Gate 2 cannot fire: the projected ratio is 0.14-0.29, with a
+**NO-GO.** Gate 1 cannot fire under either reading: 94.91%/94.53% vs 95%
+(reading 1 now misses only by 0.09-0.47 points — the exclusion headroom is
+nearly spent, and an architecture that also served the remaining ~9.3k
+unservable repeat appearances would flip it) and 61.1% vs 95% (reading 2,
+decisive). Gate 2 cannot fire: the projected ratio is 0.18-0.37, with a
 hard population-bound ceiling of 0.43, all below 0.5. The falsifier did
 what it was designed to do: it killed the flip lane before a line of
 production code was written, and it says where the mass actually is — 38.9%

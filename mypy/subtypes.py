@@ -446,16 +446,14 @@ _identity_probe: dict[str, int] = {
     # First-sight storable classes (the residency design's F3 predicate).
     "op_first_plain": 0,
     "op_first_fingerprinted": 0,
-    "op_first_fp_stale": 0,
     "op_first_prefixup": 0,
     "op_first_tvar_root": 0,
     "op_first_cache_off": 0,
     # Repeat storable classes: plain and fingerprinted are servable,
-    # prefixup / tvar_root / cache_off / fp_stale appearances cannot be
-    # served (a stale fingerprint downgrades a serve to a miss).
+    # prefixup / tvar_root / cache_off appearances cannot be served.
+    # Staleness at arrival is the ser prediction's op_ser_fp_stale only.
     "op_repeat_plain": 0,
     "op_repeat_fingerprinted": 0,
-    "op_repeat_fp_stale": 0,
     "op_repeat_prefixup": 0,
     "op_repeat_tvar_root": 0,
     "op_repeat_cache_off": 0,
@@ -582,12 +580,15 @@ def _identity_probe_operand_class(t: Type) -> str:
     bare-tvar-root exclusion, tvar fingerprint.
 
     plain / fingerprinted entries serve; prefixup instances, bare tvar
-    roots, stale fingerprints (a serve downgrades to a miss,
-    `_type_wire_cache_hit`) and cache-off-phase appearances are never
-    stored. A cache-on storable appearance that left no F3 entry is
-    impossible while the mirror is off (`_serialize_type` stores on every
-    walk); it lands in the anomaly counter and refuses the run's evidence
-    when nonzero.
+    roots and cache-off-phase appearances are never stored. The class is
+    read after both operands' serializations: a fingerprint-stale entry
+    has already been re-stored with a fresh fingerprint by its re-walk, so
+    staleness at arrival is measured only by the ser prediction
+    (op_ser_fp_stale), and ser_class keeps such repeats out of the
+    servable predicate. A cache-on storable appearance that left no F3
+    entry is impossible while the mirror is off (`_serialize_type` stores
+    on every walk); it lands in the anomaly counter and refuses the run's
+    evidence when nonzero.
     """
     if isinstance(t, Instance) and t.type_ref is not None:  # type: ignore[misc]
         return "prefixup"
@@ -600,8 +601,6 @@ def _identity_probe_operand_class(t: Type) -> str:
         fp = entry[2]
         if fp is None:
             return "plain"
-        if not _tvar_fingerprint_valid(fp):
-            return "fp_stale"
         return "fingerprinted"
     if (
         type(t) is Instance
@@ -623,10 +622,10 @@ def _identity_probe_operand_note(t: Type, t_bytes: bytes, ser_class: str) -> tup
 
     Returns (repeat, servable): repeat is True when the id appeared before
     on the native path with equal wire bytes (a recycled id is not a
-    repeat); servable is True when a residency table would have served
-    this appearance without serialization, i.e. the operand is a repeat
-    whose upcoming serialization the F3 cache itself hit (entry present,
-    identity holding, fingerprint valid, phase gate open).
+    repeat); servable is True when the appearance's upcoming serialization
+    is served without a walk — an F3 cache hit, or the builtin shortcut's
+    precomputed bytes, which a residency table likewise serves free (the
+    operand class already buckets it plain).
     """
     probe = _identity_probe
     cls = _identity_probe_operand_class(t)
@@ -653,7 +652,7 @@ def _identity_probe_operand_note(t: Type, t_bytes: bytes, ser_class: str) -> tup
         # object now owns the slot, so first-sight classes no longer apply.
         probe["op_recycled"] += 1
         _operand_seen[key] = t_bytes
-    servable = repeat and ser_class == "hit"
+    servable = repeat and ser_class in ("hit", "builtin")
     if servable:
         probe["op_repeat_servable"] += 1
     return repeat, servable
