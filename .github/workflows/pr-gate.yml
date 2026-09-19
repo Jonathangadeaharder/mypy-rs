@@ -90,16 +90,24 @@ jobs:
           cargo test -p mypy-ast-serialize
 
       # The skel bin is `required-features = ["skel"]`, so `cargo build
-      # --workspace` skips it; without these the crate could stop
-      # compiling with every gate green (#95).
+      # --workspace` skips it; without these the crate and its gate
+      # tests could rot with every gate green (#95).
       - name: cargo fmt --check (mypy-rs-skel)
         run: cargo fmt -p mypy-rs-skel -- --check
 
+      # --all-targets also compiles tests/gates.rs, which the bare
+      # `cargo check`/`clippy` skip (integration tests are a separate
+      # target), so a broken gate test fails here instead of rotting.
       - name: cargo clippy (mypy-rs-skel)
-        run: cargo clippy -p mypy-rs-skel --features skel -- -D warnings
+        run: cargo clippy -p mypy-rs-skel --features skel --all-targets -- -D warnings
 
       - name: cargo check (mypy-rs-skel)
-        run: cargo check -p mypy-rs-skel --features skel --locked
+        run: cargo check -p mypy-rs-skel --features skel --all-targets --locked
+
+      # Runs the gate tests (1 differential, 3 seam count, 4 cache
+      # isolation; gate 2 is macOS-only and compiles away here).
+      - name: cargo test (mypy-rs-skel gates)
+        run: cargo test -p mypy-rs-skel --features skel --locked
 
       - name: Restore native extensions (built once by build-extensions)
         # Self-check (num_workers=4) forces native_parser/native_resolver
