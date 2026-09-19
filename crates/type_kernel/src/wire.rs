@@ -140,6 +140,10 @@ impl std::error::Error for WireError {}
 
 impl<'a> ReadBuffer<'a> {
     pub(crate) fn new(data: &'a [u8]) -> Self {
+        wire_phase_bump(|c| {
+            c.decode_calls += 1;
+            c.decode_bytes += data.len() as u64;
+        });
         ReadBuffer { data, pos: 0 }
     }
 
@@ -650,7 +654,7 @@ pub(crate) struct Parameters {
 /// kept: they will be consumed by Stage 3b (`TypeInfo` snapshot) and 3c
 /// (`is_subtype`), and storing them now keeps the reader byte-exact against
 /// the Python wire format.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 // Variant names mirror mypy's `Type` subclasses (Instance, AnyType, NoneType,
 // ...) for direct cross-referencing with `mypy/types.py`. Clippy's
 // `enum_variant_names` lint would force renames that diverge from that
@@ -806,6 +810,253 @@ pub(crate) enum Type {
     },
 }
 
+/// Clone is hand-written (not derived) so the wire-churn phase profile
+/// (#63) can count every cloned node, nested ones included: field clones
+/// (`Vec<Type>`, `Option<Box<Type>>`, the `ExtraAttrs` value map) recurse
+/// back into this impl. Field order and semantics are exactly the derived
+/// clone's.
+///
+/// Drop is NOT instrumented: `impl Drop for Type` would forbid the 63
+/// by-value destructures across the crate (E0509), a production change far
+/// beyond a probe. Node drops equal node creations on a corpus run (every
+/// decoded or cloned tree is dropped), so the profile reports
+/// `decode_nodes + clone_nodes` as the dropped-node count; the sample-side
+/// `drop_glue` share (#61 evidence) is the cross-check.
+impl Clone for Type {
+    fn clone(&self) -> Type {
+        wire_phase_bump(|c| c.clone_nodes += 1);
+        match self {
+            Type::Instance {
+                type_ref,
+                args,
+                last_known_value,
+                extra_attrs,
+            } => Type::Instance {
+                type_ref: type_ref.clone(),
+                args: args.clone(),
+                last_known_value: last_known_value.clone(),
+                extra_attrs: extra_attrs.clone(),
+            },
+            Type::TypeAliasType {
+                args,
+                type_ref,
+                is_recursive,
+            } => Type::TypeAliasType {
+                args: args.clone(),
+                type_ref: type_ref.clone(),
+                is_recursive: *is_recursive,
+            },
+            Type::TypeVarType {
+                name,
+                fullname,
+                raw_id,
+                namespace,
+                values,
+                upper_bound,
+                default,
+                variance,
+                meta_level,
+            } => Type::TypeVarType {
+                name: name.clone(),
+                fullname: fullname.clone(),
+                raw_id: *raw_id,
+                namespace: namespace.clone(),
+                values: values.clone(),
+                upper_bound: upper_bound.clone(),
+                default: default.clone(),
+                variance: *variance,
+                meta_level: *meta_level,
+            },
+            Type::ParamSpecType {
+                prefix,
+                name,
+                fullname,
+                raw_id,
+                namespace,
+                flavor,
+                upper_bound,
+                default,
+                meta_level,
+            } => Type::ParamSpecType {
+                prefix: prefix.clone(),
+                name: name.clone(),
+                fullname: fullname.clone(),
+                raw_id: *raw_id,
+                namespace: namespace.clone(),
+                flavor: *flavor,
+                upper_bound: upper_bound.clone(),
+                default: default.clone(),
+                meta_level: *meta_level,
+            },
+            Type::TypeVarTupleType {
+                tuple_fallback,
+                name,
+                fullname,
+                raw_id,
+                namespace,
+                upper_bound,
+                default,
+                min_len,
+                meta_level,
+            } => Type::TypeVarTupleType {
+                tuple_fallback: tuple_fallback.clone(),
+                name: name.clone(),
+                fullname: fullname.clone(),
+                raw_id: *raw_id,
+                namespace: namespace.clone(),
+                upper_bound: upper_bound.clone(),
+                default: default.clone(),
+                min_len: *min_len,
+                meta_level: *meta_level,
+            },
+            Type::UnboundType {
+                name,
+                args,
+                original_str_expr,
+                original_str_fallback,
+                optional,
+                empty_tuple_index,
+            } => Type::UnboundType {
+                name: name.clone(),
+                args: args.clone(),
+                original_str_expr: original_str_expr.clone(),
+                original_str_fallback: original_str_fallback.clone(),
+                optional: *optional,
+                empty_tuple_index: *empty_tuple_index,
+            },
+            Type::UnpackType {
+                typ,
+                from_star_syntax,
+            } => Type::UnpackType {
+                typ: typ.clone(),
+                from_star_syntax: *from_star_syntax,
+            },
+            Type::AnyType {
+                type_of_any,
+                source_any,
+                missing_import_name,
+            } => Type::AnyType {
+                type_of_any: *type_of_any,
+                source_any: source_any.clone(),
+                missing_import_name: missing_import_name.clone(),
+            },
+            Type::UninhabitedType { ambiguous } => Type::UninhabitedType {
+                ambiguous: *ambiguous,
+            },
+            Type::NoneType => Type::NoneType,
+            Type::ErasedType => Type::ErasedType,
+            Type::DeletedType { source } => Type::DeletedType {
+                source: source.clone(),
+            },
+            Type::CallableType {
+                fallback,
+                instance_type,
+                is_ellipsis_args,
+                implicit,
+                is_bound,
+                from_concatenate,
+                imprecise_arg_kinds,
+                unpack_kwargs,
+                from_type_type,
+                arg_types,
+                arg_kinds,
+                arg_names,
+                ret_type,
+                name,
+                variables,
+                type_guard,
+                type_is,
+                special_sig,
+                definition_ref,
+            } => Type::CallableType {
+                fallback: fallback.clone(),
+                instance_type: instance_type.clone(),
+                is_ellipsis_args: *is_ellipsis_args,
+                implicit: *implicit,
+                is_bound: *is_bound,
+                from_concatenate: *from_concatenate,
+                imprecise_arg_kinds: *imprecise_arg_kinds,
+                unpack_kwargs: *unpack_kwargs,
+                from_type_type: *from_type_type,
+                arg_types: arg_types.clone(),
+                arg_kinds: arg_kinds.clone(),
+                arg_names: arg_names.clone(),
+                ret_type: ret_type.clone(),
+                name: name.clone(),
+                variables: variables.clone(),
+                type_guard: type_guard.clone(),
+                type_is: type_is.clone(),
+                special_sig: special_sig.clone(),
+                definition_ref: definition_ref.clone(),
+            },
+            Type::Overloaded { items } => Type::Overloaded {
+                items: items.clone(),
+            },
+            Type::TupleType {
+                partial_fallback,
+                items,
+                implicit,
+            } => Type::TupleType {
+                partial_fallback: partial_fallback.clone(),
+                items: items.clone(),
+                implicit: *implicit,
+            },
+            Type::TypedDictType {
+                fallback,
+                items,
+                required_keys,
+                readonly_keys,
+                is_closed,
+            } => Type::TypedDictType {
+                fallback: fallback.clone(),
+                items: items.clone(),
+                required_keys: required_keys.clone(),
+                readonly_keys: readonly_keys.clone(),
+                is_closed: *is_closed,
+            },
+            Type::LiteralType { fallback, value } => Type::LiteralType {
+                fallback: fallback.clone(),
+                value: value.clone(),
+            },
+            Type::UnionType {
+                items,
+                uses_pep604_syntax,
+                can_be_true,
+                can_be_false,
+                is_evaluated,
+                original_str_expr,
+                original_str_fallback,
+            } => Type::UnionType {
+                items: items.clone(),
+                uses_pep604_syntax: *uses_pep604_syntax,
+                can_be_true: *can_be_true,
+                can_be_false: *can_be_false,
+                is_evaluated: *is_evaluated,
+                original_str_expr: original_str_expr.clone(),
+                original_str_fallback: original_str_fallback.clone(),
+            },
+            Type::TypeType { item, is_type_form } => Type::TypeType {
+                item: item.clone(),
+                is_type_form: *is_type_form,
+            },
+            Type::Parameters(p) => Type::Parameters(p.clone()),
+            Type::PartialType {
+                type_ref,
+                is_class,
+                value_type,
+            } => Type::PartialType {
+                type_ref: type_ref.clone(),
+                is_class: *is_class,
+                value_type: value_type.clone(),
+            },
+        }
+    }
+}
+
+// Drop is intentionally NOT instrumented here: `impl Drop for Type` would
+// forbid the crate's 63 by-value destructures (E0509). See the note on the
+// `Clone` impl for the creation-identity accounting used instead.
+
 // ---------------------------------------------------------------------------
 // Type readers (mirror types.py:read_type + per-class read methods)
 // ---------------------------------------------------------------------------
@@ -874,6 +1125,7 @@ fn read_type_var_likes(buf: &mut ReadBuffer<'_>) -> Result<Vec<Type>, WireError>
     }
     let mut out = Vec::with_capacity(size as usize);
     for _ in 0..size {
+        wire_phase_bump(|c| c.decode_nodes += 1);
         let item_tag = read_tag(buf)?;
         match item_tag {
             TYPE_VAR_TYPE => out.push(read_type_var_type(buf)?),
@@ -895,6 +1147,14 @@ pub(crate) fn read_extra_attrs(buf: &mut ReadBuffer<'_>) -> Result<ExtraAttrs, W
     let immutable_list = read_str_list(buf)?;
     let mod_name = read_str_opt(buf)?;
     expect_end_tag(buf)?;
+    wire_phase_bump(|c| {
+        // Decode-side sip13 work: the attrs map and immutable set hash every
+        // key once on insert. HashMap::clone does not rehash, so this is the
+        // only decode-side hash site for ExtraAttrs.
+        c.hash_ops += attrs_map.len() as u64 + immutable_list.len() as u64;
+        c.hash_bytes += attrs_map.iter().map(|(k, _)| k.len()).sum::<usize>() as u64;
+        c.hash_bytes += immutable_list.iter().map(String::len).sum::<usize>() as u64;
+    });
     Ok(ExtraAttrs {
         attrs: attrs_map.into_iter().collect(),
         immutable: immutable_list.into_iter().collect(),
@@ -1062,6 +1322,7 @@ fn read_type_var_tuple_type(buf: &mut ReadBuffer<'_>) -> Result<Type, WireError>
         )));
     }
     let tuple_fallback = read_instance(buf)?;
+    wire_phase_bump(|c| c.decode_nodes += 1);
     let name = read_str(buf)?;
     let fullname = read_str(buf)?;
     let raw_id = read_int(buf)?;
@@ -1212,6 +1473,7 @@ fn read_callable_type(buf: &mut ReadBuffer<'_>) -> Result<Type, WireError> {
         )));
     }
     let fallback = read_instance(buf)?;
+    wire_phase_bump(|c| c.decode_nodes += 1);
     let instance_type = read_type_opt(buf)?;
     let flags = read_flags(buf, 7)?;
     let mut flags_iter = flags.into_iter();
@@ -1272,6 +1534,7 @@ fn read_overloaded(buf: &mut ReadBuffer<'_>) -> Result<Type, WireError> {
     }
     let mut items = Vec::with_capacity(size as usize);
     for _ in 0..size {
+        wire_phase_bump(|c| c.decode_nodes += 1);
         let item_tag = read_tag(buf)?;
         if item_tag != CALLABLE_TYPE {
             return Err(WireError::invalid(format!(
@@ -1293,6 +1556,7 @@ fn read_tuple_type(buf: &mut ReadBuffer<'_>) -> Result<Type, WireError> {
         )));
     }
     let partial_fallback = read_instance(buf)?;
+    wire_phase_bump(|c| c.decode_nodes += 1);
     let items = read_type_list(buf)?;
     let implicit = read_bool(buf)?;
     expect_end_tag(buf)?;
@@ -1312,6 +1576,7 @@ fn read_typeddict_type(buf: &mut ReadBuffer<'_>) -> Result<Type, WireError> {
         )));
     }
     let fallback = read_instance(buf)?;
+    wire_phase_bump(|c| c.decode_nodes += 1);
     let items = read_type_map(buf)?;
     let required_keys = read_str_list(buf)?.into_iter().collect();
     let readonly_keys = read_str_list(buf)?.into_iter().collect();
@@ -1335,6 +1600,7 @@ fn read_literal_type(buf: &mut ReadBuffer<'_>) -> Result<Type, WireError> {
         )));
     }
     let fallback = read_instance(buf)?;
+    wire_phase_bump(|c| c.decode_nodes += 1);
     let value_tag = read_tag(buf)?;
     let value = read_literal(buf, value_tag)?;
     expect_end_tag(buf)?;
@@ -1440,7 +1706,12 @@ pub(crate) fn read_alias_recursion_flag(bytes: &[u8]) -> Option<bool> {
     if tag != TYPE_ALIAS_TYPE {
         return None;
     }
-    read_type_alias_type_flagged(&mut buf).ok().map(|(_, r)| r)
+    // This seam bypasses read_type, so the node it materializes is counted
+    // here, mirroring the inline-reader bumps inside read_type.
+    read_type_alias_type_flagged(&mut buf).ok().map(|(_, r)| {
+        wire_phase_bump(|c| c.decode_nodes += 1);
+        r
+    })
 }
 
 /// Assert the next byte is `END_TAG`.
@@ -1459,6 +1730,7 @@ fn expect_end_tag(buf: &mut ReadBuffer<'_>) -> Result<(), WireError> {
 /// reads the next tag byte first; otherwise uses the provided tag (already
 /// consumed by the caller, e.g. `read_type_opt`).
 pub(crate) fn read_type(buf: &mut ReadBuffer<'_>, tag: Option<u8>) -> Result<Type, WireError> {
+    wire_phase_bump(|c| c.decode_nodes += 1);
     let tag = match tag {
         Some(t) => t,
         None => read_tag(buf)?,
@@ -2051,11 +2323,13 @@ pub(crate) struct WriteBuffer {
 
 impl WriteBuffer {
     pub(crate) fn new() -> Self {
+        wire_phase_bump(|c| c.encode_calls += 1);
         WriteBuffer { out: Vec::new() }
     }
 
     /// The encoded bytes (consumes the buffer).
     pub(crate) fn into_bytes(self) -> Vec<u8> {
+        wire_phase_bump(|c| c.encode_bytes += self.out.len() as u64);
         self.out
     }
 
@@ -2426,6 +2700,7 @@ fn write_parameters(buf: &mut WriteBuffer, p: &Parameters) -> Result<(), WireErr
 }
 
 pub(crate) fn write_type(buf: &mut WriteBuffer, t: &Type) -> Result<(), WireError> {
+    wire_phase_bump(|c| c.encode_nodes += 1);
     match t {
         Type::AnyType {
             type_of_any,
@@ -3269,11 +3544,131 @@ pub(crate) fn extra_attrs_record_in_order(
     w.into_bytes()
 }
 
-/// Register this module's Python-facing seam surface (#1677).
+// ---------------------------------------------------------------------------
+// Wire-churn phase profile (#63)
+// ---------------------------------------------------------------------------
+
+/// Mode-gated counters for the decode/clone/drop/hash churn ranked as
+/// lever 2 by the #61 gap attribution (#63). Mode 0 (default) is inert:
+/// every bump checks one thread-local Cell and returns. Reported through
+/// the PyO3 seam like the H1 driver counters (checker_driver.rs). All
+/// seam traffic arrives on the Python main thread; read the counters
+/// from that same thread.
+#[derive(Default)]
+pub(crate) struct WirePhaseCounters {
+    /// 0 off (default), 1 on.
+    pub(crate) mode: u8,
+    /// `ReadBuffer::new` invocations (every wire decode entry, any record).
+    pub(crate) decode_calls: u64,
+    /// Bytes handed to `ReadBuffer::new`.
+    pub(crate) decode_bytes: u64,
+    /// Decoded `wire::Type` nodes: `read_type` entries plus the inline
+    /// reads that bypass it (type-var-like elements, `Overloaded` items,
+    /// the five inline `read_instance` fallbacks), so every
+    /// materialized node counts.
+    pub(crate) decode_nodes: u64,
+    /// `WriteBuffer::new` invocations.
+    pub(crate) encode_calls: u64,
+    /// Bytes produced by `into_bytes`.
+    pub(crate) encode_bytes: u64,
+    /// `write_type` invocations: one per encoded `wire::Type` node.
+    pub(crate) encode_nodes: u64,
+    /// `Type::clone` invocations (nested clones included).
+    pub(crate) clone_nodes: u64,
+    /// Bytes hashed on decode-side `ExtraAttrs` inserts only; the
+    /// `read_typeddict_type` key-set builds are out of scope.
+    pub(crate) hash_bytes: u64,
+    /// Hash operations behind `hash_bytes`.
+    pub(crate) hash_ops: u64,
+}
+
+thread_local! {
+    static WIRE_PHASE_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+    static WIRE_PHASE: RefCell<WirePhaseCounters> =
+        RefCell::new(WirePhaseCounters::default());
+}
+
+/// The counters borrow is held across `f`; bump closures must not re-enter
+/// this helper (the RefCell would panic on the same thread).
+#[inline]
+fn wire_phase_bump(f: impl FnOnce(&mut WirePhaseCounters)) {
+    if WIRE_PHASE_MODE.get() == 0 {
+        return;
+    }
+    WIRE_PHASE.with(|c| f(&mut c.borrow_mut()));
+}
+
+/// `(mode, decode_calls, decode_bytes, decode_nodes, encode_calls,
+/// encode_bytes, encode_nodes, clone_nodes, hash_bytes, hash_ops)`.
+/// Dropped nodes are `decode_nodes + clone_nodes`: a creation-identity
+/// LOWER BOUND, since nodes built outside decode/clone (e.g.
+/// `applytype::make_any`) drop uncounted. Order is load-bearing: the
+/// Python probe reads it positionally.
+pub(crate) type WirePhaseCounters10 = (u8, u64, u64, u64, u64, u64, u64, u64, u64, u64);
+
+fn wire_phase_read() -> WirePhaseCounters10 {
+    WIRE_PHASE.with(|c| {
+        let c = c.borrow();
+        (
+            c.mode,
+            c.decode_calls,
+            c.decode_bytes,
+            c.decode_nodes,
+            c.encode_calls,
+            c.encode_bytes,
+            c.encode_nodes,
+            c.clone_nodes,
+            c.hash_bytes,
+            c.hash_ops,
+        )
+    })
+}
+
+/// Clear the counters; the mode is deliberately kept (a reset must not
+/// silently stop the profile), mirroring the H1 driver discipline.
+fn wire_phase_reset() {
+    WIRE_PHASE.with(|c| {
+        let mode = c.borrow().mode;
+        *c.borrow_mut() = WirePhaseCounters {
+            mode,
+            ..WirePhaseCounters::default()
+        };
+    });
+}
+
+fn wire_phase_set_mode(mode: u8) -> PyResult<u8> {
+    if mode > 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "wire phase mode must be 0 or 1, got {mode}"
+        )));
+    }
+    WIRE_PHASE_MODE.set(mode);
+    WIRE_PHASE.with(|c| c.borrow_mut().mode = mode);
+    Ok(mode)
+}
+
+#[pyfunction]
+pub(crate) fn rust_wire_phase_set_mode(mode: u8) -> PyResult<u8> {
+    wire_phase_set_mode(mode)
+}
+
+#[pyfunction]
+pub(crate) fn rust_wire_phase_counters() -> WirePhaseCounters10 {
+    wire_phase_read()
+}
+
+#[pyfunction]
+pub(crate) fn rust_wire_phase_reset() {
+    wire_phase_reset()
+}
+
 pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_type_to_str, m)?)?;
 
     m.add_function(wrap_pyfunction!(read_alias_recursion_flag, m)?)?;
+    m.add_function(wrap_pyfunction!(rust_wire_phase_set_mode, m)?)?;
+    m.add_function(wrap_pyfunction!(rust_wire_phase_counters, m)?)?;
+    m.add_function(wrap_pyfunction!(rust_wire_phase_reset, m)?)?;
     Ok(())
 }
 
@@ -3290,6 +3685,225 @@ mod tests {
         assert_eq!(read_tag(&mut buf).unwrap(), 255);
         // Truncated.
         assert!(matches!(read_tag(&mut buf), Err(WireError::Truncated)));
+    }
+
+    // ----- Wire-churn phase profile (#63) -----
+
+    #[test]
+    fn wire_phase_mode_defaults_off_and_rejects_unknown() {
+        wire_phase_reset();
+        assert_eq!(wire_phase_read().0, 0);
+        assert!(wire_phase_set_mode(2).is_err());
+        assert_eq!(wire_phase_set_mode(1).unwrap(), 1);
+        wire_phase_set_mode(0).unwrap();
+        wire_phase_reset();
+    }
+
+    #[test]
+    fn wire_phase_counts_decode_and_clone() {
+        wire_phase_set_mode(1).unwrap();
+        wire_phase_reset();
+        let bytes = encode_instance_simple_for_test("builtins.int");
+        let mut buf = ReadBuffer::new(&bytes);
+        let t = read_type(&mut buf, None).unwrap();
+        let before = wire_phase_read();
+        assert_eq!(before.1, 1, "one ReadBuffer::new per decode entry");
+        assert_eq!(before.2, bytes.len() as u64, "decode_bytes = input len");
+        assert_eq!(before.3, 1, "INSTANCE_SIMPLE decodes one node");
+        let cloned = t.clone();
+        let after = wire_phase_read();
+        assert_eq!(after.7, before.7 + 1, "one clone_nodes per cloned node");
+        assert_eq!(cloned, t);
+        drop(cloned);
+        drop(t);
+        wire_phase_set_mode(0).unwrap();
+        wire_phase_reset();
+    }
+
+    #[test]
+    fn wire_phase_counts_nested_clones() {
+        wire_phase_set_mode(1).unwrap();
+        wire_phase_reset();
+        let any = || Type::AnyType {
+            type_of_any: 0,
+            source_any: None,
+            missing_import_name: None,
+        };
+        let tree = Type::UnionType {
+            items: vec![any(), any(), Type::NoneType],
+            uses_pep604_syntax: true,
+            can_be_true: true,
+            can_be_false: true,
+            is_evaluated: true,
+            original_str_expr: None,
+            original_str_fallback: None,
+        };
+        let mut wbuf = WriteBuffer::new();
+        write_type(&mut wbuf, &tree).unwrap();
+        let decoded = read_type(&mut ReadBuffer::new(&wbuf.into_bytes()), None).unwrap();
+        let before = wire_phase_read();
+        let _ = decoded.clone();
+        let after = wire_phase_read();
+        assert_eq!(after.7 - before.7, 4, "clone counts every nested node");
+        assert_eq!(before.3, 4, "decode counts the union node and its 3 items");
+        wire_phase_set_mode(0).unwrap();
+        wire_phase_reset();
+    }
+
+    #[test]
+    fn wire_phase_reset_keeps_mode_clears_counters() {
+        wire_phase_set_mode(1).unwrap();
+        let _ = read_type(
+            &mut ReadBuffer::new(&encode_instance_simple_for_test("x.y")),
+            None,
+        );
+        wire_phase_reset();
+        let after = wire_phase_read();
+        assert_eq!(after.0, 1, "reset keeps the mode");
+        assert_eq!(after.1, 0, "reset clears decode_calls");
+        assert_eq!(after.3, 0, "reset clears decode_nodes");
+        wire_phase_set_mode(0).unwrap();
+        wire_phase_reset();
+    }
+
+    // ----- Per-op instruction benches (#63 falsifier) -----
+    // One bench process per op; every cost is an op-run minus a
+    // control-run of the same shape, so the harness baseline cancels.
+
+    /// Encode the named fixture (`any` 1 node, `instance` 3, `callable` 5).
+    fn bench_fixture(name: &str) -> Vec<u8> {
+        let any = || Type::AnyType {
+            type_of_any: 0,
+            source_any: None,
+            missing_import_name: None,
+        };
+        let str_instance = Type::Instance {
+            type_ref: "builtins.str".to_string(),
+            args: Vec::new(),
+            last_known_value: None,
+            extra_attrs: None,
+        };
+        let tree = match name {
+            "any" => any(),
+            "instance" => Type::Instance {
+                type_ref: "builtins.list".to_string(),
+                args: vec![str_instance, any()],
+                last_known_value: None,
+                extra_attrs: None,
+            },
+            "callable" => Type::CallableType {
+                fallback: Box::new(Type::Instance {
+                    type_ref: "builtins.object".to_string(),
+                    args: Vec::new(),
+                    last_known_value: None,
+                    extra_attrs: None,
+                }),
+                instance_type: None,
+                is_ellipsis_args: false,
+                implicit: false,
+                is_bound: false,
+                from_concatenate: false,
+                imprecise_arg_kinds: false,
+                unpack_kwargs: false,
+                from_type_type: false,
+                arg_types: vec![any(), str_instance],
+                arg_kinds: vec![0, 0],
+                arg_names: vec![None, None],
+                ret_type: Box::new(any()),
+                name: None,
+                variables: Vec::new(),
+                type_guard: None,
+                type_is: None,
+                special_sig: None,
+                definition_ref: None,
+            },
+            other => panic!("unknown bench fixture {other}"),
+        };
+        let mut wbuf = WriteBuffer::new();
+        write_type(&mut wbuf, &tree).unwrap();
+        wbuf.into_bytes()
+    }
+
+    fn bench_fixture_nodes(name: &str) -> u64 {
+        match name {
+            "any" => 1,
+            "instance" => 3,
+            "callable" => 5,
+            other => panic!("unknown bench fixture {other}"),
+        }
+    }
+
+    fn bench_decode(bytes: &[u8]) -> Type {
+        read_type(&mut ReadBuffer::new(bytes), None).unwrap()
+    }
+
+    #[test]
+    #[ignore = "instruction bench: driven per-op by misc/wire_churn_bench.sh (#63)"]
+    fn bench_wire_phase_op() {
+        let spec = std::env::var("WIRE_BENCH").unwrap_or_default();
+        let (op, fixture) = match spec.split_once('-') {
+            Some(pair) => pair,
+            None => {
+                eprintln!("WIRE_BENCH not set (want op-fixture); nothing to do");
+                return;
+            }
+        };
+        let iters: u64 = std::env::var("WIRE_BENCH_ITERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(200_000);
+        let bytes = bench_fixture(fixture);
+        // Engagement: the counters must see exactly the fixture's node count
+        // on one decode, and the mode must be off for the measured loop so
+        // the bump cost cannot pollute the numbers.
+        wire_phase_set_mode(1).unwrap();
+        wire_phase_reset();
+        drop(bench_decode(&bytes));
+        let counted = wire_phase_read();
+        wire_phase_set_mode(0).unwrap();
+        wire_phase_reset();
+        let nodes = bench_fixture_nodes(fixture);
+        assert_eq!(
+            counted.3, nodes,
+            "fixture {fixture} decode_nodes disagrees with the documented node count"
+        );
+        match op {
+            "control" => {
+                for _ in 0..iters {
+                    std::hint::black_box(&bytes);
+                }
+            }
+            "decode_drop" => {
+                for _ in 0..iters {
+                    let tree = bench_decode(&bytes);
+                    std::hint::black_box(tree);
+                }
+            }
+            "decode_forget" => {
+                for _ in 0..iters {
+                    let tree = bench_decode(&bytes);
+                    std::hint::black_box(&tree);
+                    std::mem::forget(tree);
+                }
+            }
+            "clone_forget" => {
+                let tree = bench_decode(&bytes);
+                for _ in 0..iters {
+                    let cloned = std::hint::black_box(tree.clone());
+                    std::mem::forget(cloned);
+                }
+                std::hint::black_box(&tree);
+            }
+            "clone_drop" => {
+                let tree = bench_decode(&bytes);
+                for _ in 0..iters {
+                    let cloned = std::hint::black_box(tree.clone());
+                    drop(cloned);
+                }
+                std::hint::black_box(&tree);
+            }
+            other => panic!("unknown bench op {other}"),
+        }
     }
 
     #[test]
