@@ -675,6 +675,22 @@ call counter fell 55% (2,839,692 -> 1,287,230) while total work fell at most
 route without a *new* mechanism; see #1769 for the assessment and the
 falsification plan.
 
+**Settled 2026-09-19 (#54): ADR-0006 Rejected; the prototype is deleted.**
+The head-stamp on the deletion head (`58fa9a3e6`, cold self-check, gate-on and
+gate-off legs back-to-back, both clean over 380 files) confirmed the NO-GO and
+worsened it: funnel calls fell to 841,029; the view served 24,458 encodes
+(1.08% of encoded bytes, mostly preempting encodes the F3 wire cache already
+served); `defers == 0`; +501 MB RSS for 1.40M pinned entries; the decision-rule
+product is 0.002-0.012% against the 10% bar, and the absolute ceiling (every
+byte served free) is the funnel share, 0.2-1.1%. Deleted:
+`crates/type_kernel/src/typeview.rs`, `mypy/typeview.py`,
+`mypy/test/testtypeview.py`, the funnel probe and hook in `mypy/types.py`, and
+the three `mypy/build.py` wiring blocks. `MYPY_SERIALIZE_STATS`,
+`MYPY_SERIALIZE_CLOCK` and `misc/audit_wire_traffic.py` survive
+(ADR-0006 Consequence 3). Consequence 4 stands: the remaining
+`type_check_time` cost is not addressable by type storage; the live line is
+upstream #1624.
+
 Reopening requires a one-family replacement-view prototype clearing a
 >=10% relative total work-share win on the cold self-check with full
 parity green (see `docs/plans/2026-09-11-f-program-close-out.md`).
@@ -900,6 +916,13 @@ if the bridge costs outweigh the standalone benefit.
   kernel-complete and opt-in. The F4 rung ("the type graph executes in
   Rust; Python is the host and plugin bridge") is retired unclaimed; a
   phase closed without graduating contributes no rung.
+- F reopening experiment (2026-09-19, #54): ADR-0006 (one-family `Instance`
+  replacement view) is Rejected on a head-stamped measurement and the
+  prototype is deleted. No rung: the funnel the view could address is
+  0.2-1.1% of total work, ~10x below the 10% bar, and the served byte share
+  measured 1.08%. `MYPY_SERIALIZE_STATS`/`MYPY_SERIALIZE_CLOCK` survive so
+  any future "make the seam cheaper" claim can be checked against the
+  funnel share first.
 - G4, expression family (2026-09-18, #1860): "the expression family's
   node reads execute on Rust storage" — a per-family claim (#1836 fork 3)
   under the binding condition that the write path is still Python and the

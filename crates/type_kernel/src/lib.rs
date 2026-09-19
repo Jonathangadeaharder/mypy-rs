@@ -169,7 +169,6 @@ mod typeanal_unbound2;
 mod typeinfo;
 mod typeops;
 mod types_impl;
-mod typeview;
 mod unify;
 mod util;
 mod visitor;
@@ -304,6 +303,5 @@ fn type_kernel(_py: Python<'_>, module: &PyModule) -> PyResult<()> {
     node_mirror::register_registry(module)?;
     symtable_mirror::register_registry(module)?;
     subexpr_strip::register_registry(module)?;
-    typeview::register_registry(module)?;
     Ok(())
 }

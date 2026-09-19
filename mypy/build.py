@@ -1401,20 +1401,6 @@ class BuildManager:
                 read=self.options.native_type_mirror_read,
                 instance_write=self.options.native_type_instance_write,
             )
-        # F reopening experiment (#1671): the `Instance` replacement view.
-        # Env-gated (`MYPY_TYPE_VIEW`), default off, no option and no
-        # `CACHE_VERSION` participation: the store is session state.
-        from mypy import typeview as _typeview
-
-        _view_arm = _typeview.gate_from_env()
-        if _view_arm:
-            import os as _os_view
-
-            _typeview.reset()
-            _typeview.activate(
-                read_route=_view_arm >= 2,
-                audit=_os_view.environ.get("MYPY_TYPE_VIEW_AUDIT") == "1",
-            )
         # Phase G1 (#1572, #1860): dual-write node shadow. Default off
         # (#1624); family-agnostic (serving is decided per channel below).
         # Wraps live node classes, independent of the type-kernel gate.
@@ -2019,13 +2005,6 @@ class BuildManager:
         build starts from an empty snapshot instead of accumulating into a
         stale one.
         """
-        from mypy import typeview
-
-        if typeview.active():
-            # The replacement view pins live objects too; a stale graph must
-            # never survive a recheck. Runs first (it leaves `identity`
-            # alone), so the mirror sweep below sees its pins gone.
-            typeview.reset()
         # #1875: activation is one-shot and `reset` keeps it, so an
         # off-build in a process that ever ran an on-build must still drop
         # the store the patched capture classes kept filling.
@@ -2333,13 +2312,6 @@ class BuildManager:
 
             if _serialize_clock_on:
                 self.stats["serialize_funnel_s"] = _serialize_funnel_ns / 1e9
-            from mypy import typeview
-
-            if typeview.active():
-                for key, val in typeview.stats().items():
-                    self.stats[f"typeview_{key}"] = val
-                for key, val in typeview.report().items():
-                    self.stats[f"typeview_{key}"] = val
             lines = ["Stats:"]
             for key, value in sorted(self.stats_summary().items()):
                 fmt = ".3f" if isinstance(value, float) else "d"

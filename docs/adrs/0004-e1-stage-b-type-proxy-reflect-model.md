@@ -1,6 +1,8 @@
 # ADR-0004: E1 Stage B Rust-owned Type proxy (reflect-into-Python-on-write)
 
-- Status: Proposed
+- Status: Superseded by measurement (2026-09-19): ADR-0006 built the
+  one-family prototype, measured the funnel ceiling at ~1% of total work,
+  and was Rejected; see `docs/adrs/0006-instance-replacement-view.md`.
 - Date: 2026-08-29
 - Issue: #1139 (ADR-0002 Decision 4b, Stage B of the E1 backplane)
 - Follows: ADR-0003 (Stage A wire Type totality), ADR-0001 (Decision 1 storage

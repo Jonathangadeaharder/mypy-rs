@@ -1,6 +1,7 @@
 # ADR-0006: one-family replacement view for `Instance` (F reopening experiment)
 
-- Status: Draft. Measured; the maintainer accepts or rejects.
+- Status: Rejected (2026-09-19, #54). Head-stamped on `58fa9a3e6` and
+  deleted; see "Head-stamp and disposition" below.
 - Date: 2026-09-15
 - Issue: #1671 (F reopening experiment, from the wave-70B close-out
   `docs/plans/2026-09-11-f-program-close-out.md`).
@@ -293,6 +294,56 @@ change the verdict: the wall leg measures the same quantity the `type_check_time
 row already bounds, and a 10% wall improvement is arithmetically impossible when
 the entire mechanism's addressable surface is 2.12% of the phases that dominate
 the wall.
+
+## Head-stamp and disposition (2026-09-19, #54)
+
+Before deletion, the counters were re-stamped on the deletion head
+(`58fa9a3e6`), same corpus and flags as the legs above (cold self-check,
+`-n0 --no-incremental -p mypy -p mypyc`, `MYPY_SERIALIZE_STATS=1
+MYPY_SERIALIZE_CLOCK=1`), with the gate-on leg (`MYPY_TYPE_VIEW=1`) and a
+gate-off baseline leg run back-to-back on the same extension build. Both legs
+clean (`Success: no issues found in 380 source files`).
+
+| Counter | baseline | gate on (`MYPY_TYPE_VIEW=1`) |
+|---|---|---|
+| `serialize_calls` | 841,029 | 841,029 |
+| `serialize_view` / `view_bytes` | 0 / 0 | 24,458 / 272,032 |
+| `serialize_writes` | 280,417 | 271,692 |
+| `serialize_bytes` | 25,044,977 | 24,971,696 |
+| `serialize_hits` (F3 cache) | 457,635 | 435,955 |
+| `serialize_funnel_s` | 0.243 | 0.491 (probe-timed) |
+| `typeview_encodes` / `defers` | - | 24,458 / 0 |
+| `typeview_entries` / `read_routes` | - | 1,402,545 / 0 |
+| max RSS | 627,310,592 | 1,128,398,848 |
+
+Decision rule: PASS only if
+`serialize_view_bytes / (serialize_bytes + serialize_view_bytes) * funnel_share`
+can reach 10%.
+
+- Served byte share: 272,032 / (24,971,696 + 272,032) = **1.078%**
+  (was 18.0% at drafting time; the view now mostly preempts encodes the F3
+  wire cache already served: walk writes fell only 3.1% and cache hits fell
+  21,680 while the view served 24,458).
+- Funnel share of total work: **0.232%** on this head's own clock
+  (0.243 s of 104.539 s), and at most **~1.1%** by the load-robust counter
+  ceiling. The wall clock of both legs is load-inflated (`parse_time` 41.9 s
+  vs the drafting era's 15.8 s) and is not used for the verdict.
+- Product: 1.078% x ~0.2-1.1% = **0.002-0.012%**, and the absolute ceiling
+  (view serves every byte at zero cost) is the funnel share itself,
+  **0.2-1.1% against the 10% bar: FAIL by ~10-50x**. Consistent with the
+  drafting-era verdict and slightly worse: the funnel's call counter fell
+  2,839,692 -> 841,029 while total work grew.
+- `defers == 0`: the mechanism still functions; it is simply pointless.
+- RSS: +501 MB (627 -> 1,128 MB) at 1.40M entries, vs +1.67 GB at 3.21M
+  entries at drafting time - same ~0.4-0.5 KB/entry pin cost, fewer entries.
+
+Disposition: **Rejected.** Per Consequence 2, the prototype is deleted
+(`crates/type_kernel/src/typeview.rs`, `mypy/typeview.py`,
+`mypy/test/testtypeview.py`, the funnel probe and hook in `mypy/types.py`,
+the three `mypy/build.py` wiring blocks). `MYPY_SERIALIZE_STATS`,
+`MYPY_SERIALIZE_CLOCK` and `misc/audit_wire_traffic.py` survive per
+Consequence 3. Consequence 4 stands: the remaining `type_check_time` cost
+is not addressable by type storage; the live line is upstream #1624.
 
 ## Measured verdict: NO-GO
 

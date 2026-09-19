@@ -5088,9 +5088,14 @@ measurements are appended below as the coordinator reports each landing.
   reads adds no further wire saving while applying a pyO3 round-trip to 17.43M
   reads (+5.8s over the capture-only arm). All four ADR-0004 contract surfaces
   (plugins, identity/handles, astmerge, cache/daemon) were exercised and measured
-  satisfiable, so the binding constraint is arithmetic, not contract. ADR-0006 is
-  the draft successor and awaits the maintainer's accept/reject; the wall-clock
-  leg is explicitly deferred, not measured. CI green on the PR (pr-gate plus all
+  satisfiable, so the binding constraint is arithmetic, not contract. Settled
+  2026-09-19 (#54): Rejected on the head-stamp (head `58fa9a3e6`: funnel calls
+  841,029, served byte share 1.08%, `defers == 0`, +501 MB RSS) and the
+  prototype deleted (`typeview.rs`, `mypy/typeview.py`,
+  `mypy/test/testtypeview.py`, the `mypy/types.py` probe/hook, the three
+  `mypy/build.py` wiring blocks); the wall-clock leg of the drafting
+  measurement stays explicitly deferred, not measured. CI green on the PR
+  (pr-gate plus all
   four parity jobs), merge `58d32ab24`, lane worktree and branch removed by the
   coordinator after merge.
 - `#1674` (`a5bb83244`, PR #1695) — feat: the G1.2 node-shadow fidelity audit and
