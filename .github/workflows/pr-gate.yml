@@ -89,6 +89,18 @@ jobs:
           PYO3_PYTHON=$(uv run python -c "import sys; print(sys.executable)") \
           cargo test -p mypy-ast-serialize
 
+      # The skel bin is `required-features = ["skel"]`, so `cargo build
+      # --workspace` skips it; without these the crate could stop
+      # compiling with every gate green (#95).
+      - name: cargo fmt --check (mypy-rs-skel)
+        run: cargo fmt -p mypy-rs-skel -- --check
+
+      - name: cargo clippy (mypy-rs-skel)
+        run: cargo clippy -p mypy-rs-skel --features skel -- -D warnings
+
+      - name: cargo check (mypy-rs-skel)
+        run: cargo check -p mypy-rs-skel --features skel --locked
+
       - name: Restore native extensions (built once by build-extensions)
         # Self-check (num_workers=4) forces native_parser/native_resolver
         # on, so those extensions must be importable for the local gate to
