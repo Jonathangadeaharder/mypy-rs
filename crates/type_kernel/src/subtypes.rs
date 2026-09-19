@@ -4547,6 +4547,84 @@ pub(crate) fn rust_is_subtype_coded(
     }
 }
 
+/// Bench-only blob parse for `rust_is_subtype_blob_bench` (#70).
+/// Wire layout: u16 LE flag mask, u32 LE left length, left bytes, right
+/// bytes. `None` on a short buffer or a left length past the end.
+fn parse_subtype_blob_bench(blob: &[u8]) -> Option<(u16, &[u8], &[u8])> {
+    if blob.len() < 6 {
+        return None;
+    }
+    let mask = u16::from_le_bytes([blob[0], blob[1]]);
+    let left_len = u32::from_le_bytes([blob[2], blob[3], blob[4], blob[5]]) as usize;
+    if blob.len() - 6 < left_len {
+        return None;
+    }
+    let (left_bytes, right_bytes) = blob[6..].split_at(left_len);
+    Some((mask, left_bytes, right_bytes))
+}
+
+/// Unpack the bench blob's flag mask in `rust_is_subtype_coded` argument
+/// order: the eight context/proper flags, then `infer_unions`.
+fn subtype_bench_flags(mask: u16) -> [bool; 9] {
+    let f = |bit: u16| mask & (1 << bit) != 0;
+    [f(0), f(1), f(2), f(3), f(4), f(5), f(6), f(7), f(8)]
+}
+
+/// Bench-only single-buffer variant of `rust_is_subtype_coded` (#70
+/// arg-packing falsifier). Never called from any production seam; the only
+/// caller is `misc/blob_marshal_bench.py`. The Python side prebuilds one
+/// buffer holding both type blobs plus the flag set, so the crossing
+/// marshals two arguments instead of twelve. Wire layout and flag order:
+/// see `parse_subtype_blob_bench` / `subtype_bench_flags`. The body mirrors
+/// `rust_is_subtype_coded` exactly; codes match it 1:1.
+#[pyfunction]
+#[pyo3(signature = (blob, resolver))]
+#[allow(dead_code)]
+pub(crate) fn rust_is_subtype_blob_bench(blob: &[u8], resolver: &mut NativeTypeResolver) -> i8 {
+    let (mask, left_bytes, right_bytes) = match parse_subtype_blob_bench(blob) {
+        Some(parts) => parts,
+        None => return -1,
+    };
+    let [ignore_type_params, ignore_declared_variance, always_covariant, ignore_promotions, proper_subtype, strict_optional, ignore_pos_arg_names, strict_concatenate, infer_unions] =
+        subtype_bench_flags(mask);
+    let _infer_unions_guard = crate::unify::InferUnionsGuard::install(infer_unions);
+    let left = match decode_type(left_bytes) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let right = match decode_type(right_bytes) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let alias_resolver = resolver.alias_resolver().shared();
+    let left = match expand_top_aliases(&left, &alias_resolver, strict_optional) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let right = match expand_top_aliases(&right, &alias_resolver, strict_optional) {
+        Some(t) => t,
+        None => return -1,
+    };
+    let ctx = SubtypeContext::with_callable_flags(
+        ignore_type_params,
+        ignore_declared_variance,
+        always_covariant,
+        ignore_promotions,
+        proper_subtype,
+        strict_optional,
+        ignore_pos_arg_names,
+        strict_concatenate,
+    );
+    crate::protocols::consult_cut_reset();
+    let answer = is_subtype(&left, &right, &ctx, resolver.resolver());
+    match answer {
+        Some(true) if crate::protocols::consult_cut_taken() => 3,
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    }
+}
+
 /// `#[pyfunction]` entry: batch variant of `rust_is_subtype`.
 ///
 /// Arrives as a flat vec of interleaved `(left, right)` byte blobs plus
@@ -4992,6 +5070,9 @@ pub(crate) fn register_registry(m: &PyModule) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(rust_is_subtype_coded, m)?)?;
 
+    // Bench-only (#70); inert: no production caller.
+    m.add_function(wrap_pyfunction!(rust_is_subtype_blob_bench, m)?)?;
+
     m.add_function(wrap_pyfunction!(rust_subtype_tvar_tuple_right, m)?)?;
 
     m.add_function(wrap_pyfunction!(rust_variadic_tuple_subtype, m)?)?;
@@ -5027,6 +5108,41 @@ mod tests {
     use super::*;
     use crate::typeinfo::TypeInfoSnapshot;
     use crate::wire::Parameters;
+
+    #[test]
+    fn bench_blob_parses_header_left_and_right() {
+        let mut blob = vec![0x05, 0x00]; // mask bit 0 + bit 2
+        blob.extend_from_slice(&3u32.to_le_bytes());
+        blob.extend_from_slice(b"Lef");
+        blob.extend_from_slice(b"Right");
+        let (mask, left, right) = parse_subtype_blob_bench(&blob).unwrap();
+        assert_eq!(mask, 0b101);
+        assert_eq!(left, b"Lef");
+        assert_eq!(right, b"Right");
+    }
+
+    #[test]
+    fn bench_blob_rejects_short_and_overlong() {
+        assert!(parse_subtype_blob_bench(&[]).is_none());
+        assert!(parse_subtype_blob_bench(&[0, 0, 1, 0, 0, 0]).is_none()); // no left bytes
+        let mut over = vec![0, 0, 9, 0, 0, 0];
+        over.extend_from_slice(b"short");
+        assert!(parse_subtype_blob_bench(&over).is_none());
+    }
+
+    #[test]
+    fn bench_blob_flags_unpack_in_coded_arg_order() {
+        let all = subtype_bench_flags(0b111111111);
+        assert!(all.iter().all(|&b| b));
+        let none = subtype_bench_flags(0);
+        assert!(none.iter().all(|&b| !b));
+        // Bit 5 is strict_optional (arg 6 of rust_is_subtype_coded).
+        let flags = subtype_bench_flags(1 << 5);
+        assert_eq!(
+            flags,
+            [false, false, false, false, false, true, false, false, false]
+        );
+    }
 
     fn make_resolver(snaps: Vec<TypeInfoSnapshot>) -> TypeResolver {
         let mut r = TypeResolver::new();
