@@ -10,6 +10,13 @@
 //! unchanged by this lane.
 //! Gate 4: cache isolation — a run leaves no cache artifacts and
 //! does not mutate the corpus.
+//!
+//! Gate 2 is macOS-only (otool/nm); on other targets it compiles away.
+//! The whole file compiles to nothing without the `skel` feature: the
+//! bin's required-features then skip the binary and `CARGO_BIN_EXE_mypy-rs`
+//! is undefined, which `env!` would turn into a hard compile error.
+
+#![cfg(feature = "skel")]
 
 use std::fs;
 use std::path::{Path, PathBuf};
