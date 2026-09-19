@@ -134,6 +134,14 @@ jobs:
       - name: Python check_call argmap baseline (native-off)
         run: uv run python -m pytest mypy/test/testinfer.py -q
 
+      - name: Skeleton fixture freshness (#91)
+        # Fail when committed fixtures/expected outputs are stale;
+        # MYPY_RS_EXT_DIRS points the generator (in-process build and
+        # regen subprocess) at the restored extension cache.
+        env:
+          MYPY_RS_EXT_DIRS: ${{ env.SCRATCH }}
+        run: uv run python misc/skeleton_codegen.py --check
+
   # Lint gate for NEW drift only: main carries 572 pre-existing ruff findings
   # and 45 black-dirty files (#1742), so the pinned tools run on the files the
   # PR touches instead of the tree. Touching a dirty file means cleaning it.

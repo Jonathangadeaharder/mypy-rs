@@ -32,7 +32,7 @@ use crate::wire::{self, LiteralValue, ReadBuffer, Type};
 /// reshaped when Stage 3c lands.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) struct TypeInfoSnapshot {
+pub struct TypeInfoSnapshot {
     /// `TypeInfo._fullname` (nodes.py:3939). Equals the `type_ref` key.
     pub fullname: String,
     /// `TypeInfo.name` = `defn.name` (nodes.py:3934). Short class name.
@@ -167,7 +167,7 @@ impl TypeInfoSnapshot {
 /// non-module while a same-named module exists).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) struct ModuleSnapshot {
+pub struct ModuleSnapshot {
     /// `name -> (module_hidden, Optional<(is_module, module_fullname)>)`.
     /// `module_fullname` is present only when the symbol's node is a
     /// `MypyFile`; it is the node's `fullname` (what Python descends
@@ -198,7 +198,7 @@ impl ModuleSnapshot {
 }
 
 #[allow(dead_code)]
-pub(crate) struct TypeResolver {
+pub struct TypeResolver {
     snapshots: HashMap<String, TypeInfoSnapshot>,
     /// `fullname -> ModuleSnapshot` for loaded modules. Populated from
     /// `BuildManager.modules`; mirrors the `module.names` SymbolTable.

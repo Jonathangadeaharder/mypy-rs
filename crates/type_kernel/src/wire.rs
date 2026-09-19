@@ -441,7 +441,7 @@ fn read_flags(buf: &mut ReadBuffer<'_>, num_flags: usize) -> Result<Vec<bool>, W
 /// 0 is an empty magnitude with `neg == false`. `PartialEq`/`Eq`/`Hash` are
 /// therefore value-equality on the canonical form.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct BigInt {
+pub struct BigInt {
     neg: bool,
     magnitude: Vec<u8>,
 }
@@ -563,7 +563,7 @@ fn divmod_in_place(magnitude: &mut Vec<u8>, divisor: u128) -> u128 {
 /// this reads the body.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
-pub(crate) enum LiteralValue {
+pub enum LiteralValue {
     Int(i64),
     /// Int literal whose magnitude exceeds i64 (issue #1329). Small ints
     /// stay in `Int(i64)`; the variant a value takes is a pure function of
@@ -616,7 +616,7 @@ fn read_int_literal(buf: &mut ReadBuffer<'_>) -> Result<LiteralValue, WireError>
 /// sorted (the prior behavior).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub(crate) struct ExtraAttrs {
+pub struct ExtraAttrs {
     pub attrs: HashMap<String, Type>,
     pub immutable: HashSet<String>,
     pub mod_name: Option<String>,
@@ -637,7 +637,7 @@ impl PartialEq for ExtraAttrs {
 /// `ParamSpecType.prefix` and as the `PARAMETERS` tag).
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
-pub(crate) struct Parameters {
+pub struct Parameters {
     pub arg_types: Vec<Type>,
     pub arg_kinds: Vec<i64>,
     pub arg_names: Vec<Option<String>>,
@@ -661,7 +661,7 @@ pub(crate) struct Parameters {
 
 // one-to-one mapping.
 #[allow(dead_code, clippy::enum_variant_names)]
-pub(crate) enum Type {
+pub enum Type {
     /// `mypy.types.Instance` — `type_ref` is the unresolved `type.fullname`.
     Instance {
         type_ref: String,

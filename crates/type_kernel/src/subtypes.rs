@@ -300,7 +300,7 @@ fn any_type_of(type_of_any: i64) -> Type {
 /// returns `None`).
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
-pub(crate) struct SubtypeContext {
+pub struct SubtypeContext {
     pub ignore_type_params: bool,
     pub ignore_declared_variance: bool,
     pub always_covariant: bool,
@@ -430,7 +430,7 @@ impl Drop for AliasAssumingPush {
 /// recursive pairs the same way; only an alias-shaped operand
 /// additionally expands before the walk, see the gate below).
 #[allow(dead_code)]
-pub(crate) fn is_subtype(
+pub fn is_subtype(
     left: &Type,
     right: &Type,
     ctx: &SubtypeContext,
