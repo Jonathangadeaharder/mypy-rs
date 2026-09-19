@@ -94,10 +94,19 @@ def run_measured(child_args: list[str], env: dict[str, str]) -> int:
 def parent() -> int:
     default_iters = None
     if "--iters" in sys.argv:
-        default_iters = int(sys.argv[sys.argv.index("--iters") + 1])
+        _iters_idx = sys.argv.index("--iters") + 1
+        if _iters_idx >= len(sys.argv):
+            raise SystemExit("--iters requires a positive integer")
+        try:
+            default_iters = int(sys.argv[_iters_idx])
+        except ValueError:
+            raise SystemExit(f"--iters needs an integer, got {sys.argv[_iters_idx]!r}") from None
     only: set[str] | None = None
     if "--only" in sys.argv:
-        only = {n.strip() for n in sys.argv[sys.argv.index("--only") + 1].split(",") if n.strip()}
+        _only_idx = sys.argv.index("--only") + 1
+        if _only_idx >= len(sys.argv):
+            raise SystemExit("--only requires a comma-separated list of bench names")
+        only = {n.strip() for n in sys.argv[_only_idx].split(",") if n.strip()}
         unknown = only - {b[0] for b in BENCHES}
         if unknown or not only:
             raise SystemExit(
