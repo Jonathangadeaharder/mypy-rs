@@ -1053,9 +1053,9 @@ impl Clone for Type {
     }
 }
 
-/// Drop is intentionally NOT instrumented here: `impl Drop for Type` would
-/// forbid the crate's 63 by-value destructures (E0509). See the note on the
-/// `Clone` impl for the creation-identity accounting used instead.
+// Drop is intentionally NOT instrumented here: `impl Drop for Type` would
+// forbid the crate's 63 by-value destructures (E0509). See the note on the
+// `Clone` impl for the creation-identity accounting used instead.
 
 // ---------------------------------------------------------------------------
 // Type readers (mirror types.py:read_type + per-class read methods)
