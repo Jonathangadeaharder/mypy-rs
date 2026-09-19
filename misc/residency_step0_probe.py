@@ -12,8 +12,9 @@ guards decide whether it may be read as evidence, never whether printed,
 mirroring misc/wire_churn_phase_profile.py. Evidence is refused when the
 run failed, the probe never engaged, the operand-class anomaly counter is
 nonzero (a class the F3 predicate cannot explain), an id cap overflowed
-(distinctness would silently undercount), or the decode windows do not
-cover exactly the coded calls (a skipped window would read as zero).
+(distinctness would silently undercount), the decode windows do not cover
+exactly the coded calls (a skipped window would read as zero), or the wire
+phase counters are off (family decode deltas would read zero).
 
 Usage: MYPY_SUBTYPE_IDENTITY_PROBE=1 .venv/bin/python misc/residency_step0_probe.py
 Prereq: PYTHONPATH with the type_kernel and ast_serialize scratch dirs
@@ -39,15 +40,23 @@ DEFAULT_ARGS = [
 ]
 
 
-def report(probe: dict[str, int], run_status: str) -> None:
+def report(probe: dict[str, int], run_status: str, counters: tuple[int, ...]) -> None:
     print(f"[step0] run status: {run_status}", file=sys.stderr)
     for key in sorted(probe):
         print(f"[step0] {key:32s} {probe[key]}", file=sys.stderr)
     distinct = probe["op_first_seen"] + probe["op_recycled"]
     print(f"[step0] {'distinct_operand_objects':32s} {distinct}", file=sys.stderr)
+    print(
+        f"[step0] {'wire_phase_mode':32s} {counters[0]} "
+        f"(decode_calls/nodes {counters[1]}/{counters[3]}, "
+        f"encode_calls/nodes {counters[4]}/{counters[6]})",
+        file=sys.stderr,
+    )
 
 
-def evidence_refusals(probe: dict[str, int], run_status: str) -> list[str]:
+def evidence_refusals(
+    probe: dict[str, int], run_status: str, counters: tuple[int, ...]
+) -> list[str]:
     reasons = []
     if run_status.startswith("FAILED"):
         reasons.append(f"run status {run_status!r} is not a completed check")
@@ -69,6 +78,8 @@ def evidence_refusals(probe: dict[str, int], run_status: str) -> list[str]:
         reasons.append(f"decode windows {windows} != coded calls {probe['coded_calls']}")
     if probe["fam_window_inconsistent"]:
         reasons.append(f"{probe['fam_window_inconsistent']} decode windows saw a reset")
+    if counters[0] != 1:
+        reasons.append(f"wire phase mode {counters[0]} != 1: fam_decode_* deltas would read zero")
     return reasons
 
 
@@ -98,6 +109,9 @@ def main() -> int:
         return 1
     import type_kernel
 
+    if not hasattr(type_kernel, "rust_wire_phase_set_mode"):
+        print("[step0] type_kernel lacks the wire phase seam: stale extension?", file=sys.stderr)
+        return 1
     type_kernel.rust_wire_phase_set_mode(1)
     type_kernel.rust_wire_phase_reset()
     import mypy.main
@@ -112,7 +126,11 @@ def main() -> int:
         else:
             run_status = f"FAILED, mypy exit {exc.code!r}"
     except KeyboardInterrupt:
-        report(mypy.subtypes._identity_probe, "INTERRUPTED, operator Ctrl-C")
+        report(
+            mypy.subtypes._identity_probe,
+            "INTERRUPTED, operator Ctrl-C",
+            type_kernel.rust_wire_phase_counters(),
+        )
         print("[step0] EVIDENCE REFUSED: run was interrupted", file=sys.stderr)
         raise
     except Exception as exc:
@@ -121,13 +139,8 @@ def main() -> int:
 
         traceback.print_exc()
     probe = mypy.subtypes._identity_probe
-    report(probe, run_status)
     counters = type_kernel.rust_wire_phase_counters()
-    print(
-        f"[step0] global decode_calls/nodes {counters[1]}/{counters[3]}, "
-        f"encode_calls/nodes {counters[4]}/{counters[6]}",
-        file=sys.stderr,
-    )
+    report(probe, run_status, counters)
     if probe["fam_decode_calls"] != 2 * probe["coded_calls"]:
         print(
             f"[step0] note: fam_decode_calls {probe['fam_decode_calls']} != 2 x "
@@ -135,7 +148,7 @@ def main() -> int:
             f"decode traffic beyond the operand pair (consult re-entrancy)",
             file=sys.stderr,
         )
-    refusals = evidence_refusals(probe, run_status)
+    refusals = evidence_refusals(probe, run_status, counters)
     for reason in refusals:
         print(f"[step0] EVIDENCE REFUSED: {reason}", file=sys.stderr)
     return 1 if refusals else 0

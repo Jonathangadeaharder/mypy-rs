@@ -608,13 +608,17 @@ def _identity_probe_operand_note(t: Type, t_bytes: bytes, ser_class: str) -> tup
         if len(_operand_seen) < _IDENTITY_OPERAND_CAP:
             _operand_seen[key] = t_bytes
             probe["op_first_seen"] += 1
-            probe["op_first_" + cls] += 1
+            key_name = "op_first_" + cls
+            if key_name in probe:
+                probe[key_name] += 1
         else:
             probe["op_overflow"] += 1
     elif seen == t_bytes:
         repeat = True
         probe["op_repeat"] += 1
-        probe["op_repeat_" + cls] += 1
+        key_name = "op_repeat_" + cls
+        if key_name in probe:
+            probe[key_name] += 1
     else:
         # Same id, different wire bytes: recycled after GC. A new distinct
         # object now owns the slot, so first-sight classes no longer apply.
