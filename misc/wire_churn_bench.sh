@@ -6,15 +6,15 @@ set -euo pipefail
 BIN="${1:-}"
 ITERS="${2:-1000000}"
 REPS="${3:-3}"
-if ! [[ "$ITERS" =~ ^[1-9][0-9]*$ && "$REPS" =~ ^[1-9][0-9]*$ ]]; then
-    echo "iters and reps must be positive integers (got iters=$ITERS reps=$REPS)" >&2
+if ! [[ "$ITERS" =~ ^[1-9][0-9]*$ && "$REPS" =~ ^[1-9][0-9]*$ ]] || (( ITERS > 1000000000 )); then
+    echo "iters must be a positive integer up to 1000000000, reps a positive integer (got iters=$ITERS reps=$REPS)" >&2
     exit 1
 fi
 cd "$(git rev-parse --show-toplevel)"
 
 if [[ -z "$BIN" ]]; then
-    BIN=$(ls -t target/release/deps/type_kernel-* 2>/dev/null \
-        | while read -r f; do [[ -x "$f" && "$f" != *.d ]] && echo "$f" && break; done)
+    BIN=$( { ls -t target/release/deps/type_kernel-* 2>/dev/null \
+        | while read -r f; do [[ -x "$f" && "$f" != *.d ]] && echo "$f" && break; done; } || true)
 fi
 if [[ -z "$BIN" || ! -x "$BIN" ]]; then
     echo "no executable type_kernel release test binary under target/release/deps" >&2
