@@ -119,7 +119,13 @@ jobs:
           done < /tmp/changed.txt
           echo "ast=$ast" >> "$GITHUB_OUTPUT"
 
+  build-extensions:
+    # Build the three native extensions once (#3); the parity jobs below
+    # restore the cache entry instead of rebuilding the crates.
+    uses: ./.github/workflows/native-extensions.yml
+
   parity:
+    needs: build-extensions
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -139,6 +145,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -146,36 +156,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # Keyed on crate sources + toolchain too (#3): a source-only
+          # change must not silently reuse a stale target/.
+          key: cargo-parity-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
-      - name: Build type_kernel extension
-        run: |
-          SCRATCH=/tmp/type-kernel-ext
-          mkdir -p "$SCRATCH"
-          cargo rustc -p mypy-type-kernel --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libtype_kernel.so "$SCRATCH/type_kernel${EXT_SUFFIX}" 2>/dev/null || cp target/release/libtype_kernel.dylib "$SCRATCH/type_kernel${EXT_SUFFIX}"
-          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
-          echo "EXT_SUFFIX=$EXT_SUFFIX" >> "$GITHUB_ENV"
-
-      - name: Build ast_serialize extension
-        run: |
-          cargo rustc -p mypy-ast-serialize --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libast_serialize.so "${{ env.SCRATCH }}/ast_serialize${EXT_SUFFIX}" 2>/dev/null || cp target/release/libast_serialize.dylib "${{ env.SCRATCH }}/ast_serialize${EXT_SUFFIX}"
-
-      - name: Build module_resolver extension
-        run: |
-          cargo rustc -p mypy-module-resolver --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libmodule_resolver.so "${{ env.SCRATCH }}/module_resolver${EXT_SUFFIX}" 2>/dev/null || cp target/release/libmodule_resolver.dylib "${{ env.SCRATCH }}/module_resolver${EXT_SUFFIX}"
+      - name: Restore native extensions (built once by build-extensions)
+        uses: ./.github/actions/native-extensions
 
       - name: Build in-repo librt (F3 wire cache)
         # PyPI librt (>=0.12.0) omits write_raw_bytes, so the F3 wire-cache
@@ -228,6 +218,7 @@ jobs:
           uv run python -m pytest mypy/test/testcheck.py mypy/test/testtypes*.py -q -k "not slow" -n4 --timeout=30 --timeout-method=thread
 
   parity-mirror:
+    needs: build-extensions
     # F1/F2 mirror coverage (#1527): TEST_NATIVE_TYPE_MIRROR never ran in
     # CI. Capture + read flip exercise testtypes, testcheck, and the
     # fine-grained path (testcheck alone misses mirror identity cases).
@@ -251,6 +242,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -258,36 +253,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # Keyed on crate sources + toolchain too (#3): a source-only
+          # change must not silently reuse a stale target/.
+          key: cargo-parity-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
-      - name: Build type_kernel extension
-        run: |
-          SCRATCH=/tmp/type-kernel-ext
-          mkdir -p "$SCRATCH"
-          cargo rustc -p mypy-type-kernel --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libtype_kernel.so "$SCRATCH/type_kernel${EXT_SUFFIX}" 2>/dev/null || cp target/release/libtype_kernel.dylib "$SCRATCH/type_kernel${EXT_SUFFIX}"
-          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
-          echo "EXT_SUFFIX=$EXT_SUFFIX" >> "$GITHUB_ENV"
-
-      - name: Build ast_serialize extension
-        run: |
-          cargo rustc -p mypy-ast-serialize --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libast_serialize.so "${{ env.SCRATCH }}/ast_serialize${EXT_SUFFIX}" 2>/dev/null || cp target/release/libast_serialize.dylib "${{ env.SCRATCH }}/ast_serialize${EXT_SUFFIX}"
-
-      - name: Build module_resolver extension
-        run: |
-          cargo rustc -p mypy-module-resolver --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libmodule_resolver.so "${{ env.SCRATCH }}/module_resolver${EXT_SUFFIX}" 2>/dev/null || cp target/release/libmodule_resolver.dylib "${{ env.SCRATCH }}/module_resolver${EXT_SUFFIX}"
+      - name: Restore native extensions (built once by build-extensions)
+        uses: ./.github/actions/native-extensions
 
       - name: Build in-repo librt (F3 wire cache)
         # Same as the parity job: the PyPI wheel omits write_raw_bytes and
@@ -334,6 +309,7 @@ jobs:
         run: uv run python -m pytest mypy/test/testfinegrained.py -q -n4 --timeout=30 --timeout-method=thread
 
   parity-symtable-flip:
+    needs: build-extensions
     # G3.1 (#1670): the namespace shadow's read flip, and the first CI run
     # of the symbol-table store (G3.0a shipped capture-only without one).
     # VERIFY serves every mirrored snapshot and diffs it against flip-off.
@@ -357,6 +333,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -364,36 +344,20 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # Keyed on crate sources + toolchain too (#3): a source-only
+          # change must not silently reuse a stale target/.
+          key: cargo-parity-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
-      - name: Build type_kernel extension
-        run: |
-          SCRATCH=/tmp/type-kernel-ext
-          mkdir -p "$SCRATCH"
-          cargo rustc -p mypy-type-kernel --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libtype_kernel.so "$SCRATCH/type_kernel${EXT_SUFFIX}" 2>/dev/null || cp target/release/libtype_kernel.dylib "$SCRATCH/type_kernel${EXT_SUFFIX}"
-          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
-          echo "EXT_SUFFIX=$EXT_SUFFIX" >> "$GITHUB_ENV"
-
-      - name: Build ast_serialize + module_resolver extensions
+      - name: Restore native extensions (built once by build-extensions)
         # The daemon and fine-grained suites force native_parser on, and
-        # pyproject.toml declares the PyPI `ast-serialize` stub: without these
-        # builds the suite dies on a `parse()` TypeError, not on the flip.
-        run: |
-          for crate in mypy-ast-serialize mypy-module-resolver; do
-            cargo rustc -p "$crate" --features extension-module \
-              --lib --crate-type cdylib --release
-            NAME="${crate#mypy-}"
-            NAME="${NAME//-/_}"
-            EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-            cp "target/release/lib${NAME}.so" "${{ env.SCRATCH }}/${NAME}${EXT_SUFFIX}" 2>/dev/null || cp "target/release/lib${NAME}.dylib" "${{ env.SCRATCH }}/${NAME}${EXT_SUFFIX}"
-          done
+        # pyproject.toml declares the PyPI `ast-serialize` stub: without
+        # these builds the suite dies on a `parse()` TypeError, not on the
+        # flip.
+        uses: ./.github/actions/native-extensions
 
       - name: Build in-repo librt (F3 wire cache)
         # Same as the parity job: the PyPI wheel omits write_raw_bytes, so
@@ -446,6 +410,7 @@ jobs:
             mypy/test/testdaemon.py -q -n4 --timeout=120 --timeout-method=thread
 
   parity-typeops:
+    needs: build-extensions
     # Gating: typeops graduation (#203, M16) shipped; the truthiness fix
     # (#201) landed and the typeops corpus passes. Keep green before merging.
     runs-on: ubuntu-latest
@@ -467,6 +432,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -474,36 +443,16 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # Keyed on crate sources + toolchain too (#3): a source-only
+          # change must not silently reuse a stale target/.
+          key: cargo-parity-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
-      - name: Build type_kernel extension
-        run: |
-          SCRATCH=/tmp/type-kernel-ext
-          mkdir -p "$SCRATCH"
-          cargo rustc -p mypy-type-kernel --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libtype_kernel.so "$SCRATCH/type_kernel${EXT_SUFFIX}" 2>/dev/null || cp target/release/libtype_kernel.dylib "$SCRATCH/type_kernel${EXT_SUFFIX}"
-          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
-          echo "EXT_SUFFIX=$EXT_SUFFIX" >> "$GITHUB_ENV"
-
-      - name: Build ast_serialize extension
-        run: |
-          cargo rustc -p mypy-ast-serialize --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libast_serialize.so "${{ env.SCRATCH }}/ast_serialize${EXT_SUFFIX}" 2>/dev/null || cp target/release/libast_serialize.dylib "${{ env.SCRATCH }}/ast_serialize${EXT_SUFFIX}"
-
-      - name: Build module_resolver extension
-        run: |
-          cargo rustc -p mypy-module-resolver --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libmodule_resolver.so "${{ env.SCRATCH }}/module_resolver${EXT_SUFFIX}" 2>/dev/null || cp target/release/libmodule_resolver.dylib "${{ env.SCRATCH }}/module_resolver${EXT_SUFFIX}"
+      - name: Restore native extensions (built once by build-extensions)
+        uses: ./.github/actions/native-extensions
 
       - name: Parity testcheck (typeops resolvers installed)
         env:
@@ -520,7 +469,7 @@ jobs:
     # G0.2 (#1546): the AST path (test_nativeparse / testparse /
     # teststubgen) ran in no workflow. teststubgen always parses natively:
     # stubgen builds its own Options and ignores TEST_NATIVE_PARSER.
-    needs: changes
+    needs: [changes, build-extensions]
     if: needs.changes.outputs.ast == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -542,6 +491,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -549,21 +502,18 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-parity-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # Keyed on crate sources + toolchain too (#3): a source-only
+          # change must not silently reuse a stale target/.
+          key: cargo-parity-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: cargo-parity-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
-      - name: Build ast_serialize extension
-        run: |
-          SCRATCH=/tmp/ast-serialize-ext
-          mkdir -p "$SCRATCH"
-          cargo rustc -p mypy-ast-serialize --features extension-module \
-            --lib --crate-type cdylib --release
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          cp target/release/libast_serialize.so "$SCRATCH/ast_serialize${EXT_SUFFIX}" 2>/dev/null || cp target/release/libast_serialize.dylib "$SCRATCH/ast_serialize${EXT_SUFFIX}"
-          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+      - name: Restore native extensions (built once by build-extensions)
+        # teststubgen always parses natively: stubgen builds its own Options
+        # and ignores TEST_NATIVE_PARSER, so ast_serialize must be present.
+        uses: ./.github/actions/native-extensions
 
       - name: AST parity (native parser)
         env:

@@ -1,0 +1,56 @@
+name: native-extensions
+
+# Build-once job for the three native extensions (#3): every workflow
+# calls this via `uses:` as its build-extensions job, and the consuming
+# jobs restore the same cache entry instead of rebuilding the crates.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-extensions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
+        with:
+          version: "0.11.14"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
+          restore-keys: cargo-ext-${{ runner.os }}-
+
+      - name: Sync Python deps (uv)
+        run: uv sync --group test
+
+      - name: Restore or build native extensions
+        uses: ./.github/actions/native-extensions
+        with:
+          save-cache: "true"
