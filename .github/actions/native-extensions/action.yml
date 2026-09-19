@@ -1,0 +1,106 @@
+name: native-extensions
+description: >-
+  Restore the shared native-extension cache (type_kernel, ast_serialize,
+  module_resolver) built once by the build-extensions job, or build all
+  three crates on a miss. Exports SCRATCH (/tmp/native-ext, holding the
+  three <name>${EXT_SUFFIX} modules) and EXT_SUFFIX, matching the
+  contract the previous per-job cargo rustc steps used.
+
+inputs:
+  save-cache:
+    description: >-
+      Save the scratch dir to the actions cache after a miss build
+      (shared build-extensions job only).
+    default: "false"
+  copy-to-workspace:
+    description: >-
+      Also copy the extensions into GITHUB_WORKSPACE for suites that
+      spawn subprocesses with PYTHONPATH reset to the repo root.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Compute extension cache key
+      id: extkey
+      shell: bash
+      run: |
+        RUSTC="$(rustc --version | tr -d ' ()')"
+        echo "key=native-ext-v1-${{ runner.os }}-${RUSTC}-${{ hashFiles('Cargo.lock', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}" >> "$GITHUB_OUTPUT"
+
+    - name: Restore shared extension cache
+      id: extcache
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        # The dir holds the three built <name>${EXT_SUFFIX} files, not
+        # target/, so a hit is only a hit when the binaries are there.
+        path: /tmp/native-ext
+        key: ${{ steps.extkey.outputs.key }}
+
+    - name: Verify restored extensions
+      # A hit with missing or mismatched-suffix files is a miss: discard
+      # and rebuild below. Entries are immutable, so the discarded entry
+      # cannot be re-saved under the same key.
+      id: verify
+      if: steps.extcache.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        set -eu
+        EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+        echo "SCRATCH=/tmp/native-ext" >> "$GITHUB_ENV"
+        echo "EXT_SUFFIX=$EXT_SUFFIX" >> "$GITHUB_ENV"
+        for NAME in type_kernel ast_serialize module_resolver; do
+          if [ ! -f "/tmp/native-ext/${NAME}${EXT_SUFFIX}" ]; then
+            echo "cache hit lacks /tmp/native-ext/${NAME}${EXT_SUFFIX}; discarding"
+            rm -rf /tmp/native-ext
+            echo "usable=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        done
+        echo "usable=true" >> "$GITHUB_OUTPUT"
+
+    - name: Build native extensions (cache miss)
+      if: steps.extcache.outputs.cache-hit != 'true' || steps.verify.outputs.usable != 'true'
+      shell: bash
+      run: |
+        set -eu
+        SCRATCH=/tmp/native-ext
+        mkdir -p "$SCRATCH"
+        EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
+        # cargo emits lib<name>.so (Linux) / .dylib (macOS); Python's
+        # import machinery wants the EXT_SUFFIX name, so rename on copy.
+        for crate in mypy-type-kernel mypy-ast-serialize mypy-module-resolver; do
+          cargo rustc -p "$crate" --features extension-module \
+            --lib --crate-type cdylib --release
+          NAME="${crate#mypy-}"
+          NAME="${NAME//-/_}"
+          cp "target/release/lib${NAME}.so" "$SCRATCH/${NAME}${EXT_SUFFIX}" 2>/dev/null \
+            || cp "target/release/lib${NAME}.dylib" "$SCRATCH/${NAME}${EXT_SUFFIX}"
+        done
+        echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+        echo "EXT_SUFFIX=$EXT_SUFFIX" >> "$GITHUB_ENV"
+
+    - name: Copy extensions into the workspace
+      # pytest-cmdline/pytest-slow spawn real mypy and mypyc subprocesses
+      # whose PYTHONPATH is reset to the repo root, so the extensions must
+      # also land there.
+      if: env.COPY_TO_WORKSPACE == 'true'
+      env:
+        COPY_TO_WORKSPACE: ${{ inputs.copy-to-workspace }}
+      shell: bash
+      run: |
+        set -eu
+        cp /tmp/native-ext/* "$GITHUB_WORKSPACE/"
+
+    - name: Save shared extension cache
+      # Best-effort only: a same-key race between pr-gate/merge-gate/
+      # parity running on one PR must not fail the gate. Save only on a
+      # full miss; a hit that failed verification cannot be re-saved.
+      if: env.SAVE_CACHE == 'true' && steps.extcache.outputs.cache-hit != 'true'
+      env:
+        SAVE_CACHE: ${{ inputs.save-cache }}
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: /tmp/native-ext
+        key: ${{ steps.extkey.outputs.key }}

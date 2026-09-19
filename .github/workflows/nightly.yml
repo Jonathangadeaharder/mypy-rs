@@ -17,7 +17,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  build-extensions:
+    # Build the three native extensions once (#3); the full-battery job
+    # below restores the cache entry instead of rebuilding the crates.
+    uses: ./.github/workflows/native-extensions.yml
+
   full-battery:
+    needs: build-extensions
     runs-on: ubuntu-latest
     timeout-minutes: 300
     steps:
@@ -38,6 +44,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
 
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -45,31 +55,21 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-nightly-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # Keyed on crate sources + toolchain too (#3): a source-only
+          # change must not silently reuse a stale target/.
+          key: cargo-nightly-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: cargo-nightly-${{ runner.os }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
-      - name: Build native extensions into a scratch prefix
+      - name: Restore native extensions (built once by build-extensions)
         # pytest-cmdline/pytest-slow spawn real mypy and mypyc subprocesses
         # whose PYTHONPATH is reset to the repo root (testcmdline.py and the
         # mypyc test_commandline.py), so the extensions must also land there.
-        run: |
-          SCRATCH=/tmp/native-ext
-          mkdir -p "$SCRATCH"
-          EXT_SUFFIX=$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")
-          for crate in mypy-type-kernel mypy-ast-serialize mypy-module-resolver; do
-            cargo rustc -p "$crate" --features extension-module \
-              --lib --crate-type cdylib --release
-            NAME="${crate#mypy-}"
-            NAME="${NAME//-/_}"
-            for DEST in "$SCRATCH" "$GITHUB_WORKSPACE"; do
-              cp "target/release/lib${NAME}.so" "$DEST/${NAME}${EXT_SUFFIX}" 2>/dev/null \
-                || cp "target/release/lib${NAME}.dylib" "$DEST/${NAME}${EXT_SUFFIX}"
-            done
-          done
-          echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
+        uses: ./.github/actions/native-extensions
+        with:
+          copy-to-workspace: "true"
 
       - name: Build in-repo librt (F3 wire cache)
         run: |
@@ -109,6 +109,10 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Record Rust toolchain version
+        id: rustc
+        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+
       - name: Cache cargo registry
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -116,7 +120,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-nightly-${{ runner.os }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml') }}
+          # Keyed on crate sources + toolchain too (#3): a source-only
+          # change must not silently reuse a stale target/.
+          key: cargo-nightly-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
           restore-keys: cargo-nightly-${{ runner.os }}-
 
       - name: Install uv
@@ -199,7 +205,7 @@ jobs:
         run: uv run docs
 
   report:
-    needs: [full-battery, rust-workspace, deep-lint-and-docs]
+    needs: [full-battery, rust-workspace, deep-lint-and-docs, build-extensions]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
