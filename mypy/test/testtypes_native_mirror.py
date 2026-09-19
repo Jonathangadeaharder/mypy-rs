@@ -2347,6 +2347,35 @@ class WireCacheTvarFingerprintSuite(Suite):
         assert fresh != stale, "a merged fingerprint must reject the stale parent"
         assert _type_wire_cache[id(parent)][1] is fresh
 
+    def test_shared_lookup_merges_nested_fingerprint(self) -> None:
+        """The nested-hit merge is shared lookup policy, not splice-private.
+
+        A hit served inside an open session skips the re-walk that would
+        record its tvars, so the shared lookup itself must merge the
+        entry's triples: whichever consumer probes (serialize funnel or
+        splice), the enclosing store keeps a fingerprint complete enough
+        to reject a mutant child.
+        """
+        import mypy.types as types_mod
+        from mypy.checkexpr import _serialize_type_for_checkexpr
+        from mypy.types import _wire_cache_lookup
+
+        child = self._tvar_callable()
+        _serialize_type_for_checkexpr(child)  # child gets a fingerprinted entry
+        # An enclosing session starts with a clean accumulator, so any
+        # triple observed below can only come from the lookup's merge.
+        types_mod._type_wire_cache_tvars.clear()
+        types_mod._type_wire_cache_session_depth += 1
+        try:
+            hit = _wire_cache_lookup(id(child), child)
+            assert hit is not None, "unchanged entry must hit"
+            assert hit[1] is not None, "tvar entry must carry its fingerprint"
+            fp = types_mod._tvar_fingerprint()
+        finally:
+            types_mod._type_wire_cache_session_depth -= 1
+        assert fp is not None, "a nested lookup hit must merge its triples"
+        assert (self.fx.t, self.fx.t.id, 0) in fp, fp
+
     def test_bare_tvar_is_never_a_cache_root(self) -> None:
         from mypy.checkexpr import _serialize_type_for_checkexpr
         from mypy.types import _type_wire_cache
