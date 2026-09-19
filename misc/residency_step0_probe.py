@@ -12,8 +12,10 @@ guards decide whether it may be read as evidence, never whether printed,
 mirroring misc/wire_churn_phase_profile.py. Evidence is refused when the
 run failed, the probe never engaged, the operand-class anomaly counter is
 nonzero (a class the F3 predicate cannot explain), an id cap overflowed
-(distinctness would silently undercount), the decode windows do not cover
-exactly the coded calls (a skipped window would read as zero), the wire
+(distinctness would silently undercount), a decode window is skipped
+(fam_decode_* deltas would undercount), the decode windows do not
+reconcile with the coded calls (a wire_open escape left a call
+unwindowed), the wire
 phase counters are off (family decode deltas would read zero), or the
 operand classification sum does not reconcile with op_appearances.
 
@@ -97,6 +99,13 @@ def evidence_refusals(
         reasons.append(f"{probe['op_class_anomaly']} operand appearances no F3 class explains")
     if probe["op_overflow"] or probe["overflow"]:
         reasons.append("id cap overflowed: distinctness counters undercount")
+    if probe["fam_window_skipped"]:
+        reasons.append(
+            f"{probe['fam_window_skipped']} decode windows skipped: "
+            "fam_decode_* deltas undercount"
+        )
+    # Skipped windows refuse above; this invariant catches the escape
+    # path where wire_open raises after coded_calls already incremented.
     windows = probe["fam_windows"] + probe["fam_window_skipped"]
     if windows != probe["coded_calls"]:
         reasons.append(f"decode windows {windows} != coded calls {probe['coded_calls']}")

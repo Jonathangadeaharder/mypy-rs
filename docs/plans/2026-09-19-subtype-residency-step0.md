@@ -169,6 +169,15 @@ corpus sits inside the run-1/run-2 spread, so every number above stands:
 | D / class A pairs / coded calls | 116,659 / 59,366 / 22,652 | unchanged by construction |
 | op_first_fp_stale / op_repeat_fp_stale (run 4) | 0 / 0 | the stale-fp class never fires |
 
+A sixth review round reclassified the probe's decode-window guard: the
+windows == coded-calls check was a near-tautology (every coded call closes
+exactly one window), so a skipped window never refused on its own. The
+guard now refuses on `fam_window_skipped` directly and keeps the
+windows/coded-calls invariant for the `wire_open` escape path. Run 5
+(post-fix): exit 0, mode 1, `fam_window_skipped` 0, op_ser
+180,597/29,418/89,549, op_repeat_servable 153,933, memoable 31,355, D
+116,657 — inside the run 1-4 band, no number above moves.
+
 The self-pair bias the pre-warm prediction carried is therefore
 negligible here: reclassifying a same-object pair's second serialization
 from pre-warm miss to hit moves the split by less than the run-to-run

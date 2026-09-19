@@ -46,10 +46,9 @@ for _f in list(sys.meta_path):
 
 PY = sys.executable
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT_DIR = os.environ.get("MYPY_MICROBENCH_OUT_DIR", "/private/tmp/gap-attrib")
-TK_SO = os.environ.get(
-    "MYPY_MICROBENCH_TK_SO",
-    "/private/tmp/mypy-rs-local-typekernel/type_kernel.cpython-313-darwin.so",
+OUT_DIR = os.environ.get("MYPY_MICROBENCH_OUT_DIR") or "/private/tmp/gap-attrib"
+TK_SO = os.environ.get("MYPY_MICROBENCH_TK_SO") or (
+    "/private/tmp/mypy-rs-local-typekernel/type_kernel.cpython-313-darwin.so"
 )
 
 # (name, needs_kernel_ext, iters)
