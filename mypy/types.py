@@ -241,10 +241,6 @@ _serialize_stats = {
     "tvar_reject": 0,
     "bytes": 0,
     "mirror": 0,
-    # #1671: encodes served by the `Instance` view store, before the
-    # wire-cache probe.
-    "view": 0,
-    "view_bytes": 0,
 }
 
 
@@ -260,17 +256,6 @@ from time import perf_counter as _perf_counter
 
 _serialize_clock_on: bool = bool(_os.environ.get("MYPY_SERIALIZE_CLOCK"))
 _serialize_funnel_ns: int = 0
-
-
-# F reopening experiment (#1671): the replacement-view encode for the
-# `Instance` family. Installed by `mypy.typeview.activate`; `None` on a
-# gate-off build, so the seam pays one `is not None` test.
-_native_type_view_encode: Callable[[Type], bytes | None] | None = None
-
-
-def _set_native_type_view_encode(fn: Callable[[Type], bytes | None] | None) -> None:
-    global _native_type_view_encode
-    _native_type_view_encode = fn
 
 
 # Phase F2 (#1393): types_mirror.read_fresh_bytes when the F2 mirror-read
@@ -4763,16 +4748,6 @@ def _set_native_visitor_types_active(active: bool) -> None:
 def _serialize_type_for_visitor(t: Type) -> bytes:
     if _serialize_stats_on:
         _serialize_stats["calls"] += 1
-    # The view probe comes before the wire-cache probe: a served encode is
-    # the same bytes the walk would produce, so it subsumes the cache for
-    # the family it covers (#1671).
-    if _native_type_view_encode is not None:
-        served = _native_type_view_encode(t)
-        if served is not None:
-            if _serialize_stats_on:
-                _serialize_stats["view"] += 1
-                _serialize_stats["view_bytes"] += len(served)
-            return served
     key = id(t)
     if _wire_cache_enabled():
         cached = _type_wire_cache_hit(key, t)
