@@ -134,7 +134,7 @@ rejected; its sequencing is. Hybrid-resident flips are closed by
 measurement in their cheap forms (#81 for eager mint; #71 for residency;
 ADR-0006 for storage moves). The facade design is retained as the bridge a
 future standalone path will need for Python-written plugins (epic step 7):
-at thatpoint Python is the interop layer, not the owner, which is the one
+at that point Python is the interop layer, not the owner, which is the one
 arrangement ADR-0007's Decision 2 contract always assumed.
 
 ## Consequences
