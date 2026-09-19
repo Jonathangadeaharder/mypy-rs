@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import TestCase, mock
 
 from mypy.inspections import parse_location
-from mypy.util import _generate_junit_contents, get_terminal_width, hard_exit
+from mypy.util import _generate_junit_contents, env_flag, get_terminal_width, hard_exit
 
 
 class TestGetTerminalSize(TestCase):
@@ -224,3 +224,46 @@ class TestCollectionGuard(TestCase):
         if node is None:
             return []
         return [b.id if isinstance(b, ast.Name) else getattr(b, "attr", "?") for b in node.bases]
+
+
+class TestEnvFlag(TestCase):
+    def test_falsey_spellings_turn_the_gate_off(self) -> None:
+        # A bare bool(os.environ.get(name)) reads "0" as True, so a
+        # gate-off run silently stayed on (#60, #1287).
+        for raw in ["0", "false", "no", "off", "FALSE", "Off"]:
+            with mock.patch.dict(os.environ, {"MYPY_ENV_FLAG_TEST": raw}):
+                assert env_flag("MYPY_ENV_FLAG_TEST") is False
+
+    def test_truthy_spellings_turn_the_gate_on(self) -> None:
+        for raw in ["1", "true", "yes", "on", "TRUE", "On"]:
+            with mock.patch.dict(os.environ, {"MYPY_ENV_FLAG_TEST": raw}):
+                assert env_flag("MYPY_ENV_FLAG_TEST") is True
+
+    def test_unset_and_empty_stay_off(self) -> None:
+        os.environ.pop("MYPY_ENV_FLAG_TEST", None)
+        assert env_flag("MYPY_ENV_FLAG_TEST") is False
+        with mock.patch.dict(os.environ, {"MYPY_ENV_FLAG_TEST": ""}):
+            assert env_flag("MYPY_ENV_FLAG_TEST") is False
+
+    def test_unknown_value_fails_loudly(self) -> None:
+        with mock.patch.dict(os.environ, {"MYPY_ENV_FLAG_TEST": "maybe"}):
+            with self.assertRaises(SystemExit):
+                env_flag("MYPY_ENV_FLAG_TEST")
+
+    def test_production_gates_decode_through_env_flag(self) -> None:
+        # Pins the #60 fix at the wiring sites: the three probe gates must
+        # decode through env_flag, never a bare bool(environ.get(...)),
+        # which would read "0" as enabled.
+        import re
+
+        here = Path(__file__).resolve().parent.parent
+        gates = {
+            "types.py": ["MYPY_SERIALIZE_STATS", "MYPY_SERIALIZE_CLOCK"],
+            "subtypes.py": ["MYPY_SUBTYPE_IDENTITY_PROBE"],
+        }
+        bare = re.compile(r"bool\(\w*\.environ\.get\(")
+        for fname, names in gates.items():
+            src = (here / fname).read_text()
+            for name in names:
+                assert f'_env_flag("{name}")' in src, f"{fname} must gate {name} via env_flag"
+            assert not bare.search(src), f"{fname} still has a bool(environ.get(...)) gate"

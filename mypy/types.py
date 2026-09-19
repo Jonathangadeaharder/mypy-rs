@@ -80,7 +80,7 @@ from mypy.nodes import (
 )
 from mypy.options import Options
 from mypy.state import state
-from mypy.util import IdMapper
+from mypy.util import IdMapper, env_flag as _env_flag
 
 T = TypeVar("T")
 
@@ -227,9 +227,7 @@ def _type_wire_cache_hit(key: int, t: Type) -> bytes | None:
 
 # Serialize-side instrumentation (env-gated via MYPY_SERIALIZE_STATS).
 # Zero overhead in production: the per-call sites check the bool below.
-import os as _os
-
-_serialize_stats_on: bool = bool(_os.environ.get("MYPY_SERIALIZE_STATS"))
+_serialize_stats_on: bool = _env_flag("MYPY_SERIALIZE_STATS")
 _serialize_stats = {
     "calls": 0,
     "hits": 0,
@@ -254,7 +252,7 @@ def _clear_serialize_stats() -> None:
 # storage-side replacement of the walk can save.
 from time import perf_counter as _perf_counter
 
-_serialize_clock_on: bool = bool(_os.environ.get("MYPY_SERIALIZE_CLOCK"))
+_serialize_clock_on: bool = _env_flag("MYPY_SERIALIZE_CLOCK")
 _serialize_funnel_ns: int = 0
 
 
