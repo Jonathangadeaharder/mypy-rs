@@ -14,6 +14,7 @@ try:
 except ImportError:
     _type_kernel = None  # type: ignore[assignment]
 
+from typing import Any
 from unittest import skipUnless
 
 from mypy.nodes import (
@@ -571,3 +572,123 @@ class NativeCheckOverloadCallRetiredSuite(Suite):
     def test_pyfunction_stays_registered(self) -> None:
         assert _type_kernel is not None
         assert hasattr(_type_kernel, "rust_check_overload_call")
+
+
+@skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
+class NativePossibleNoneTypeVarOverlapRetiredSuite(Suite):
+    """Pin the #1624 retirement of the `rust_possible_none_type_var_overlap` shim.
+
+    A load-robust instruction-count A/B on the cold self-check (defer arm
+    -2.6e9 of a 453.6e9 baseline, -0.57%, second-largest net loss in the
+    #1878-method sweep) showed the crossing lost more end to end than the
+    short pure-Python union walk it replaced, per-arg and per-target wire
+    prep included. The method now runs its Python body unconditionally;
+    the pyfunction stays registered for `NativeCheckCallSuite`.
+    """
+
+    def setUp(self) -> None:
+        from mypy.checkexpr import _set_native_checkexpr_active
+
+        self.fx = TypeFixture()
+        self._set_active = _set_native_checkexpr_active
+        self._set_active(True)
+
+    def tearDown(self) -> None:
+        self._set_active(False)
+
+    def _checker(self) -> Any:
+        # The retired body never reads `self`, so an unbound call with a
+        # cast placeholder avoids constructing a full ExpressionChecker.
+        from typing import cast
+
+        from mypy.checkexpr import ExpressionChecker
+
+        return cast(ExpressionChecker, None)
+
+    def _callable(
+        self, arg_types: list[Type], variables: list[Type] | None = None
+    ) -> CallableType:
+        return CallableType(
+            arg_types,
+            [ARG_POS] * len(arg_types),
+            [None] * len(arg_types),
+            self.fx.anyt,
+            self.fx.function,
+            variables=variables or [],  # type: ignore[arg-type]
+        )
+
+    def test_shim_source_removed(self) -> None:
+        import inspect
+
+        from mypy import checkexpr
+
+        assert not hasattr(checkexpr, "_rust_possible_none_type_var_overlap")
+        src = inspect.getsource(checkexpr.ExpressionChecker.possible_none_type_var_overlap)
+        assert "rust_" not in src, "possible_none_type_var_overlap should be pure Python"
+
+    def test_no_rust_name_loaded(self) -> None:
+        from mypy.checkexpr import ExpressionChecker
+
+        loaded = [
+            n
+            for n in ExpressionChecker.possible_none_type_var_overlap.__code__.co_names
+            if "rust_" in n
+        ]
+        assert loaded == [], f"possible_none_type_var_overlap still loads {loaded}"
+
+    def test_no_wire_serialization_with_gate_on(self) -> None:
+        from mypy import checkexpr
+        from mypy.checkexpr import ExpressionChecker
+        from mypy.types import NoneType, UnionType
+
+        calls: list[str] = []
+        orig = checkexpr._serialize_type_for_checkexpr
+
+        def spy(t: Type) -> bytes:
+            calls.append("type")
+            return orig(t)
+
+        arg = UnionType.make_union([self.fx.a, NoneType()])
+        targets = [
+            self._callable([NoneType()]),
+            self._callable([self.fx.t], variables=[self.fx.t]),
+        ]
+        checkexpr._serialize_type_for_checkexpr = spy
+        try:
+            for _ in range(3):
+                ExpressionChecker.possible_none_type_var_overlap(self._checker(), [arg], targets)
+        finally:
+            checkexpr._serialize_type_for_checkexpr = orig
+        assert calls == [], f"retired overlap seam serialized: {calls}"
+
+    def test_values_match_the_heuristic(self) -> None:
+        from mypy.checkexpr import ExpressionChecker
+        from mypy.types import NoneType, UnionType
+
+        checker = self._checker()
+        union_with_none = UnionType.make_union([self.fx.a, NoneType()])
+        overlap_targets = [
+            self._callable([NoneType()]),
+            self._callable([self.fx.t], variables=[self.fx.t]),
+        ]
+        assert ExpressionChecker.possible_none_type_var_overlap(
+            checker, [union_with_none], overlap_targets
+        )
+        assert not ExpressionChecker.possible_none_type_var_overlap(checker, [], overlap_targets)
+        assert not ExpressionChecker.possible_none_type_var_overlap(
+            checker, [self.fx.a], overlap_targets
+        )
+        # None and the TypeVar at different positions: no position has both.
+        split_targets = [self._callable([NoneType(), self.fx.t], variables=[self.fx.t])]
+        assert not ExpressionChecker.possible_none_type_var_overlap(
+            checker, [union_with_none], split_targets
+        )
+        # A union without None never forces union math.
+        union_plain = UnionType.make_union([self.fx.a, self.fx.b])
+        assert not ExpressionChecker.possible_none_type_var_overlap(
+            checker, [union_plain], overlap_targets
+        )
+
+    def test_pyfunction_stays_registered(self) -> None:
+        assert _type_kernel is not None
+        assert hasattr(_type_kernel, "rust_possible_none_type_var_overlap")

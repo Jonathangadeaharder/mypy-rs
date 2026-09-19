@@ -540,72 +540,14 @@ F = TypeVar("F", bound=FunctionLike)
 def freshen_function_type_vars(callee: F) -> F:
     """Substitute fresh type variables for generic function type variables.
 
-    The definition gate stays ON for this seam (#1220): its result is handed
-    to plugin FunctionContext hooks as ``ctx.default_return_type`` and
-    re-enters error reporting via ``extract_callable_type(...,
-    ctx=ctx.default_return_type)`` -> ``analyze_member_access(context=...)``.
-    A wire-decoded result carries no nested locations, so a locally-built
-    error loses its line number (functools.partial path, "int" not callable).
-    Keep deferring on any definition until positions below the root are
-    re-established.
+    Pure Python since the #1624 retirement: the native freshen crossing was
+    a measured net loss on the cold self-check (defer arm -8.6e9 of a 453.6e9
+    baseline, -1.89%). The Rust pyfunction stays registered for the
+    direct-seam parity suites.
     """
     if isinstance(callee, CallableType):
         if not callee.is_generic():
             return callee
-        # Stage 3c type-kernel seam (mirrors expand_type's strangler-fig
-        # contract); see the docstring for the #1220 definition-gate scope.
-        if (
-            _HAS_TYPE_KERNEL
-            and _native_expand_type_active
-            and _native_expand_type_resolver is not None
-            and not _needs_python(callee)
-        ):
-            try:
-                result = _type_kernel.rust_freshen_function_type_vars(
-                    TypeVarId.next_raw_id, _serialize_type(callee)
-                )
-                if result is not None:
-                    next_raw_id, serialized = result
-                    TypeVarId.next_raw_id = next_raw_id
-                    decoded = read_type(_ReadBuffer(bytes(serialized)))
-                    from mypy.wirefixup import fixup_wire_type
-
-                    fixed = fixup_wire_type(decoded)
-                    # The wire format drops line/column; preserve the input type's
-                    # location so derived contexts report errors at the
-                    # call site instead of a phantom line 0/-1.
-                    if fixed is not None and isinstance(fixed, ProperType):
-                        fixed.line = callee.line
-                        fixed.column = callee.column
-                        if isinstance(fixed, CallableType):
-                            fixed.fallback.line = fixed.line
-                    # Clear the process-global primitive decode singletons
-                    # after a read so NOT_READY Instances cannot leak into
-                    # later builds (primitive singletons are process-global).
-                    from mypy.types import instance_cache
-
-                    instance_cache.int_type = None
-                    instance_cache.str_type = None
-                    instance_cache.bool_type = None
-                    instance_cache.object_type = None
-                    instance_cache.function_type = None
-                    if fixed is not None:
-                        from mypy.wirefixup import canonicalize_fresh_vars
-
-                        # Wire round-trip loses fresh meta-var identity;
-                        # re-unify occurrences before returning.
-                        fixed = canonicalize_fresh_vars(fixed)
-                        # Definitions are dropped by the wire round-trip;
-                        # re-stamp from the input (None = unpairable,
-                        # defer to the Python path below).
-                        fixed = _resync_definitions(callee, fixed)
-                        if fixed is not None:
-                            return cast(F, fixed)
-            except (AssertionError, NotImplementedError, ValueError, AttributeError):
-                # Defer to Python: semanal TypeInfo-not-fixed asserts,
-                # unserializable variants, failed wire reads, FakeInfo
-                # attribute access.
-                pass
         tvs = []
         tvmap: dict[TypeVarId, Type] = {}
         for v in callee.variables:
