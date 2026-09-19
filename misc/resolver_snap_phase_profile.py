@@ -83,6 +83,8 @@ class State:
         self.sig_s = 0.0  # probe-only signature overhead (not run cost)
         self.ctor_blob_s = 0.0  # post-first collects only
         self.ctor_blob_first_s = 0.0
+        self.first_collect_s = 0.0
+        self.sig_in_build_s = 0.0  # probe sig work inside the build window
         # write_str attribution (probe's own signature writes excluded).
         self.build_write_str = 0
         self.total_write_str = 0
@@ -465,7 +467,12 @@ def compare(state: State, infos: list, snapshotted: set, repush_set: set) -> Non
             state.sigs_stored[fullname] = sig
     finally:
         state.in_probe_sig = False
-        state.sig_s += time.perf_counter() - t0
+        elapsed = time.perf_counter() - t0
+        state.sig_s += elapsed
+        if state.in_build:
+            # Only the compare runs inside the timed build window; the
+            # first-build baseline compare (outside it) is excluded here.
+            state.sig_in_build_s += elapsed
 
 
 def install(state: State) -> None:
@@ -479,7 +486,11 @@ def install(state: State) -> None:
     orig_write_str = mt.write_str
 
     def counting_write_str(data, value):
-        if state.in_build and not state.in_probe_sig:
+        if state.in_probe_sig:
+            # Probe signature writes are excluded from both counters; only
+            # the checker's own wire traffic is attributed.
+            return orig_write_str(data, value)
+        if state.in_build:
             state.build_write_str += 1
         state.total_write_str += 1
         return orig_write_str(data, value)
@@ -494,7 +505,10 @@ def install(state: State) -> None:
         try:
             result = orig_collect(self, scc)
         finally:
-            state.collect_s += time.perf_counter() - t0
+            elapsed = time.perf_counter() - t0
+            state.collect_s += elapsed
+            if state.collects == 1:
+                state.first_collect_s += elapsed
         state.last_collect = result
         return result
 
@@ -571,7 +585,12 @@ def report(state: State, run_status: str) -> None:
         print(f"[snap] {name:34s} {value}", file=sys.stderr)
 
     update_installs = (
-        state.build_s - state.first_build_s - state.split_s - state.ctor_blob_s - state.collect_s
+        state.build_s
+        - state.first_build_s
+        - state.split_s
+        - state.ctor_blob_s
+        - (state.collect_s - state.first_collect_s)
+        - state.sig_in_build_s
     )
     out("run status", run_status)
     out("sigs mode", state.sigs)
@@ -586,11 +605,13 @@ def report(state: State, run_status: str) -> None:
     out("re-push feed to Rust (sum)", state.repush)
     out("resolver build_s", f"{state.build_s:.3f}")
     out("  first full-build_s", f"{state.first_build_s:.3f}")
+    out("  first collect walk_s", f"{state.first_collect_s:.3f}")
     out("  first ctor blob_s", f"{state.ctor_blob_first_s:.3f}")
-    out("  collect walk_s", f"{state.collect_s:.3f}")
+    out("  collect walk_s (later)", f"{state.collect_s - state.first_collect_s:.3f}")
     out("  sig gate split_s", f"{state.split_s:.3f}")
     out("  ctor blob_s", f"{state.ctor_blob_s:.3f}")
-    out("  update+installs residual_s", f"{max(0.0, update_installs):.3f}")
+    out("  probe sig in-build_s", f"{state.sig_in_build_s:.3f}")
+    out("  update+installs residual_s", f"{update_installs:.3f}")
     out("write_str during resolver build", state.build_write_str)
     out("write_str total", state.total_write_str)
     out("probe sig overhead_s", f"{state.sig_s:.3f}")

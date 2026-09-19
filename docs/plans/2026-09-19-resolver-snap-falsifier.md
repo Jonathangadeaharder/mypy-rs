@@ -18,11 +18,12 @@ same verdict).
 - Corpus: cold self-check, `mypy_self_check.ini -n0 --no-incremental
   -p mypy -p mypyc`, single process (`MYPY_NUM_WORKERS=0`), 378 files,
   "Success: no issues found" on every counted run, probe exit 0.
-- Evidence: `/private/tmp/resolver-snap/` — `sigs.err` and `sigs2.err`
-  (determinism pair, byte-signature mode), `light.err` (timing run, no
-  signature overhead), `sigs3.err` (field-level diffs and walk attribution
-  of the changed entries; run exit 0, "Success: no issues found in 378
-  source files").
+- Evidence: `/private/tmp/resolver-snap/` — `sigs.err`, `sigs2.err`, `sigs3.err`
+  (signature-mode runs; `sigs3.err` carries the field-level diffs and walk
+  attribution), `light.err` (first timing run), and the post-review
+  fixed-probe reruns `light2.err` / `sigs4.err` (run exit 0, "Success: no
+  issues found in 378 source files"). All population counters are identical
+  across every run.
 
 ## The pre-registered gate
 
@@ -71,7 +72,7 @@ signature-mode runs agree with the #61 audit to the entry), 6,528 new,
 | actual re-push feed to Rust, whole run | **1** entry |
 | re-push unchanged fraction (gate population A) | 0 / 1 = **0.0000** |
 | re-push bytes (mirror proxy) | 3,037 |
-| `write_str` during resolver build | 26,974 of 1,719,985 total (1.6%) |
+| `write_str` during resolver build | 26,974 of 1,682,119 total (1.6%) |
 
 Changed entries over the whole run, with the walked module that yielded
 each entry and the per-field diff (from `sigs3.err`; TypeInfos are
@@ -94,12 +95,17 @@ entries changed in exactly one field, `enum_members`, which is the
 snapshot-staleness class the kernel already documents and routes around
 (next section) — not new churn.
 
-Light-run phase decomposition of `resolver_build_s` 0.495s over 546 collects:
-first full build 0.052s + collect walk 0.125s + signature gate split 0.040s
-+ ctor blobs 0.116s (+0.031s first) + update+installs residual 0.163s. The
-probe's own signature work costs 0.869s and is reported separately; it
-inflates `resolver_build_s` to 1.357s in sigs mode, which is why the timing
-numbers come from the light run.
+Light-run phase decomposition of `resolver_build_s` 0.757s over 546 collects
+(`light2.err`, fixed probe): first full build 0.077s + first collect walk
+0.002s + later collect walks 0.175s + signature gate split 0.060s + ctor
+blobs 0.172s + update+installs residual 0.272s. The probe's own signature
+work is excluded from every attribution counter: it is tracked as a
+separate `probe sig in-build_s` line (1.439s in the same-load sigs rerun)
+and subtracted from the residual, which is why the residual is consistent
+across modes (0.272s light vs 0.275s sigs) and why the sigs-mode
+`write_str` total (1,682,146) matches the light-mode total (1,682,119)
+instead of carrying ~38k probe signature writes. Wall times are
+load-contaminated; the counters and byte volumes are exact.
 
 ## Verdict
 
@@ -116,14 +122,14 @@ numbers come from the light run.
   instruction ceiling.
 
 What remains per collect is change *detection* (the module walk plus the
-builtins signature comparison, 0.165s combined over 546 collects), not change
+builtins signature comparison, 0.235s combined over 546 collects), not change
 *serialization*. Making detection cheaper would need mutation-site hooks on
 the Python TypeInfo graph, which the #1641 docstring records as not available
 for the cache-fixup path; that would be a different lever with its own
 falsifier.
 
 The issue's `write_str` premise also dissolves under attribution: only 26,974
-of 1,719,985 `write_str` calls (1.6%) happen inside the resolver build. The
+of 1,682,119 `write_str` calls (1.6%) happen inside the resolver build. The
 1.57M-call gap between native-on and native-off arms is per-call wire prep in
 the type kernel, not snapshot upkeep — consistent with the wire-churn
 falsifier's finding that the churn is solve-side (#63).
