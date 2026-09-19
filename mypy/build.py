@@ -2308,6 +2308,11 @@ class BuildManager:
             if _serialize_stats_on:
                 for key, val in _serialize_stats.items():
                     self.stats[f"serialize_{key}"] = val
+            from mypy.subtypes import _identity_probe, _identity_probe_on
+
+            if _identity_probe_on:
+                for key, val in _identity_probe.items():
+                    self.stats[f"subtype_identity_{key}"] = val
             from mypy.types import _serialize_clock_on, _serialize_funnel_ns
 
             if _serialize_clock_on:

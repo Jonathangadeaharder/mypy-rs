@@ -143,6 +143,8 @@ def _set_native_subtype_active(active: bool) -> None:
     global _native_subtype_active, _subtype_answers
     _native_subtype_active = active
     _subtype_answers = {}
+    if _identity_probe_on:
+        _identity_probe_reset()
 
 
 def _set_native_subtype_resolver(resolver: Any) -> None:
@@ -395,6 +397,100 @@ def _restore_protocol_member_definition(left: Instance, member: str, decoded: Pr
 # derivation that took the cut (#33).
 _subtype_answers: dict[tuple[bytes, bytes, tuple[bool, ...]], bool] = {}
 
+# Identity-repeat probe (#58), env-gated via MYPY_SUBTYPE_IDENTITY_PROBE
+# (default off; hook sites check the bool, production behavior is unchanged).
+# See _identity_probe_entry for why keys verify against wire bytes.
+import os as _probe_os
+
+_identity_probe_on: bool = bool(_probe_os.environ.get("MYPY_SUBTYPE_IDENTITY_PROBE"))
+# One entry is a 3-tuple holding two wire blobs (~350 bytes with the key),
+# so this caps the probe at ~350 MB; pairs past the cap are counted, not stored.
+_IDENTITY_PROBE_CAP: Final = 1_000_000
+_identity_probe: dict[str, int] = {
+    # Native-path entries reaching the serialization step.
+    "entries": 0,
+    # Entries whose serialization failed; never identity-tracked.
+    "ser_failed": 0,
+    # Entries the (bytes, bytes, ctx) answer cache served.
+    "content_hits": 0,
+    # Content hits that were verified repeats of a natively decided pair.
+    "content_hits_identity": 0,
+    # Entries a front memo could have served before serialization.
+    "identity_hits": 0,
+    # Verified (id, id, ctx) repeats, decided earlier or not.
+    "identity_seen": 0,
+    # Key repeats whose wire bytes differ: a recycled id(), not a repeat.
+    "recycled": 0,
+    "inserted": 0,
+    "overflow": 0,
+}
+_identity_seen: dict[tuple[int, int, tuple[bool, ...]], tuple[bytes, bytes, bool]] = {}
+
+
+def _identity_probe_reset() -> None:
+    """Drop probe state at the same build boundaries as _subtype_answers."""
+    global _identity_seen
+    _identity_seen = {}
+    for key in _identity_probe:
+        _identity_probe[key] = 0
+
+
+def _identity_probe_entry(
+    left: Type, right: Type, subtype_context: SubtypeContext, proper_subtype: bool
+) -> tuple[int, int, tuple[bool, ...]]:
+    """Record one native-path entry and return its (unverified) id-pair key.
+
+    mypy Type objects are slots-based and carry no ``__weakref__``, so weak
+    liveness cannot be keyed on (measured: every native-path entry on the
+    cold self-check rejects ``weakref.ref``). A raw ``(id, id, ctx)`` key is
+    therefore only provisional: a repeat is trusted after its wire bytes
+    equal the earlier occurrence's, the same bytes-equality contract the
+    answer cache itself rests on, while a mismatch records a recycled id().
+    """
+    _identity_probe["entries"] += 1
+    return (id(left), id(right), _subtype_ctx_key(subtype_context, proper_subtype))
+
+
+def _identity_probe_verify(
+    key: tuple[int, int, tuple[bool, ...]], left_bytes: bytes, right_bytes: bytes
+) -> bool:
+    """Verify a repeated key against its earlier wire bytes; memoable?"""
+    entry = _identity_seen.get(key)
+    if entry is None:
+        if len(_identity_seen) < _IDENTITY_PROBE_CAP:
+            _identity_seen[key] = (left_bytes, right_bytes, False)
+            _identity_probe["inserted"] += 1
+        else:
+            _identity_probe["overflow"] += 1
+        return False
+    if entry[0] == left_bytes and entry[1] == right_bytes:
+        _identity_probe["identity_seen"] += 1
+        if entry[2]:
+            _identity_probe["identity_hits"] += 1
+            return True
+        return False
+    # Same id pair, different wire bytes: the ids were recycled after GC.
+    _identity_probe["recycled"] += 1
+    _identity_seen[key] = (left_bytes, right_bytes, False)
+    return False
+
+
+def _identity_probe_note(
+    key: tuple[int, int, tuple[bool, ...]], memoable: bool, *, content_hit: bool
+) -> None:
+    """Count a decided answer and mark the key's entry decided.
+
+    content_hit=True additionally counts content-cache serves, split by
+    whether the memo could have answered the pair before serialization.
+    """
+    if content_hit:
+        _identity_probe["content_hits"] += 1
+        if memoable:
+            _identity_probe["content_hits_identity"] += 1
+    entry = _identity_seen.get(key)
+    if entry is not None:
+        _identity_seen[key] = (entry[0], entry[1], True)
+
 
 def _clear_subtype_batch() -> None:
     """Drop decided answers at build boundaries.
@@ -407,6 +503,8 @@ def _clear_subtype_batch() -> None:
     """
     global _subtype_answers
     _subtype_answers = {}
+    if _identity_probe_on:
+        _identity_probe_reset()
 
 
 def _strict_concatenate_flag(subtype_context: SubtypeContext) -> bool:
@@ -414,6 +512,27 @@ def _strict_concatenate_flag(subtype_context: SubtypeContext) -> bool:
     if subtype_context.options is None:
         return False
     return bool(subtype_context.options.extra_checks or subtype_context.options.strict_concatenate)
+
+
+def _subtype_ctx_key(subtype_context: SubtypeContext, proper_subtype: bool) -> tuple[bool, ...]:
+    """Flag tuple the answer cache keys on, shared with the identity probe.
+
+    Two pairs differing in any flag here must never share a cached answer.
+    """
+    return (
+        subtype_context.ignore_type_params,
+        subtype_context.ignore_declared_variance,
+        subtype_context.always_covariant,
+        subtype_context.ignore_promotions,
+        proper_subtype,
+        state.strict_optional,
+        subtype_context.ignore_pos_arg_names,
+        _strict_concatenate_flag(subtype_context),
+        # Ambient flag consumed by the kernel's wave-37 unify port
+        # (#1426): two pairs differing only here must not share a
+        # cached answer.
+        type_state.infer_unions,
+    )
 
 
 # Flags for detected protocol members
@@ -796,34 +915,31 @@ def _is_subtype(
         and not isinstance(left, ErasedType)
         and not isinstance(right, ErasedType)
     ):
+        ikey: tuple[int, int, tuple[bool, ...]] | None = None
+        memoable = False
+        if _identity_probe_on:
+            ikey = _identity_probe_entry(left, right, subtype_context, proper_subtype)
         try:
             left_bytes = _serialize_type(left)
             right_bytes = _serialize_type(right)
         except (AssertionError, NotImplementedError):
             left_bytes = None
             right_bytes = None
+        if ikey is not None and (left_bytes is None or right_bytes is None):
+            _identity_probe["ser_failed"] += 1
         ctx_key: tuple[bool, ...] | None = None
         if left_bytes is not None and right_bytes is not None:
             # Same key the single-pair call's flags resolve to, so a
             # cached answer is always the answer this call would get.
-            ctx_key = (
-                subtype_context.ignore_type_params,
-                subtype_context.ignore_declared_variance,
-                subtype_context.always_covariant,
-                subtype_context.ignore_promotions,
-                proper_subtype,
-                state.strict_optional,
-                subtype_context.ignore_pos_arg_names,
-                _strict_concatenate_flag(subtype_context),
-                # Ambient flag consumed by the kernel's wave-37 unify port
-                # (#1426): two pairs differing only here must not share a
-                # cached answer.
-                type_state.infer_unions,
-            )
+            ctx_key = _subtype_ctx_key(subtype_context, proper_subtype)
+            if ikey is not None:
+                memoable = _identity_probe_verify(ikey, left_bytes, right_bytes)
             if (left_bytes, right_bytes, ctx_key) in _subtype_answers:
                 # Decided this build under this exact flag set; identical
                 # bytes under identical flags give the identical answer
                 # (the cache is reset at build boundaries).
+                if ikey is not None:
+                    _identity_probe_note(ikey, memoable, content_hit=True)
                 return _subtype_answers[(left_bytes, right_bytes, ctx_key)]
         # Single-pair native path through the coded entry: the i8 code
         # (1/0/3/-1, matching `rust_is_subtype_batch`) lets the answer be
@@ -874,6 +990,8 @@ def _is_subtype(
                 # the derivation that took the cut and is never persisted
                 # (same exclusion the retired batch flush applied).
                 _subtype_answers[(left_bytes, right_bytes, ctx_key)] = code == 1
+            if ikey is not None and code in (0, 1):
+                _identity_probe_note(ikey, memoable, content_hit=False)
             return code != 0
     return left.accept(SubtypeVisitor(orig_right, subtype_context, proper_subtype))
 
