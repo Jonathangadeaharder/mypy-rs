@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
-
 from mypy import build
 from mypy.errors import CompileError
 from mypy.modulefinder import BuildSource
 from mypy.options import Options
 from mypy.test.data import DataDrivenTestCase, DataSuite
-from mypy.test.helpers import assert_string_arrays_equal
+from mypy.test.helpers import _env_gate, assert_string_arrays_equal
 
 
 class ErrorStreamSuite(DataSuite):
@@ -29,9 +27,9 @@ def test_error_stream(testcase: DataDrivenTestCase) -> None:
     options = Options()
     options.show_traceback = True
     options.hide_error_codes = True
-    options.native_parser = bool(os.environ.get("TEST_NATIVE_PARSER"))
-    options.native_resolver = bool(os.environ.get("TEST_NATIVE_RESOLVER"))
-    options.native_type_kernel = bool(os.environ.get("TEST_NATIVE_TYPE_KERNEL"))
+    options.native_parser = _env_gate("TEST_NATIVE_PARSER")
+    options.native_resolver = _env_gate("TEST_NATIVE_RESOLVER")
+    options.native_type_kernel = _env_gate("TEST_NATIVE_TYPE_KERNEL")
 
     logged_messages: list[str] = []
 

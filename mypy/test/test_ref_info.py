@@ -11,7 +11,7 @@ from mypy.modulefinder import BuildSource
 from mypy.options import Options
 from mypy.test.config import test_temp_dir
 from mypy.test.data import DataDrivenTestCase, DataSuite
-from mypy.test.helpers import assert_string_arrays_equal
+from mypy.test.helpers import _env_gate, assert_string_arrays_equal
 
 
 class RefInfoSuite(DataSuite):
@@ -24,9 +24,9 @@ class RefInfoSuite(DataSuite):
         options.show_traceback = True
         options.export_ref_info = True  # This is the flag we are testing
         options.sqlite_cache = False
-        options.native_parser = bool(os.environ.get("TEST_NATIVE_PARSER"))
-        options.native_resolver = bool(os.environ.get("TEST_NATIVE_RESOLVER"))
-        options.native_type_kernel = bool(os.environ.get("TEST_NATIVE_TYPE_KERNEL"))
+        options.native_parser = _env_gate("TEST_NATIVE_PARSER")
+        options.native_resolver = _env_gate("TEST_NATIVE_RESOLVER")
+        options.native_type_kernel = _env_gate("TEST_NATIVE_TYPE_KERNEL")
 
         src = "\n".join(testcase.input)
         result = build.build(

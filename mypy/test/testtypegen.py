@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 
 from mypy import build
@@ -12,7 +11,7 @@ from mypy.nodes import NameExpr, TempNode
 from mypy.options import Options
 from mypy.test.config import test_temp_dir
 from mypy.test.data import DataDrivenTestCase, DataSuite
-from mypy.test.helpers import assert_string_arrays_equal
+from mypy.test.helpers import _env_gate, assert_string_arrays_equal
 from mypy.test.visitors import SkippedNodeSearcher, ignore_node
 from mypy.util import short_type
 
@@ -37,9 +36,9 @@ class TypeExportSuite(DataSuite):
             options.preserve_asts = True
             options.allow_empty_bodies = True
             options.reveal_verbose_types = True
-            options.native_parser = bool(os.environ.get("TEST_NATIVE_PARSER"))
-            options.native_resolver = bool(os.environ.get("TEST_NATIVE_RESOLVER"))
-            options.native_type_kernel = bool(os.environ.get("TEST_NATIVE_TYPE_KERNEL"))
+            options.native_parser = _env_gate("TEST_NATIVE_PARSER")
+            options.native_resolver = _env_gate("TEST_NATIVE_RESOLVER")
+            options.native_type_kernel = _env_gate("TEST_NATIVE_TYPE_KERNEL")
             result = build.build(
                 sources=[BuildSource("main", None, src)],
                 options=options,
