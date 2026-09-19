@@ -119,8 +119,8 @@ from mypy.types import (
     _serialize_stats_on,
     _serialize_with_taint_check,
     _type_wire_cache,
-    _type_wire_cache_hit,
     _wire_cache_enabled,
+    _wire_cache_lookup,
     _wire_cache_storable,
     callable_with_ellipsis,
     find_unpack_in_list,
@@ -4118,9 +4118,9 @@ def _serialize_typeanal_type(t: Type) -> bytes:
     # is a no-op miss while semantic analysis has the cache disabled.
     key = id(t)
     if _wire_cache_enabled():
-        cached = _type_wire_cache_hit(key, t)
-        if cached is not None:
-            return cached
+        hit = _wire_cache_lookup(key, t)
+        if hit is not None:
+            return hit[0]
     fast = _encode_no_arg_instance(t, _TypeanalWriteBuffer)
     if fast is not None:
         if _wire_cache_enabled() and t.type_ref is None:  # type: ignore[attr-defined]

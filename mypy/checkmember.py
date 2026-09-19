@@ -84,8 +84,8 @@ from mypy.types import (
     _serialize_stats_on,
     _serialize_with_taint_check,
     _type_wire_cache,
-    _type_wire_cache_hit,
     _wire_cache_enabled,
+    _wire_cache_lookup,
     _wire_cache_storable,
     get_proper_type,
     instance_cache,
@@ -226,11 +226,11 @@ def _serialize_type_for_checkmember(t: Type) -> bytes:
         _serialize_stats["calls"] += 1
     key = id(t)
     if _wire_cache_enabled():
-        cached = _type_wire_cache_hit(key, t)
-        if cached is not None:
+        hit = _wire_cache_lookup(key, t)
+        if hit is not None:
             if _serialize_stats_on:
                 _serialize_stats["hits"] += 1
-            return cached
+            return hit[0]
     if type(t) is Instance:
         fn = t.type.fullname
         if (

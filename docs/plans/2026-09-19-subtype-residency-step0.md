@@ -174,9 +174,15 @@ windows == coded-calls check was a near-tautology (every coded call closes
 exactly one window), so a skipped window never refused on its own. The
 guard now refuses on `fam_window_skipped` directly and keeps the
 windows/coded-calls invariant for the `wire_open` escape path. Run 5
-(post-fix): exit 0, mode 1, `fam_window_skipped` 0, op_ser
+(post-fix, pre-#84): exit 0, mode 1, `fam_window_skipped` 0, op_ser
 180,597/29,418/89,549, op_repeat_servable 153,933, memoable 31,355, D
-116,657 — inside the run 1-4 band, no number above moves.
+116,657 — inside the run 1-4 band, no number above moves. Run 6
+re-measured on the merged head after #84 unified the serialize-funnel
+wire-cache lookup (`mypy/types.py`, `mypy/subtypes.py` touched): exit 0,
+mode 1, coded calls 22,656, op_ser 180,629/29,446/89,559,
+op_repeat_servable 153,943, memoable 31,366, D 116,675 — the
+single-sourced lookup policy leaves the operand classes within band,
+so every number above stands for the merged head.
 
 The self-pair bias the pre-warm prediction carried is therefore
 negligible here: reclassifying a same-object pair's second serialization

@@ -76,8 +76,8 @@ from mypy.types import (
     _serialize_with_taint_check,
     _tvar_fingerprint_valid,
     _type_wire_cache,
-    _type_wire_cache_hit,
     _wire_cache_enabled,
+    _wire_cache_lookup,
     _wire_cache_storable,
     find_unpack_in_list,
     flatten_nested_unions,
@@ -299,9 +299,9 @@ def _serialize_type(t: Type) -> bytes:
     """Serialize a `Type` to its wire-format bytes for the Rust reader."""
     key = id(t)
     if _wire_cache_enabled():
-        cached = _type_wire_cache_hit(key, t)
-        if cached is not None:
-            return cached
+        hit = _wire_cache_lookup(key, t)
+        if hit is not None:
+            return hit[0]
     if type(t) is Instance:
         fn = t.type.fullname
         if (
