@@ -20,12 +20,21 @@ pub struct Diagnostic {
     pub message: String,
 }
 
+/// A check-phase failure split by whose contract broke: `Input` means the
+/// file left the supported subset (driver exit 2), `Internal` means the
+/// fixtures or kernel failed on a covered file (driver exit 3).
+#[derive(Debug)]
+pub enum CheckError {
+    Input(String),
+    Internal(String),
+}
+
 /// Bind module-level symbols and check every statement, in file order.
 pub fn check_module(
     ast: &ModuleAst,
     fixtures: &Fixtures,
     path: &str,
-) -> Result<Vec<Diagnostic>, String> {
+) -> Result<Vec<Diagnostic>, CheckError> {
     let ctx = SubtypeContext {
         strict_optional: true,
         ..SubtypeContext::default()
@@ -72,11 +81,11 @@ pub fn check_module(
                     func.line,
                 )?;
                 if verdict == Some(false) {
-                    return Err(format!(
+                    return Err(CheckError::Input(format!(
                         "{path}:{}: skeleton subset error: return-value incompatibility is \
                          outside the supported error classes",
                         func.line
-                    ));
+                    )));
                 }
             }
             TopStmt::Pass => {}
@@ -93,13 +102,13 @@ fn require_decidable(
     check: &str,
     path: &str,
     line: usize,
-) -> Result<Option<bool>, String> {
+) -> Result<Option<bool>, CheckError> {
     match verdict {
         Some(v) => Ok(Some(v)),
-        None => Err(format!(
+        None => Err(CheckError::Internal(format!(
             "{path}:{line}: skeleton internal error: kernel deferred the {check} check; \
              the fixture closure no longer covers the corpus"
-        )),
+        ))),
     }
 }
 
@@ -108,13 +117,13 @@ fn resolve_annotation(
     fixtures: &Fixtures,
     path: &str,
     line: usize,
-) -> Result<String, String> {
+) -> Result<String, CheckError> {
     match fixtures.builtins_symbols.get(name) {
         Some(fullname) => Ok(fullname.clone()),
-        None => Err(format!(
+        None => Err(CheckError::Input(format!(
             "{path}:{line}: skeleton subset error: annotation `{name}` is not one of the \
              primitive names the fixture symbols cover"
-        )),
+        ))),
     }
 }
 

@@ -99,16 +99,23 @@ fn gate2_no_libpython() {
     );
 }
 
+/// Count lines that *are* the attribute (any form, including
+/// `#[pyclass(name = "...")]`), so comment mentions of `#[pyclass]` and
+/// doc lines do not inflate the count. `attr` is the line-start prefix.
 fn count_attr(root: &Path, attr: &str) -> usize {
     fn walk(dir: &Path, attr: &str, total: &mut usize) {
-        for entry in fs::read_dir(dir).expect("read_dir failed") {
-            let entry = entry.expect("dir entry failed");
+        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
+            let entry = entry.unwrap_or_else(|e| panic!("dir entry in {dir:?}: {e}"));
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, attr, total);
             } else if path.extension().is_some_and(|e| e == "rs") {
-                let content = fs::read_to_string(&path).expect("read failed");
-                *total += content.matches(attr).count();
+                let content =
+                    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+                *total += content
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with(attr))
+                    .count();
             }
         }
     }
@@ -121,13 +128,13 @@ fn count_attr(root: &Path, attr: &str) -> usize {
 fn gate3_production_seam_count_unchanged() {
     let kernel_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../type_kernel/src");
     assert_eq!(
-        count_attr(&kernel_src, "#[pyfunction]"),
-        992,
+        count_attr(&kernel_src, "#[pyfunction"),
+        848,
         "registered #[pyfunction] seams changed; this lane must not add or remove any"
     );
     assert_eq!(
-        count_attr(&kernel_src, "#[pyclass]"),
-        11,
+        count_attr(&kernel_src, "#[pyclass"),
+        7,
         "registered #[pyclass] seams changed; this lane must not add or remove any"
     );
 }

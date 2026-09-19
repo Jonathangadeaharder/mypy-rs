@@ -2,7 +2,8 @@
 //! ADR-0008 Lane 2). One file in, mypy-format bytes out, zero Python.
 //!
 //! Exit codes: 0 clean, 1 errors found, 2 usage / input errors, 3
-//! internal (kernel deferred where the corpus must be decidable).
+//! internal (unreadable fixtures, or a kernel deferral on a covered
+//! file).
 
 mod check;
 mod fixtures;
@@ -15,27 +16,51 @@ use std::process::ExitCode;
 fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
-        Err(message) => {
+        Err(Failure::Input(message)) => {
             eprintln!("mypy-rs: {message}");
             ExitCode::from(2)
+        }
+        Err(Failure::Internal(message)) => {
+            eprintln!("mypy-rs: {message}");
+            ExitCode::from(3)
         }
     }
 }
 
-fn run() -> Result<ExitCode, String> {
+/// Who broke the contract, which decides the exit code: the user's file
+/// (usage, unreadable input, out-of-subset source) is `Input`; committed
+/// fixtures or the kernel failing on a covered file is `Internal`.
+enum Failure {
+    Input(String),
+    Internal(String),
+}
+
+impl From<check::CheckError> for Failure {
+    fn from(error: check::CheckError) -> Self {
+        match error {
+            check::CheckError::Input(message) => Failure::Input(message),
+            check::CheckError::Internal(message) => Failure::Internal(message),
+        }
+    }
+}
+
+fn run() -> Result<ExitCode, Failure> {
     let mut args = std::env::args_os().skip(1);
     let Some(path) = args.next() else {
-        return Err("usage: mypy-rs <file>".to_string());
+        return Err(Failure::Input("usage: mypy-rs <file>".to_string()));
     };
     if args.next().is_some() {
-        return Err("usage: mypy-rs <file> (exactly one file)".to_string());
+        return Err(Failure::Input(
+            "usage: mypy-rs <file> (exactly one file)".to_string(),
+        ));
     }
     let path = path
         .into_string()
-        .map_err(|_| "file paths must be valid UTF-8".to_string())?;
-    let source = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let ast = subset::parse_module(&source, &path)?;
-    let fixtures = fixtures::Fixtures::load()?;
+        .map_err(|_| Failure::Input("file paths must be valid UTF-8".to_string()))?;
+    let source = std::fs::read_to_string(&path)
+        .map_err(|e| Failure::Input(format!("cannot read {path}: {e}")))?;
+    let ast = subset::parse_module(&source, &path).map_err(Failure::Input)?;
+    let fixtures = fixtures::Fixtures::load().map_err(Failure::Internal)?;
     let diagnostics = check::check_module(&ast, &fixtures, &path)?;
     let code = render::render(&diagnostics, &path);
     Ok(ExitCode::from(code as u8))
