@@ -57,9 +57,9 @@ import mypy.type_visitor  # ruff: isort: skip
 # is_subtype(), meet_types(), join_types() etc.
 # TODO: add a static dependency test for this.
 
-# Stage 3c type-kernel seams: expand_type_by_instance, the freshen pair and
-# remove_trivial route through Rust when a resolver is installed; Rust returns
-# None for what it cannot handle. `expand_type` itself is pure Python (#1624).
+# Stage 3c seams through Rust when a resolver is installed:
+# expand_type_by_instance, freshen_all_functions_type_vars, remove_trivial.
+# Pure Python since #1624: expand_type, freshen_function_type_vars.
 
 # wire-bytes -> decoded Type list cache for the remove_trivial seam.
 # Cleared per build + on real typeinfo map replacement.
@@ -82,9 +82,6 @@ def _needs_python(typ: Type, *, definition_gate: bool = True) -> bool:
     plugin contexts, where nested wire-decoded types carry no locations
     (functools partial, #1220 scope note). Callers without a re-stamp
     path (env values, remove_trivial) also keep the gate.
-    freshen_function_type_vars also keeps the gate (#1220): its decoded
-    result re-enters error reporting as a plugin context, where nested
-    wire-decoded types carry no locations.
     A fresh (meta) type var is *not* gated: every caller either seeds a
     ``canonicalize_fresh_vars`` context or re-links decoded occurrences
     onto the live objects (``remove_trivial`` via
@@ -542,8 +539,8 @@ def freshen_function_type_vars(callee: F) -> F:
 
     Pure Python since the #1624 retirement: the native freshen crossing was
     a measured net loss on the cold self-check (defer arm -8.6e9 of a 453.6e9
-    baseline, -1.89%). The Rust pyfunction stays registered for the
-    direct-seam parity suites.
+    baseline, -1.89%). The Rust pyfunction stays registered, pinned by
+    hasattr in the retired-seam suite; no live path calls it.
     """
     if isinstance(callee, CallableType):
         if not callee.is_generic():
@@ -558,12 +555,10 @@ def freshen_function_type_vars(callee: F) -> F:
                 # Point to fresh ids in case defaults depend on previous variables.
                 tv.default = expand_type(tv.default, tvmap)
         fresh = expand_type(callee, tvmap).copy_modified(variables=tvs)
-        from mypy.wirefixup import canonicalize_fresh_vars
-
-        # The expand_type kernel seam re-decodes occurrences as distinct objects:
-        # unify them onto the freshened tvs (pre-registered via seed) so the
-        # variables slot and occurrences share identity for downstream freeze.
-        return cast(F, canonicalize_fresh_vars(fresh, seed=tvs))
+        # Pure-Python expand_type substitutes the tv objects themselves; the
+        # one wire crossing inside it (remove_trivial) re-links decoded vars
+        # (#1623), so occurrences already share identity with the slot.
+        return cast(F, fresh)
     else:
         assert isinstance(callee, Overloaded)
         fresh_overload = Overloaded([freshen_function_type_vars(item) for item in callee.items])

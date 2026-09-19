@@ -22,17 +22,28 @@ probe is immune to both foreign-tree channels (#1789); it refuses to run if
 `mypy` resolves outside the pinned tree, and refuses unless
 MYPY_NUM_WORKERS=0 so the self-check cannot fork unpatched workers.
 
-Defer modes, per call-site contract:
+Defer modes, per call-site contract (the default None arm assumes the
+`None = fall back to Python` contract; every seam must be audited
+against its call sites before its first A/B, cross-checking the
+classifications in scripts/measure_native_share.py):
 
-  None     default: every host treats a None return as "fall back to Python".
-  RAISE    seams whose call site consumes the return as a decided answer
-           (`rust_has_type_vars`, `rust_is_subtype_coded`) get a wrapper that
-           raises NotImplementedError instead: both sites already treat that
-           exception as the defer signal, so a plain None would change
-           semantics rather than defer.
-  live     `rust_find_self_type` also patches `rust_find_self_type_live`
-           because production dispatches to the live variant whenever the
-           typeanal resolver is present.
+  None     default: every host treats a None return as "fall back to
+           Python" (`if result is not None: ...` behind a defer-guard).
+  RAISE    seams whose call site consumes the return as a decided answer,
+           or whose success path is `try: _rust_x(...); return` where a
+           returned None means *handled* (semanal_classprop full ports),
+           get a wrapper raising NotImplementedError instead: those sites
+           already treat that exception as the defer signal.
+  refused  seams consumed directly with no exception guard have no valid
+           defer mode (a None would be returned as a value, a raise would
+           crash the run); the harness refuses to measure them.
+
+Live-variant dispatch: several typeanal seams call `<seam>_live` (or
+`_live_noresolver`) whenever the resolver is installed, which is the
+normal state during a build, so an A/B on the plain name would leave the
+exercised crossing unpatched. The harness therefore also patches the
+`<seam>_live` and `<seam>_live_noresolver` kernel attributes whenever
+they exist; those sites treat None as the defer signal.
 
 Alias discovery is identity-based, not a hard-coded host list: every
 `mypy.*`/`mypyc.*` submodule is imported and any module attribute whose
@@ -41,7 +52,8 @@ the `type_kernel.rust_x` module attributes themselves. This reaches every
 alias convention (`_rust_x`, plain rebinding, function-local imports) and
 removes the risk of a silently partial patch biasing a delta toward zero;
 hosts imported after the swap pick the defer up through
-`from type_kernel import ...` themselves.
+`from type_kernel import ...` themselves. Modules that fail to import are
+listed in the patch report so a partial patch stays visible.
 """
 
 from __future__ import annotations
@@ -53,27 +65,41 @@ import sys
 from collections.abc import Callable, Iterator
 from types import ModuleType
 
-# Seams whose production call site consumes the return value as a decided
-# answer; a None no-op would corrupt semantics instead of deferring.
-RAISE_SEAMS = frozenset({"rust_has_type_vars", "rust_is_subtype_coded"})
+# Seams whose call sites consume the return as a decided answer, or whose
+# success path is `try: _rust_x(...); return` (returned None = handled
+# PyOk unit); only the raise path defers. Mirrors measure_native_share.py.
+RAISE_SEAMS = frozenset(
+    {
+        "rust_has_type_vars",
+        "rust_is_subtype_coded",
+        # semanal_classprop full ports (UNIT_HANDLED_SEAMS there).
+        "rust_calculate_class_abstract_status",
+        "rust_check_protocol_status",
+        "rust_calculate_class_vars",
+        "rust_add_type_promotion",
+    }
+)
+
+# Seams consumed directly with no exception guard: no defer mode exists.
+REFUSED_SEAMS = frozenset({"rust_quote_type_string"})
 
 # Data/test subtrees never hold production seam aliases; importing them is
 # pure cost in the probe.
 SKIP_PREFIXES = ("mypy.test", "mypy.typeshed", "mypyc.test")
 
 
+def _is_editable_finder(finder: object) -> bool:
+    cls = finder if isinstance(finder, type) else type(finder)
+    return "editable" in cls.__module__.lower() or "editable" in cls.__name__.lower()
+
+
 def _strip_foreign_import_channels() -> None:
-    sys.meta_path[:] = [
-        f
-        for f in sys.meta_path
-        if "editable" not in (f if isinstance(f, type) else type(f)).__module__.lower()
-        and "editable" not in (f if isinstance(f, type) else type(f)).__name__.lower()
-    ]
+    sys.meta_path[:] = [f for f in sys.meta_path if not _is_editable_finder(f)]
     cwd_entries = {"", os.getcwd(), os.path.realpath(os.getcwd())}
     sys.path[:] = [e for e in sys.path if e not in cwd_entries]
 
 
-def _host_modules() -> Iterator[ModuleType]:
+def _host_modules(skipped: list[str]) -> Iterator[ModuleType]:
     for pkg_name in ("mypy", "mypyc"):
         pkg = importlib.import_module(pkg_name)
         yield pkg
@@ -83,11 +109,17 @@ def _host_modules() -> Iterator[ModuleType]:
             try:
                 yield importlib.import_module(info.name)
             except ImportError:
-                continue
+                skipped.append(info.name)
 
 
 def patch_seam(name: str) -> str:
     """Patch every binding of `name` to a hard defer; return a patch report."""
+    if name in REFUSED_SEAMS:
+        sys.exit(
+            f"refusing: seam {name} is consumed directly with no defer "
+            "contract (no valid None/raise defer mode); audit its call site "
+            "and add an explicit classification before measuring it"
+        )
     defer: Callable[..., object]
     if name in RAISE_SEAMS:
 
@@ -100,9 +132,13 @@ def patch_seam(name: str) -> str:
             return None
 
     kernel = importlib.import_module("type_kernel")
+    # Live-variant dispatch: `<seam>_live` / `_live_noresolver` are the
+    # paths actually executed while a resolver is installed, so they are
+    # patched together with the plain name whenever they exist.
     kernel_names = [name]
-    if name == "rust_find_self_type":
-        kernel_names.append("rust_find_self_type_live")
+    for suffix in ("_live", "_live_noresolver"):
+        if hasattr(kernel, name + suffix):
+            kernel_names.append(name + suffix)
     originals: set[object] = set()
     for kernel_name in kernel_names:
         orig = getattr(kernel, kernel_name, None)
@@ -113,7 +149,8 @@ def patch_seam(name: str) -> str:
     # later pick the defer up via `from type_kernel import`, so the sweep
     # only needs already-imported modules; identity catches any convention.
     alias_hits: list[tuple[ModuleType, str]] = []
-    for module in _host_modules():
+    skipped_modules: list[str] = []
+    for module in _host_modules(skipped_modules):
         for attr, value in vars(module).items():
             if any(value is orig for orig in originals):
                 alias_hits.append((module, attr))
@@ -127,7 +164,10 @@ def patch_seam(name: str) -> str:
         setattr(module, attr, defer)
         patched.append(f"{module.__name__}.{attr}")
 
-    return ", ".join(patched)
+    report = ", ".join(patched)
+    if skipped_modules:
+        report += " | unimportable: " + ", ".join(sorted(skipped_modules))
+    return report
 
 
 def main() -> None:
@@ -153,15 +193,18 @@ def main() -> None:
 
     if name != "-":
         report = patch_seam(name)
-        print(f"[defer] {name}: {report or 'NOTHING PATCHED'}", file=sys.stderr)
-        if not report:
+        substantive, marker, unimportable = report.partition(" | unimportable: ")
+        print(f"[defer] {name}: {substantive or 'NOTHING PATCHED'}", file=sys.stderr)
+        if not substantive:
             sys.exit(f"refusing: seam {name} has no binding to patch")
+        if marker:
+            print(f"[defer] {name} WARNING: unimportable hosts: {unimportable}", file=sys.stderr)
     else:
         print("[defer] none (default arm)", file=sys.stderr)
 
-    from mypy.main import main
+    from mypy.main import main as mypy_main
 
-    main()
+    mypy_main()
 
 
 if __name__ == "__main__":

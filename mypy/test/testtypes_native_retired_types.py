@@ -405,7 +405,7 @@ class NativeFreshenFunctionTypeVarsRetiredSuite(Suite):
     def test_values_fresh_ids_and_occurrences(self) -> None:
         from mypy.expandtype import freshen_function_type_vars
         from mypy.nodes import ARG_POS
-        from mypy.types import TypeVarId
+        from mypy.types import TypeVarId, UnionType
 
         c = self._generic()
         before = TypeVarId.next_raw_id
@@ -414,15 +414,32 @@ class NativeFreshenFunctionTypeVarsRetiredSuite(Suite):
         assert len(result.variables) == 1
         assert result.variables[0].id.meta_level == 1, "fresh var not meta_level 1"
         assert result.variables[0].id.raw_id >= before
-        assert result.arg_types[0] == result.variables[0]
-        assert result.ret_type == result.variables[0]
+        # Identity, not just equality: pure-Python expand_type substitutes
+        # the tv objects themselves, and remove_trivial's wire decode
+        # re-links occurrences (#1623), so downstream freeze sees one object.
+        assert result.arg_types[0] is result.variables[0]
+        assert result.ret_type is result.variables[0]
+        # A union arg drives the one wire crossing reachable inside
+        # expand_type (remove_trivial); the occurrence must still be the
+        # variables-slot object after the union round-trip.
+        union_c = CallableType(
+            [UnionType([self.fx.a, self.fx.t])],
+            [ARG_POS],
+            [None],
+            self.fx.a,
+            self.fx.function,
+            variables=[self.fx.t],
+        )
+        u = freshen_function_type_vars(union_c)
+        assert isinstance(u, CallableType)
+        union = u.arg_types[0]
+        assert isinstance(union, UnionType)
+        assert union.items[-1] is u.variables[0]
         # Non-generic callables come back as the caller's object.
         plain = CallableType([self.fx.a], [ARG_POS], [None], self.fx.b, self.fx.function)
         assert freshen_function_type_vars(plain) is plain
 
     def test_pyfunction_and_sibling_seams_stay(self) -> None:
-        import inspect
-
         import mypy.expandtype as expandtype
 
         assert _type_kernel is not None

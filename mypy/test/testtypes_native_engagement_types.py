@@ -2903,13 +2903,14 @@ class NativeIsFinalEnumValueSuite(Suite):
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
 class NativeFreshenFunctionTypeVarsSuite(Suite):
-    """Parity for the Rust `freshen_function_type_vars` port
-    (mypy.expandtype, expandtype.py:413-432).
+    """Behavior pins for ``freshen_function_type_vars``
+    (mypy.expandtype).
 
-    Toggling the expand-type gate off vs on must agree on the freshened
-    result (fresh meta-level-1 variables replace the declared ones, and
-    defaults are expanded through the accumulating tvmap). A direct seam
-    call proves the Rust engagement for the generic case.
+    Since the #1624 retirement the crossing is gone and both gate arms run
+    the pure-Python body, so the retired-seam pins live in
+    testtypes_native_retired_types.py; this suite keeps exercising the
+    Python body's fresh-var behavior (fresh meta-level-1 variables replace
+    the declared ones, defaults expand through the accumulating tvmap).
     """
 
     def setUp(self) -> None:

@@ -71,8 +71,14 @@ when deferred). Post-retirement re-measurement on the retired head: default
 arm 438.4e9 (mean of 4 cold runs, spread 0.11%) against the 453.6e9 baseline,
 so the retirements delivered -15.2e9 (-3.35%) end-to-end, ~1.4x the -11.2e9
 defer-delta sum (the balance is the deleted wire prep, as in round 1). The
-kernel's cold self-check overhead over the gates-off arm (365.0e9) shrank
-from ~88.6e9 to ~73.4e9 instructions.
+retirement review also found the wire-path identity repair left behind in
+the freshen body (`canonicalize_fresh_vars`, seeded per call) obsolete once
+the crossing was gone — pure Python substitution already shares occurrence
+identity and `remove_trivial` re-links its wire decode (#1623) — so the pass
+went too, pinned by identity assertions in the retired suite: 435.6e9 (mean
+of 3, spread 0.35%), a total of -18.0e9 (-4.0%). The kernel's cold
+self-check overhead over the gates-off arm (365.0e9) shrank
+from ~88.6e9 to ~70.6e9 instructions.
 Per-seam numbers and the ranked remainder are in #1739;
 `rust_analyze_instance_member_dispatch` (1.10x) and
 `rust_classify_special_unbound` (0.78x on its common shape) measured as
