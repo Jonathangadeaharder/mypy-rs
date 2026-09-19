@@ -321,3 +321,129 @@ class NativeExpandTypeRetiredSuite(Suite):
     def test_pyfunction_stays_registered(self) -> None:
         assert _type_kernel is not None
         assert hasattr(_type_kernel, "rust_expand_type")
+
+
+@skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")
+class NativeFreshenFunctionTypeVarsRetiredSuite(Suite):
+    """Pin the #1624 retirement of the `rust_freshen_function_type_vars` shim.
+
+    A load-robust instruction-count A/B on the cold self-check (defer arm
+    -8.6e9 of a 453.6e9 baseline, -1.89%, the largest net loss left in the
+    #1878-method sweep) showed the crossing lost more end to end than the
+    pure-Python freshen path it replaced, wire prep and decode included.
+    `freshen_function_type_vars` now runs its pure-Python body; the sibling
+    `rust_freshen_all_functions_type_vars` and `rust_expand_type_by_instance`
+    seams stay live, and the pyfunction stays registered for
+    `NativeFreshenFunctionTypeVarsSuite`.
+    """
+
+    def setUp(self) -> None:
+        from mypy.expandtype import (
+            _set_native_expand_type_active,
+            _set_native_expand_type_resolver,
+            _set_native_expand_type_typeinfo_map,
+        )
+        from mypy.wirefixup import set_wire_typeinfo_map
+
+        self.fx = TypeFixture()
+        self._set_active = _set_native_expand_type_active
+        self._set_resolver = _set_native_expand_type_resolver
+        type_infos = [v for v in vars(self.fx).values() if _is_type_info(v)]
+        self._resolver = _type_kernel.build_native_resolver(type_infos, [])
+        self._set_resolver(self._resolver)
+        self._set_active(True)
+        _set_native_expand_type_typeinfo_map({i.fullname: i for i in type_infos})
+        set_wire_typeinfo_map({i.fullname: i for i in type_infos})
+
+    def tearDown(self) -> None:
+        from mypy.expandtype import _set_native_expand_type_typeinfo_map
+        from mypy.wirefixup import set_wire_typeinfo_map
+
+        self._set_active(False)
+        self._set_resolver(None)
+        _set_native_expand_type_typeinfo_map(None)
+        set_wire_typeinfo_map(None)
+
+    def _generic(self) -> CallableType:
+        from mypy.nodes import ARG_POS
+
+        return CallableType(
+            [self.fx.t], [ARG_POS], [None], self.fx.t, self.fx.function, variables=[self.fx.t]
+        )
+
+    def test_shim_source_removed(self) -> None:
+        import mypy.expandtype as expandtype
+
+        src = inspect.getsource(expandtype.freshen_function_type_vars)
+        assert "rust_" not in src, "freshen_function_type_vars should be pure Python"
+
+    def test_no_rust_name_loaded(self) -> None:
+        from mypy.expandtype import freshen_function_type_vars
+
+        loaded = [n for n in freshen_function_type_vars.__code__.co_names if "rust_" in n]
+        assert loaded == [], f"freshen_function_type_vars still loads {loaded}"
+
+    def test_no_wire_serialization_with_gate_on(self) -> None:
+        import mypy.expandtype as expandtype
+        from mypy.expandtype import freshen_function_type_vars
+
+        calls: list[str] = []
+        orig = expandtype._serialize_type
+
+        def spy(t: Any) -> bytes:
+            calls.append("type")
+            return orig(t)
+
+        expandtype._serialize_type = spy
+        try:
+            for _ in range(3):
+                freshen_function_type_vars(self._generic())
+        finally:
+            expandtype._serialize_type = orig
+        assert calls == [], f"retired freshen seam serialized: {calls}"
+
+    def test_values_fresh_ids_and_occurrences(self) -> None:
+        from mypy.expandtype import freshen_function_type_vars
+        from mypy.nodes import ARG_POS
+        from mypy.types import TypeVarId, UnionType, get_proper_type
+
+        c = self._generic()
+        before = TypeVarId.next_raw_id
+        result = freshen_function_type_vars(c)
+        assert isinstance(result, CallableType)
+        assert len(result.variables) == 1
+        assert result.variables[0].id.meta_level == 1, "fresh var not meta_level 1"
+        assert result.variables[0].id.raw_id >= before
+        # Identity, not just equality: pure-Python expand_type substitutes
+        # the tv objects themselves, and remove_trivial's wire decode
+        # re-links occurrences (#1623), so downstream freeze sees one object.
+        assert result.arg_types[0] is result.variables[0]
+        assert result.ret_type is result.variables[0]
+        # A union arg drives the one wire crossing reachable inside
+        # expand_type (remove_trivial); the occurrence must still be the
+        # variables-slot object after the union round-trip.
+        union_c = CallableType(
+            [UnionType([self.fx.a, self.fx.t])],
+            [ARG_POS],
+            [None],
+            self.fx.a,
+            self.fx.function,
+            variables=[self.fx.t],
+        )
+        u = freshen_function_type_vars(union_c)
+        assert isinstance(u, CallableType)
+        union = get_proper_type(u.arg_types[0])
+        assert isinstance(union, UnionType)
+        assert union.items[-1] is u.variables[0]
+        # Non-generic callables come back as the caller's object.
+        plain = CallableType([self.fx.a], [ARG_POS], [None], self.fx.b, self.fx.function)
+        assert freshen_function_type_vars(plain) is plain
+
+    def test_pyfunction_and_sibling_seams_stay(self) -> None:
+        import mypy.expandtype as expandtype
+
+        assert _type_kernel is not None
+        assert hasattr(_type_kernel, "rust_freshen_function_type_vars")
+        all_src = inspect.getsource(expandtype)
+        assert "rust_freshen_all_functions_type_vars" in all_src
+        assert "rust_expand_type_by_instance" in all_src

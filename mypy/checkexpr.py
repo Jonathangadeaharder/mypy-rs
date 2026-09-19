@@ -291,7 +291,6 @@ try:
         rust_merge_typevars_in_callables_by_name as _rust_merge_typevars_in_callables_by_name,
         rust_method_fullname as _rust_method_fullname,
         rust_normalize_callable as _rust_normalize_callable,
-        rust_possible_none_type_var_overlap as _rust_possible_none_type_var_overlap,
         rust_real_union as _rust_real_union,
         rust_solve_generic_call as _rust_solve_generic_call,
         rust_star_expr as _rust_star_expr,
@@ -350,7 +349,6 @@ except ImportError:
     _rust_calibrate_type_obj_return = None  # type: ignore[assignment]
     _rust_normalize_callable = None  # type: ignore[assignment]
     _rust_real_union = None  # type: ignore[assignment]
-    _rust_possible_none_type_var_overlap = None  # type: ignore[assignment]
     _rust_combine_function_signatures = None  # type: ignore[assignment]
     _rust_solve_generic_call = None  # type: ignore[assignment]
     _rust_container_type = None  # type: ignore[assignment]
@@ -4732,24 +4730,14 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             x: int | None
             foo(x)
         we want this call to infer list[int] | None, not list[int | None].
+
+        Pure Python since the #1624 retirement: the native overlap crossing
+        here was a measured net loss on the cold self-check (defer arm -2.6e9
+        of a 453.6e9 baseline, -0.57%). The Rust pyfunction stays registered
+        for the direct-seam suite.
         """
         if not plausible_targets or not arg_types:
             return False
-        if (
-            _CHECKEXPR_HAS_TYPE_KERNEL
-            and _native_checkexpr_active
-            and _native_checkexpr_resolver is not None
-        ):
-            try:
-                arg_type_bytes = [_serialize_type_for_checkexpr(t) for t in arg_types]
-                target_bytes = [_serialize_type_for_checkexpr(c) for c in plausible_targets]
-                result = _rust_possible_none_type_var_overlap(
-                    _native_checkexpr_resolver, arg_type_bytes, target_bytes
-                )
-                if result is not None:
-                    return result
-            except (AssertionError, NotImplementedError, ValueError):
-                pass
         has_optional_arg = False
         for arg_type in get_proper_types(arg_types):
             if not isinstance(arg_type, UnionType):

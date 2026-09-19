@@ -29,6 +29,7 @@ spent effort on seams that were already retired here.
 | #1664 | `032caceee` | `is_literal_type_like` |
 | #1648 (#1640) | `ad8783e97` | hot short-call reads in `mypy/types.py`: `is_generic`, `has_recursive_types`, truthiness defaults, `is_var_arg`/`is_kw_arg`, min/max args, tuple/union length |
 | #1624 | (this lane) | `rust_expand_type`, `rust_check_overload_call` (defer-arm instruction A/B: -1.66% / -0.47% on the cold self-check) |
+| #1624 (round 2) | (this lane) | `rust_freshen_function_type_vars`, `rust_possible_none_type_var_overlap` (defer-arm instruction A/B on the post-#1879 head: -1.89% / -0.57% of a 453.6e9 baseline) |
 | #1514, #1492 | `530919b65`, `83f0b6706` | wave-61A decidable leftovers; symtable find_member/unpack/apply-report defers |
 
 In flight when this log was written: `rust_fill_typevars` (#1744),
@@ -58,6 +59,26 @@ than the pure-Python visitor, microbenchmark notwithstanding. A per-call win
 can still be an end-to-end loss once the Python-side wire prep, the decode
 fixup and the cache rides are counted; #1624's method (defer-arm instruction
 A/B, single-process, interleaved runs) is the tiebreaker for keeps like this.
+
+Round 2 of the same method (2026-09-19, 453.6e9 on-arm baseline, 16-seam
+sweep) retired two more of exactly this class: `rust_freshen_function_type_vars`
+(-8.6e9, -1.89%, the sweep's largest loss; its serialize funnel was also the
+#45 wire-prep probe's top site) and `rust_possible_none_type_var_overlap`
+(-2.6e9, -0.57%, an O(n) arg/target scan). The same sweep re-measured
+`rust_expand_type`/`rust_check_overload_call` at ~0 delta (retirements
+confirmed) and sized `rust_is_subtype_coded` as the strongest keep (+13.4e9
+when deferred). Post-retirement re-measurement on the retired head: default
+arm 438.4e9 (mean of 4 cold runs, spread 0.11%) against the 453.6e9 baseline,
+so the retirements delivered -15.2e9 (-3.35%) end-to-end, ~1.4x the -11.2e9
+defer-delta sum (the balance is the deleted wire prep, as in round 1). The
+retirement review also found the wire-path identity repair left behind in
+the freshen body (`canonicalize_fresh_vars`, seeded per call) obsolete once
+the crossing was gone — pure Python substitution already shares occurrence
+identity and `remove_trivial` re-links its wire decode (#1623) — so the pass
+went too, pinned by identity assertions in the retired suite: 435.6e9 (mean
+of 3, spread 0.35%), a total of -18.0e9 (-4.0%). The kernel's cold
+self-check overhead over the gates-off arm (365.0e9) shrank
+from ~88.6e9 to ~70.6e9 instructions.
 Per-seam numbers and the ranked remainder are in #1739;
 `rust_analyze_instance_member_dispatch` (1.10x) and
 `rust_classify_special_unbound` (0.78x on its common shape) measured as
