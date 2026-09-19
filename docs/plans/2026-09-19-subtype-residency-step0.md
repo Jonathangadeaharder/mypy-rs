@@ -145,16 +145,18 @@ servability predicate (F3-cache hit at arrival) is what excludes.
 **Exclusion rate among repeats = 1 - 153,939/182,903 = 15.84%.** Only 84.2%
 of repeat appearances would be served by the residency table at all.
 
-### Post-fix re-measurement (run 3)
+### Post-fix re-measurement (runs 3-4)
 
-The OCR pass on the measurement PR reclassified five probe defects (the
+The OCR passes on the measurement PR reclassified probe defects (the
 anomaly-class counter path that would raise `KeyError` mid-run, the decode
 window left open by an exception escaping the coded call, the missing
 mirror-serve ser class, the failed-entry appearances left outside operand
 accounting, and the pre-warm right-operand ser prediction, which
-mislabeled the second serialization of a same-object pair). All five were
-fixed and one post-fix counted run was taken (self-check success, exit 0,
-no evidence refusals, wire-phase mode 1, classification sum reconciled:
+mislabeled the second serialization of a same-object pair; a later round
+also had the operand classifier validate stored fingerprints, bucketing
+stale ones as `fp_stale` — a non-servable class). All were fixed and two
+post-fix counted runs were taken (self-check success, exit 0, no evidence
+refusals, wire-phase mode 1, classification sum reconciled:
 `op_unclassified` 38 = 2 x `ser_failed` 19). The fixes' effect on this
 corpus sits inside the run-1/run-2 spread, so every number above stands:
 
@@ -165,6 +167,7 @@ corpus sits inside the run-1/run-2 spread, so every number above stands:
 | memoable_servable_both (75.18% of identity hits) | 31,365 | 31,353-31,376 |
 | B1b / B1b upper (event model re-derived on run 3) | 1.75e9 / 2.24e9 | 1.75e9 / 2.24e9 |
 | D / class A pairs / coded calls | 116,659 / 59,366 / 22,652 | unchanged by construction |
+| op_first_fp_stale / op_repeat_fp_stale (run 4) | 0 / 0 | the stale-fp class never fires |
 
 The self-pair bias the pre-warm prediction carried is therefore
 negligible here: reclassifying a same-object pair's second serialization

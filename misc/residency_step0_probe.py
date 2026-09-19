@@ -40,6 +40,20 @@ DEFAULT_ARGS = [
     "mypyc",
 ]
 
+# WirePhaseCounters layout, shared with misc/wire_churn_phase_profile.py.
+WIRE_COUNTER_NAMES = (
+    "mode",
+    "decode_calls",
+    "decode_bytes",
+    "decode_nodes",
+    "encode_calls",
+    "encode_bytes",
+    "encode_nodes",
+    "clone_nodes",
+    "hash_bytes",
+    "hash_ops",
+)
+
 
 def report(probe: dict[str, int], run_status: str, counters: tuple[int, ...]) -> None:
     print(f"[step0] run status: {run_status}", file=sys.stderr)
@@ -47,17 +61,14 @@ def report(probe: dict[str, int], run_status: str, counters: tuple[int, ...]) ->
         print(f"[step0] {key:32s} {probe[key]}", file=sys.stderr)
     distinct = probe["op_first_seen"] + probe["op_recycled"]
     print(f"[step0] {'distinct_operand_objects':32s} {distinct}", file=sys.stderr)
-    print(
-        f"[step0] {'wire_phase_mode':32s} {counters[0]} "
-        f"(decode_calls/nodes {counters[1]}/{counters[3]}, "
-        f"encode_calls/nodes {counters[4]}/{counters[6]})",
-        file=sys.stderr,
-    )
+    for name, value in zip(WIRE_COUNTER_NAMES, counters):
+        print(f"[step0] {'wire_' + name:32s} {value}", file=sys.stderr)
 
 
 def evidence_refusals(
     probe: dict[str, int], run_status: str, counters: tuple[int, ...]
 ) -> list[str]:
+    wire = dict(zip(WIRE_COUNTER_NAMES, counters))
     reasons = []
     if run_status.startswith("FAILED"):
         reasons.append(f"run status {run_status!r} is not a completed check")
@@ -91,8 +102,8 @@ def evidence_refusals(
         reasons.append(f"decode windows {windows} != coded calls {probe['coded_calls']}")
     if probe["fam_window_inconsistent"]:
         reasons.append(f"{probe['fam_window_inconsistent']} decode windows saw a reset")
-    if counters[0] != 1:
-        reasons.append(f"wire phase mode {counters[0]} != 1: fam_decode_* deltas would read zero")
+    if wire["mode"] != 1:
+        reasons.append(f"wire phase mode {wire['mode']} != 1: fam_decode_* deltas would read zero")
     return reasons
 
 
@@ -122,7 +133,14 @@ def main() -> int:
         return 1
     import type_kernel
 
-    if not hasattr(type_kernel, "rust_wire_phase_set_mode"):
+    if not all(
+        hasattr(type_kernel, name)
+        for name in (
+            "rust_wire_phase_set_mode",
+            "rust_wire_phase_reset",
+            "rust_wire_phase_counters",
+        )
+    ):
         print("[step0] type_kernel lacks the wire phase seam: stale extension?", file=sys.stderr)
         return 1
     type_kernel.rust_wire_phase_set_mode(1)

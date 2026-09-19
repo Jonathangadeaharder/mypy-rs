@@ -446,13 +446,16 @@ _identity_probe: dict[str, int] = {
     # First-sight storable classes (the residency design's F3 predicate).
     "op_first_plain": 0,
     "op_first_fingerprinted": 0,
+    "op_first_fp_stale": 0,
     "op_first_prefixup": 0,
     "op_first_tvar_root": 0,
     "op_first_cache_off": 0,
     # Repeat storable classes: plain and fingerprinted are servable,
-    # prefixup / tvar_root / cache_off appearances cannot be served.
+    # prefixup / tvar_root / cache_off / fp_stale appearances cannot be
+    # served (a stale fingerprint downgrades a serve to a miss).
     "op_repeat_plain": 0,
     "op_repeat_fingerprinted": 0,
+    "op_repeat_fp_stale": 0,
     "op_repeat_prefixup": 0,
     "op_repeat_tvar_root": 0,
     "op_repeat_cache_off": 0,
@@ -536,7 +539,13 @@ def _identity_probe_ser_class(t: Type) -> str:
     walk): it serves bytes without an F3 store, so it is not servable by
     the F3-keyed residency table this probe measures, but counting it
     separately keeps a mirror-on run detectable instead of misread as a
-    miss. The operand pass counts op_appearances, so a class taken here
+    miss. The mirror prediction is not a pure read: `_read_mirror_blob`
+    is `types_mirror.read_fresh_bytes`, which on the epoch-drift path
+    re-serializes and mutates mirror state, the same call the real
+    funnel makes right after — acceptable because a mirror-on run is
+    refused as evidence anyway (the operand side's anomaly counter
+    fires when the mirror serves without an F3 store). The operand
+    pass counts op_appearances, so a class taken here
     for an appearance whose serialization then failed stays reconcilable
     via op_unclassified.
     """
@@ -573,10 +582,12 @@ def _identity_probe_operand_class(t: Type) -> str:
     bare-tvar-root exclusion, tvar fingerprint.
 
     plain / fingerprinted entries serve; prefixup instances, bare tvar
-    roots and cache-off-phase appearances are never stored. A cache-on
-    storable appearance that left no F3 entry is impossible while the
-    mirror is off (`_serialize_type` stores on every walk); it lands in
-    the anomaly counter and refuses the run's evidence when nonzero.
+    roots, stale fingerprints (a serve downgrades to a miss,
+    `_type_wire_cache_hit`) and cache-off-phase appearances are never
+    stored. A cache-on storable appearance that left no F3 entry is
+    impossible while the mirror is off (`_serialize_type` stores on every
+    walk); it lands in the anomaly counter and refuses the run's evidence
+    when nonzero.
     """
     if isinstance(t, Instance) and t.type_ref is not None:  # type: ignore[misc]
         return "prefixup"
@@ -586,7 +597,12 @@ def _identity_probe_operand_class(t: Type) -> str:
         return "cache_off"
     entry = _type_wire_cache.get(id(t))
     if entry is not None and entry[0] is t:
-        return "fingerprinted" if entry[2] is not None else "plain"
+        fp = entry[2]
+        if fp is None:
+            return "plain"
+        if not _tvar_fingerprint_valid(fp):
+            return "fp_stale"
+        return "fingerprinted"
     if (
         type(t) is Instance
         and not t.args
