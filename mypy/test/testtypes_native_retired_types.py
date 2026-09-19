@@ -405,7 +405,7 @@ class NativeFreshenFunctionTypeVarsRetiredSuite(Suite):
     def test_values_fresh_ids_and_occurrences(self) -> None:
         from mypy.expandtype import freshen_function_type_vars
         from mypy.nodes import ARG_POS
-        from mypy.types import TypeVarId, UnionType
+        from mypy.types import TypeVarId, UnionType, get_proper_type
 
         c = self._generic()
         before = TypeVarId.next_raw_id
@@ -432,7 +432,7 @@ class NativeFreshenFunctionTypeVarsRetiredSuite(Suite):
         )
         u = freshen_function_type_vars(union_c)
         assert isinstance(u, CallableType)
-        union = u.arg_types[0]
+        union = get_proper_type(u.arg_types[0])
         assert isinstance(union, UnionType)
         assert union.items[-1] is u.variables[0]
         # Non-generic callables come back as the caller's object.
