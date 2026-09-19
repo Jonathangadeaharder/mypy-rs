@@ -132,6 +132,7 @@ from mypy.semanal_pass1 import SemanticAnalyzerPreAnalysis
 from mypy.util import (
     DecodeError,
     decode_python_encoding,
+    env_flag,
     get_available_threads,
     get_mypy_comments,
     hash_digest,
@@ -1181,13 +1182,10 @@ class BuildManager:
         # Stage 15 semanal helpers. Wirefixup protection in place; enabled
         # once typeops parity confirmed (typeops/semanal truthiness parity
         # reached via #224, residual recursive-alias gap fixed via #225/#231).
-        import os as _os_semanal
-
         from mypy.semanal import _set_native_semanal_active
 
         _set_native_semanal_active(
-            self.options.native_type_kernel
-            and bool(_os_semanal.environ.get("MYPY_ENABLE_NATIVE_SEMANAL"))
+            self.options.native_type_kernel and env_flag("MYPY_ENABLE_NATIVE_SEMANAL")
         )
         # Stage 17 typeanal query helpers. Wirefixup protection in place;
         # parity-tracked on the same native_type_kernel opt-in gate.
@@ -1299,12 +1297,10 @@ class BuildManager:
         from mypy.checkpattern import _set_native_checkpattern_active
 
         _set_native_checkpattern_active(self.options.native_type_kernel)
-        import os as _os
-
         from mypy.semanal import _set_native_semanal_visitor_active
 
         _set_native_semanal_visitor_active(
-            self.options.native_type_kernel and bool(_os.environ.get("MYPY_ENABLE_NATIVE_SEMANAL"))
+            self.options.native_type_kernel and env_flag("MYPY_ENABLE_NATIVE_SEMANAL")
         )
         from mypy.semanal_shared import _set_native_semanal_shared_active
 

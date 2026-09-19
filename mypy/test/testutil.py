@@ -251,19 +251,23 @@ class TestEnvFlag(TestCase):
                 env_flag("MYPY_ENV_FLAG_TEST")
 
     def test_production_gates_decode_through_env_flag(self) -> None:
-        # Pins the #60 fix at the wiring sites: the three probe gates must
-        # decode through env_flag, never a bare bool(environ.get(...)),
-        # which would read "0" as enabled.
+        # Pins the #60/#67 fixes at the wiring sites: every env gate in the
+        # shipped modules must decode through env_flag, never a bare
+        # bool(environ.get(...)), which would read "0" as enabled.
         import re
 
         here = Path(__file__).resolve().parent.parent
         gates = {
             "types.py": ["MYPY_SERIALIZE_STATS", "MYPY_SERIALIZE_CLOCK"],
             "subtypes.py": ["MYPY_SUBTYPE_IDENTITY_PROBE"],
+            "build.py": ["MYPY_ENABLE_NATIVE_SEMANAL"],
+            "stubtest.py": ["TEST_NATIVE_PARSER"],
         }
         bare = re.compile(r"bool\(\w*\.environ\.get\(")
         for fname, names in gates.items():
             src = (here / fname).read_text()
             for name in names:
-                assert f'_env_flag("{name}")' in src, f"{fname} must gate {name} via env_flag"
+                assert re.search(
+                    rf'\b_?env_flag\("{name}"\)', src
+                ), f"{fname} must gate {name} via env_flag"
             assert not bare.search(src), f"{fname} still has a bool(environ.get(...)) gate"

@@ -47,7 +47,7 @@ from mypy.config_parser import parse_config_file
 from mypy.evalexpr import UNKNOWN, evaluate_expression
 from mypy.maptype import map_instance_to_supertype
 from mypy.options import Options
-from mypy.util import FancyFormatter, bytes_to_human_readable_repr, is_dunder, plural_s
+from mypy.util import FancyFormatter, bytes_to_human_readable_repr, env_flag, is_dunder, plural_s
 
 
 class Missing:
@@ -2434,7 +2434,9 @@ def test_stubs(args: _Arguments, use_builtins_fixtures: bool = False) -> int:
     options.pos_only_special_methods = False
     # The native parser requires the ast_serialize extension built for this
     # interpreter; fall back to the Python parser unless explicitly requested.
-    options.native_parser = bool(os.environ.get("TEST_NATIVE_PARSER"))
+    # Same decoding as helpers._env_gate; mypy.test.helpers pulls in pytest,
+    # which stubtest as a shipped tool cannot depend on.
+    options.native_parser = env_flag("TEST_NATIVE_PARSER")
 
     if options.config_file:
 
