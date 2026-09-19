@@ -1198,3 +1198,21 @@ def hash_path_stem(s: str) -> int:
     # Cast the u64 bit pattern to i64 like the Rust port (same shard index
     # either way, but the raw value stays comparable across interpreters).
     return hv - (1 << 64) if hv >= (1 << 63) else int(hv)
+
+
+def env_flag(name: str) -> bool:
+    """Decode a boolean env gate; false-y spellings turn it off.
+
+    A bare ``bool(os.environ.get(name))`` reads "0" as True, so a gate-off
+    run set the flag and silently stayed on (#60, #1287). Unknown values
+    fail loudly instead of decoding as "on".
+    """
+    val = os.environ.get(name)
+    if val is None or val == "":
+        return False
+    lowered = val.lower()
+    if lowered in ("0", "false", "no", "off"):
+        return False
+    if lowered in ("1", "true", "yes", "on"):
+        return True
+    raise SystemExit(f"{name} must be 0/1 (got {val!r})")

@@ -87,6 +87,7 @@ from mypy.types import (
 from mypy.types_utils import flatten_types
 from mypy.typestate import SubtypeKind, type_state
 from mypy.typevars import fill_typevars, fill_typevars_with_any
+from mypy.util import env_flag as _env_flag
 
 # Stage 3c (M8b) type-kernel seam: when type_kernel is importable,
 # native_type_kernel is set, and a resolver is installed, the nominal
@@ -400,9 +401,7 @@ _subtype_answers: dict[tuple[bytes, bytes, tuple[bool, ...]], bool] = {}
 # Identity-repeat probe (#58), env-gated via MYPY_SUBTYPE_IDENTITY_PROBE
 # (default off; hook sites check the bool, production behavior is unchanged).
 # See _identity_probe_entry for why keys verify against wire bytes.
-import os as _probe_os
-
-_identity_probe_on: bool = bool(_probe_os.environ.get("MYPY_SUBTYPE_IDENTITY_PROBE"))
+_identity_probe_on: bool = _env_flag("MYPY_SUBTYPE_IDENTITY_PROBE")
 # One entry is a 3-tuple holding two wire blobs (~350 bytes with the key),
 # so this caps the probe at ~350 MB; pairs past the cap are counted, not stored.
 _IDENTITY_PROBE_CAP: Final = 1_000_000
