@@ -265,21 +265,46 @@ pub struct ModuleAst {
     pub body: Vec<TopStmt>,
 }
 
+/// Byte offsets of line starts (0 first): the ast_serialize line map,
+/// computed once per parse so every lowered statement resolves its line
+/// by binary search instead of rescanning the source.
+struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let mut starts = vec![0];
+        for (index, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(index + 1);
+            }
+        }
+        LineIndex { starts }
+    }
+
+    fn line_of(&self, offset: usize) -> usize {
+        self.starts.partition_point(|start| *start <= offset)
+    }
+}
+
 /// Parse + lower `source`. Fails hard on any construct outside the
 /// subset; the message names the offending line and construct.
 pub fn parse_module(source: &str, path: &str) -> Result<ModuleAst, String> {
     let parsed = parse_unchecked_source(source, PySourceType::Python);
     if let Some(err) = parsed.errors().first() {
+        let lines = LineIndex::new(source);
         return Err(format!(
             "{path}:{}: skeleton subset error: syntax error: {}",
-            line_of(source, err.range().start().to_usize()),
+            lines.line_of(err.range().start().to_usize()),
             err
         ));
     }
     let module = parsed.into_syntax();
+    let lines = LineIndex::new(source);
     let mut body = Vec::with_capacity(module.body.len());
     for stmt in module.body {
-        body.push(lower_top(stmt, source, path)?);
+        body.push(lower_top(stmt, &lines, path)?);
     }
     Ok(ModuleAst { body })
 }
@@ -316,8 +341,8 @@ pub fn parse_string_annotation(source: &str, path: &str, line: usize) -> Result<
     }
 }
 
-fn lower_top(stmt: Stmt, source: &str, path: &str) -> Result<TopStmt, String> {
-    let line = line_of(source, stmt.range().start().to_usize());
+fn lower_top(stmt: Stmt, lines: &LineIndex, path: &str) -> Result<TopStmt, String> {
+    let line = lines.line_of(stmt.range().start().to_usize());
     match stmt {
         Stmt::Import(imp) => {
             let mut names = Vec::with_capacity(imp.names.len());
@@ -462,11 +487,11 @@ fn lower_top(stmt: Stmt, source: &str, path: &str) -> Result<TopStmt, String> {
             })
         }
         Stmt::ClassDef(cls) => Ok(TopStmt {
-            kind: StmtKind::ClassDef(lower_class(cls, source, path, line)?),
+            kind: StmtKind::ClassDef(lower_class(cls, lines, path, line)?),
             line,
         }),
         Stmt::FunctionDef(f) => {
-            let func = lower_function(f, source, path, line, false)?;
+            let func = lower_function(f, lines, path, line, false)?;
             Ok(TopStmt {
                 kind: StmtKind::FuncDef(func),
                 line,
@@ -524,7 +549,7 @@ fn is_super_call(call: &ast::ExprCall) -> bool {
 
 fn lower_class(
     cls: ast::StmtClassDef,
-    source: &str,
+    lines: &LineIndex,
     path: &str,
     line: usize,
 ) -> Result<ClassDefStmt, String> {
@@ -551,12 +576,12 @@ fn lower_class(
     }
     let mut bases = Vec::with_capacity(cls.bases().len());
     for base in cls.bases() {
-        let base_line = line_of(source, base.range().start().to_usize());
+        let base_line = lines.line_of(base.range().start().to_usize());
         bases.push(lower_base_ref(base, path, base_line)?);
     }
     let mut body = Vec::with_capacity(cls.body.len());
     for stmt in cls.body {
-        body.push(lower_class_stmt(stmt, source, path)?);
+        body.push(lower_class_stmt(stmt, lines, path)?);
     }
     Ok(ClassDefStmt {
         name: cls.name.id.to_string(),
@@ -618,8 +643,8 @@ fn subscript_args(slice: &ast::Expr, path: &str, line: usize) -> Result<Vec<Ann>
     }
 }
 
-fn lower_class_stmt(stmt: Stmt, source: &str, path: &str) -> Result<ClassStmt, String> {
-    let line = line_of(source, stmt.range().start().to_usize());
+fn lower_class_stmt(stmt: Stmt, lines: &LineIndex, path: &str) -> Result<ClassStmt, String> {
+    let line = lines.line_of(stmt.range().start().to_usize());
     match stmt {
         Stmt::AnnAssign(ann) => {
             if !matches!(*ann.target, ast::Expr::Name(_)) {
@@ -650,7 +675,7 @@ fn lower_class_stmt(stmt: Stmt, source: &str, path: &str) -> Result<ClassStmt, S
             })
         }
         Stmt::FunctionDef(f) => {
-            let method = lower_function(f, source, path, line, true)?;
+            let method = lower_function(f, lines, path, line, true)?;
             Ok(ClassStmt::Method(method))
         }
         Stmt::Pass(_) => Ok(ClassStmt::Pass),
@@ -670,7 +695,7 @@ fn lower_class_stmt(stmt: Stmt, source: &str, path: &str) -> Result<ClassStmt, S
 /// is annotated and carries no default.
 fn lower_function(
     f: ast::StmtFunctionDef,
-    source: &str,
+    lines: &LineIndex,
     path: &str,
     line: usize,
     is_method: bool,
@@ -710,7 +735,7 @@ fn lower_function(
     }
     let mut raw_params: Vec<(&ast::Parameter, usize)> = Vec::new();
     for param in f.parameters.args.iter() {
-        let param_line = line_of(source, param.range().start().to_usize());
+        let param_line = lines.line_of(param.range().start().to_usize());
         if param.default.is_some() {
             return Err(subset_error(
                 path,
@@ -760,7 +785,7 @@ fn lower_function(
     }
     let ret = match f.returns.as_deref() {
         Some(annotation) => {
-            let ret_line = line_of(source, annotation.range().start().to_usize());
+            let ret_line = lines.line_of(annotation.range().start().to_usize());
             Some(lower_ann(annotation, path, ret_line)?)
         }
         None => {
@@ -773,7 +798,7 @@ fn lower_function(
     };
     let mut body = Vec::with_capacity(f.body.len());
     for stmt in f.body {
-        body.push(lower_body_stmt(stmt, source, path, is_method)?);
+        body.push(lower_body_stmt(stmt, lines, path, is_method)?);
     }
     let mut locals = Vec::with_capacity(params.len() + 1);
     if is_method {
@@ -906,11 +931,11 @@ pub fn always_returns(body: &[BodyStmt]) -> bool {
 
 fn lower_body_stmt(
     stmt: Stmt,
-    source: &str,
+    lines: &LineIndex,
     path: &str,
     is_method: bool,
 ) -> Result<BodyStmt, String> {
-    let line = line_of(source, stmt.range().start().to_usize());
+    let line = lines.line_of(stmt.range().start().to_usize());
     match stmt {
         Stmt::Return(ret) => Ok(BodyStmt::Return {
             value: ret
@@ -990,15 +1015,15 @@ fn lower_body_stmt(
             let test = lower_expr(&ifs.test, path, line)?;
             let mut body = Vec::with_capacity(ifs.body.len());
             for stmt in ifs.body {
-                body.push(lower_body_stmt(stmt, source, path, is_method)?);
+                body.push(lower_body_stmt(stmt, lines, path, is_method)?);
             }
             branches.push((test, body));
             let mut else_body = None;
             for clause in ifs.elif_else_clauses {
-                let clause_line = line_of(source, clause.range.start().to_usize());
+                let clause_line = lines.line_of(clause.range.start().to_usize());
                 let mut clause_body = Vec::with_capacity(clause.body.len());
                 for stmt in clause.body {
-                    clause_body.push(lower_body_stmt(stmt, source, path, is_method)?);
+                    clause_body.push(lower_body_stmt(stmt, lines, path, is_method)?);
                 }
                 match clause.test {
                     Some(test) => {
@@ -1324,20 +1349,4 @@ fn operator_name(op: ast::Operator) -> &'static str {
 
 fn subset_error(path: &str, line: usize, detail: &str) -> String {
     format!("{path}:{line}: skeleton subset error: {detail}")
-}
-
-/// Byte offsets of line starts (0 first): the ast_serialize line map.
-fn line_starts(source: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (index, byte) in source.bytes().enumerate() {
-        if byte == b'\n' {
-            starts.push(index + 1);
-        }
-    }
-    starts
-}
-
-fn line_of(source: &str, offset: usize) -> usize {
-    let starts = line_starts(source);
-    starts.partition_point(|start| *start <= offset)
 }
