@@ -1404,8 +1404,10 @@ fn duplicate_bases_named_in_rejection() {
 
 /// A body may read a module name whose assignment comes later, including
 /// a plain (unannotated) assignment: mypy resolves every body after the
-/// module binds (#126). Module-level *values* keep the ordered semantics,
-/// so a module value reading a later name still rejects.
+/// module binds (#126). A method may also infer a self attribute from
+/// such a name; pass 3b re-runs the class's member collection against the
+/// completed bindings for that (#145). Module-level *values* keep the
+/// ordered semantics, so a module value reading a later name rejects.
 #[test]
 fn body_reads_later_module_value() {
     let dir = std::env::temp_dir().join("mypy-rs-skel-forward-value");
@@ -1443,5 +1445,35 @@ fn body_reads_later_module_value() {
         output.status.code(),
         Some(2),
         "a module value reading a later name must reject"
+    );
+    assert!(output.stdout.is_empty(), "no stdout for the ordered case");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`other` is not defined"),
+        "the ordered case must name the used-before-def class: {stderr}"
+    );
+
+    fs::write(
+        dir.join("attr_later.py"),
+        concat!(
+            "class C:\n",
+            "    def store(self) -> None:\n",
+            "        self.value = value\n",
+            "\n",
+            "\n",
+            "value = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "attr_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a self attribute assigned from a later module value must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
     );
 }

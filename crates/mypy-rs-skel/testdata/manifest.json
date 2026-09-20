@@ -44,6 +44,13 @@
       "notes": "A function body reads a module variable whose plain (unannotated) assignment comes later in the module; mypy resolves bodies after module binding, so the ordered pass defers bodies to a second pass (#126)."
     },
     {
+      "id": "classes.instance_attr_later_module_value",
+      "status": "supported",
+      "arm": "instance_attr_later_module_value.py",
+      "exit_code": 0,
+      "notes": "A method assigns a self attribute whose value is a module variable bound later; pass 3b re-runs the class's member collection against the completed bindings, since pass 3a collected before that name was bound (#145)."
+    },
+    {
       "id": "classes.override_selfattr_inference",
       "status": "supported",
       "arm": "classes_override_selfattr_inference.py",

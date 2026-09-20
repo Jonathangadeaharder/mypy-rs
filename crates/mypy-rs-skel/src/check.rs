@@ -856,12 +856,6 @@ impl Driver {
         self.check_override(class_fullname, &func.name, &sig, func.line)
     }
 
-    /// Pass 3 driver: walk the module in statement order. Module values
-    /// type against `visible`, the names the earlier statements defined;
-    /// bodies type against every name (`bindings`, which holds the
-    /// module annotations resolved in pass 1b). A class's method bodies
-    /// check here, in file order, so a base precedes its subclasses and
-    /// its own collected attributes are already present.
     /// Pass 3a: type every module-level value in statement order and
     /// collect each class's members as its definition is reached. A
     /// module value that reads a later name rejects the way mypy's
@@ -973,6 +967,10 @@ impl Driver {
                 StmtKind::FuncDef(func) => self.check_function_body(bindings, func)?,
                 StmtKind::ClassDef(cls) => {
                     let fullname = format!("{module}.{}", cls.name);
+                    // Re-collect against the completed bindings: pass 3a
+                    // ran at the class's position, so an attribute whose
+                    // value named a later module variable was skipped.
+                    self.collect_class_instance_vars(bindings, cls, &fullname)?;
                     for stmt in &cls.body {
                         if let ClassStmt::Method(func) = stmt {
                             self.check_method_body(bindings, &fullname, func)?;
