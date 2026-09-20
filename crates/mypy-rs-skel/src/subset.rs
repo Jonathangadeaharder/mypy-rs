@@ -1123,10 +1123,14 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
                     "subscript base must be a bare class name",
                 ));
             };
-            ExprKind::Subscript {
-                base,
-                args: subscript_args(&sub.slice, path, line)?,
-            }
+            let args = subscript_args(&sub.slice, path, line).map_err(|_| {
+                subset_error(
+                    path,
+                    line,
+                    "subscript arguments in value position must be type expressions",
+                )
+            })?;
+            ExprKind::Subscript { base, args }
         }
         ast::Expr::Call(call) => {
             if matches!(&*call.func, ast::Expr::Name(n) if n.id == "super") {
@@ -1288,44 +1292,77 @@ fn lower_lit(expr: &ast::Expr, path: &str, line: usize) -> Result<Lit, String> {
     }
 }
 
+/// The ruff statement kind, for subset-rejection messages. Exhaustive
+/// over every `Stmt` variant so a future parser update fails to compile
+/// here instead of silently reporting `unsupported`.
 fn stmt_kind_name(stmt: &Stmt) -> &'static str {
     match stmt {
+        Stmt::FunctionDef(_) => "FunctionDef",
         Stmt::ClassDef(_) => "ClassDef",
-        Stmt::Import(_) => "Import",
-        Stmt::ImportFrom(_) => "ImportFrom",
-        Stmt::If(_) => "If",
-        Stmt::While(_) => "While",
-        Stmt::For(_) => "For",
-        Stmt::Expr(_) => "Expr",
+        Stmt::Return(_) => "Return",
+        Stmt::Delete(_) => "Delete",
+        Stmt::TypeAlias(_) => "TypeAlias",
         Stmt::Assign(_) => "Assign",
         Stmt::AugAssign(_) => "AugAssign",
-        Stmt::Delete(_) => "Delete",
+        Stmt::AnnAssign(_) => "AnnAssign",
+        Stmt::For(_) => "For",
+        Stmt::While(_) => "While",
+        Stmt::If(_) => "If",
         Stmt::With(_) => "With",
-        Stmt::Try(_) => "Try",
-        Stmt::Raise(_) => "Raise",
-        Stmt::Assert(_) => "Assert",
         Stmt::Match(_) => "Match",
-        _ => "unsupported",
+        Stmt::Raise(_) => "Raise",
+        Stmt::Try(_) => "Try",
+        Stmt::Assert(_) => "Assert",
+        Stmt::Import(_) => "Import",
+        Stmt::ImportFrom(_) => "ImportFrom",
+        Stmt::Global(_) => "Global",
+        Stmt::Nonlocal(_) => "Nonlocal",
+        Stmt::Expr(_) => "Expr",
+        Stmt::Pass(_) => "Pass",
+        Stmt::Break(_) => "Break",
+        Stmt::Continue(_) => "Continue",
+        Stmt::IpyEscapeCommand(_) => "IpyEscapeCommand",
     }
 }
 
+/// The ruff expression kind, for subset-rejection messages. Exhaustive
+/// over every `Expr` variant so a future parser update fails to compile
+/// here instead of silently reporting `unsupported`.
 fn expr_kind_name(expr: &ast::Expr) -> &'static str {
     match expr {
-        ast::Expr::Name(_) => "Name",
-        ast::Expr::Call(_) => "Call",
-        ast::Expr::BinOp(_) => "BinOp",
-        ast::Expr::Compare(_) => "Compare",
         ast::Expr::BoolOp(_) => "BoolOp",
+        ast::Expr::Named(_) => "Named",
+        ast::Expr::BinOp(_) => "BinOp",
         ast::Expr::UnaryOp(_) => "UnaryOp",
-        ast::Expr::Attribute(_) => "Attribute",
-        ast::Expr::Subscript(_) => "Subscript",
         ast::Expr::Lambda(_) => "Lambda",
         ast::Expr::If(_) => "IfExp",
-        ast::Expr::Tuple(_) => "Tuple",
-        ast::Expr::List(_) => "List",
         ast::Expr::Dict(_) => "Dict",
+        ast::Expr::Set(_) => "Set",
+        ast::Expr::ListComp(_) => "ListComp",
+        ast::Expr::SetComp(_) => "SetComp",
+        ast::Expr::DictComp(_) => "DictComp",
+        ast::Expr::Generator(_) => "Generator",
+        ast::Expr::Await(_) => "Await",
+        ast::Expr::Yield(_) => "Yield",
+        ast::Expr::YieldFrom(_) => "YieldFrom",
+        ast::Expr::Compare(_) => "Compare",
+        ast::Expr::Call(_) => "Call",
         ast::Expr::FString(_) => "FString",
-        _ => "unsupported",
+        ast::Expr::TString(_) => "TString",
+        ast::Expr::StringLiteral(_) => "StringLiteral",
+        ast::Expr::BytesLiteral(_) => "BytesLiteral",
+        ast::Expr::NumberLiteral(_) => "NumberLiteral",
+        ast::Expr::BooleanLiteral(_) => "BooleanLiteral",
+        ast::Expr::NoneLiteral(_) => "NoneLiteral",
+        ast::Expr::EllipsisLiteral(_) => "EllipsisLiteral",
+        ast::Expr::Attribute(_) => "Attribute",
+        ast::Expr::Subscript(_) => "Subscript",
+        ast::Expr::Starred(_) => "Starred",
+        ast::Expr::Name(_) => "Name",
+        ast::Expr::List(_) => "List",
+        ast::Expr::Tuple(_) => "Tuple",
+        ast::Expr::Slice(_) => "Slice",
+        ast::Expr::IpyEscapeCommand(_) => "IpyEscapeCommand",
     }
 }
 

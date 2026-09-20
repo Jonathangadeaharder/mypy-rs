@@ -479,6 +479,48 @@ fn float_binop_operator_closure() {
         }
     }
 }
+/// Subset rejections name the actual construct kind (#130): the
+/// statement/expression kind tables are exhaustive over the parser's
+/// AST, so a set literal or a global statement reports its own kind
+/// instead of `unsupported`, and a value-position subscript slice gets
+/// the value-position message rather than the annotation-flavored one.
+#[test]
+fn subset_rejection_messages_name_the_construct() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-kind-names");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases = [
+        (
+            "set_literal.py",
+            "x = {1, 2}\n",
+            "expression `Set` is outside the skeleton subset",
+        ),
+        (
+            "global_stmt.py",
+            "global g\n",
+            "statement `Global` is outside the skeleton subset",
+        ),
+        (
+            "nonlocal_stmt.py",
+            "def f() -> None:\n    global g\n    return\n",
+            "statement `Global` is outside the skeleton subset in a body",
+        ),
+        (
+            "value_subscript.py",
+            "items = 5\nx = items[0]\n",
+            "subscript arguments in value position must be type expressions",
+        ),
+    ];
+    for (name, source, needle) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(output.status.code(), Some(2), "exit code for {name}");
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "stderr for {name}: {stderr}");
+    }
+}
+
 /// The int/bool fixture records close the literal promote path: int
 /// promotes to float (clean, as in mypy), str(int) is clean, a bool
 /// from an int literal renders the exact mypy bytes, and a binop pair
