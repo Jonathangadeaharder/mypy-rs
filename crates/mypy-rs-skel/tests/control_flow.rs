@@ -138,8 +138,8 @@ fn control_flow_falsification_matches_mypy() {
 /// Control-flow constructs whose lowering would silently diverge from
 /// mypy semantics must be hard exit-2 rejections (#93: never a silent
 /// divergence): loops, match, module-level if, chained comparisons,
-/// membership tests, and/or over non-bool operands, unary operators
-/// other than `not`, branch-local assignments, local rebinding and a
+/// membership tests, and/or over non-bool operands, unary `~`,
+/// branch-local assignments, local rebinding and a
 /// return before the final statement of its sequence.
 #[test]
 fn subset_rejects_control_flow_constructs() {
@@ -187,9 +187,9 @@ fn subset_rejects_control_flow_constructs() {
             "boolean `and` is only supported over builtins.bool operands",
         ),
         (
-            "unary_minus.py",
-            "x: int = -1\n",
-            "unary operators other than `not` are outside the skeleton subset",
+            "unary_invert.py",
+            "x: int = ~1\n",
+            "unary operator `~` is outside the skeleton subset",
         ),
         (
             "branch_local.py",

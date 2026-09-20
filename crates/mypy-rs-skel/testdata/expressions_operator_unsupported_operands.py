@@ -1,0 +1,14 @@
+s: str = "ab"
+i: int = 3
+f: float = 1.5
+a: str = s + i
+b: int = i + s
+c: float = f + s
+d: str = s * s
+e: int = i // s
+v: bool = True
+v += "s"
+flag: bool = True
+flag -= 1
+g: float = 1.5
+g += "x"

@@ -1,10 +1,12 @@
 //! The checking phase: a micro semanal pass over the skeleton AST that
 //! builds class models, resolves annotations and members through kernel
 //! snapshots, and decides every compatibility question with the
-//! kernel's `is_subtype`. Supported results are the rendered assignment
-//! diagnostic and Success; anything the slice does not model is a hard
-//! out-of-subset error, never a silent divergence (#93, tracked #115).
+//! kernel's `is_subtype`. Supported results are the rendered assignment,
+//! return, and operator diagnostics and Success; anything the slice does
+//! not model is a hard out-of-subset error, never a silent divergence
+//! (#93, tracked #115).
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 use type_kernel::skeleton_api::{is_subtype, SubtypeContext, Type, TypeResolver};
@@ -16,13 +18,15 @@ use crate::model::{
 };
 use crate::subset::{
     always_returns, Ann, AnnKind, BaseRefKind, BinOpKind, BodyStmt, BoolOpKind, ClassStmt,
-    CmpOpKind, Expr, ExprKind, FuncDefStmt, StmtKind,
+    CmpOpKind, Expr, ExprKind, FuncDefStmt, StmtKind, UnaryOpKind,
 };
 
-/// A rendered diagnostic: line number plus the text after `path:line: `.
+/// A rendered diagnostic: line, 1-based column (sort key only; the
+/// renderer prints `path:line:`) and the text after `path:line: `.
 #[derive(Debug)]
 pub struct Diagnostic {
     pub line: usize,
+    pub col: usize,
     pub message: String,
 }
 
@@ -170,7 +174,12 @@ pub struct Driver {
     modules: HashMap<String, HashMap<String, Binding>>,
     /// Modules currently being checked: the import-cycle guard.
     checking: HashSet<String>,
-    diagnostics: Vec<Diagnostic>,
+    /// Rendered diagnostics, behind a cell so expression typing (`&self`)
+    /// can record them; check_main drains the buffer.
+    diagnostics: RefCell<Vec<Diagnostic>>,
+    /// True inside the instance-attribute collection sweeps, where
+    /// expression errors must not render (pass 3 re-types and renders).
+    collecting: bool,
     is_main: bool,
     path: String,
 }
@@ -191,10 +200,18 @@ impl Driver {
             classes: HashMap::new(),
             modules: HashMap::new(),
             checking: HashSet::new(),
-            diagnostics: Vec::new(),
+            diagnostics: RefCell::new(Vec::new()),
+            collecting: false,
             is_main: false,
             path: String::new(),
         }
+    }
+
+    /// Record a rendered diagnostic for the main file.
+    fn push_diag(&self, line: usize, col: usize, message: String) {
+        self.diagnostics
+            .borrow_mut()
+            .push(Diagnostic { line, col, message });
     }
 
     /// Check `path` as the driver's main file and return its diagnostics.
@@ -207,7 +224,7 @@ impl Driver {
         source: &str,
     ) -> Result<Vec<Diagnostic>, CheckError> {
         self.check_module_file(path, module, dir, source, true)?;
-        Ok(std::mem::take(&mut self.diagnostics))
+        Ok(self.diagnostics.replace(Vec::new()))
     }
 
     fn check_module_file(
@@ -417,6 +434,10 @@ impl Driver {
                 // bound; pass 3 checks the value.
                 bindings.insert(name.clone(), Binding::Pending);
             }
+            StmtKind::AugAssign { .. } => {
+                // Binds no name: the target must already exist, which
+                // the lowering-time shape check enforces.
+            }
             StmtKind::ClassDef(cls) => {
                 self.reject_module_rebind(bindings, &cls.name, cls.line)?;
                 let fullname = format!("{module}.{}", cls.name);
@@ -437,30 +458,33 @@ impl Driver {
         Ok(())
     }
 
-    /// An AnnAssign whose expression is not a subtype of the declared
-    /// variable: the one rendered error class, and only when both sides
-    /// are builtins instances (the fixture-covered primitives); every
-    /// other incompatibility is out of subset.
+    /// An AnnAssign or augmented assignment whose expression is not a
+    /// subtype of the declared variable: the one rendered assignment
+    /// error class, and only when both sides are builtins instances
+    /// (the fixture-covered primitives); every other incompatibility is
+    /// out of subset.
     fn incompatible_assignment(
-        &mut self,
+        &self,
         expr_t: &Type,
         declared: &Type,
         line: usize,
+        col: usize,
     ) -> Result<(), CheckError> {
         if self.is_main {
             if let (Type::Instance { type_ref: e, .. }, Type::Instance { type_ref: v, .. }) =
                 (expr_t, declared)
             {
                 if e.starts_with("builtins.") && v.starts_with("builtins.") {
-                    self.diagnostics.push(Diagnostic {
+                    self.push_diag(
                         line,
-                        message: format!(
+                        col,
+                        format!(
                             "error: Incompatible types in assignment (expression has type \
                              \"{expr}\", variable has type \"{var}\")  [assignment]",
                             expr = display_type(e),
                             var = display_type(v),
                         ),
-                    });
+                    );
                     return Ok(());
                 }
             }
@@ -1069,7 +1093,7 @@ impl Driver {
                 StmtKind::AnnAssign {
                     name, value, line, ..
                 } => {
-                    let declared = match bindings.get(name) {
+                    let declared_ty = match bindings.get(name) {
                         Some(Binding::Var(t)) => t.clone(),
                         _ => {
                             return Err(CheckError::Internal(format!(
@@ -1086,17 +1110,57 @@ impl Driver {
                         self.type_expr(&scope, value)?
                     };
                     let verdict = require_decidable(
-                        self.sub(&expr_t, &declared),
+                        self.sub(&expr_t, &declared_ty),
                         "assignment",
                         &self.path,
                         *line,
                     )?;
                     if !verdict {
-                        self.incompatible_assignment(&expr_t, &declared, *line)?;
+                        self.incompatible_assignment(&expr_t, &declared_ty, *line, value.col)?;
                     }
-                    let binding = Binding::Var(declared);
+                    let binding = Binding::Var(declared_ty);
                     bindings.insert(name.clone(), binding.clone());
                     visible.insert(name.clone(), binding);
+                }
+                StmtKind::AugAssign {
+                    name,
+                    op,
+                    value,
+                    line,
+                    col,
+                } => {
+                    // mypy checks an augmented assignment against the
+                    // variable's current type and never rebinds it.
+                    let (target_t, result) = {
+                        let scope = Scope {
+                            module: &visible,
+                            locals: None,
+                            frame: None,
+                        };
+                        let target_t = self.type_name(&scope, name, *line)?;
+                        let value_t = self.type_expr(&scope, value)?;
+                        let result = self.binop_typed(
+                            op,
+                            &target_t,
+                            &value_t,
+                            &BinopCols {
+                                line: *line,
+                                expr_col: *col,
+                                left_col: *col,
+                                right_col: value.col,
+                            },
+                        )?;
+                        (target_t, result)
+                    };
+                    let verdict = require_decidable(
+                        self.sub(&result, &target_t),
+                        "augmented assignment",
+                        &self.path,
+                        *line,
+                    )?;
+                    if !verdict {
+                        self.incompatible_assignment(&result, &target_t, *line, *col)?;
+                    }
                 }
                 StmtKind::Import { names } | StmtKind::ImportFrom { names, .. } => {
                     for name in names {
@@ -1193,8 +1257,16 @@ impl Driver {
         cls: &crate::subset::ClassDefStmt,
         fullname: &str,
     ) -> Result<(), CheckError> {
-        while self.collect_class_once(bindings, cls, fullname)? {}
-        Ok(())
+        // Collection must mirror pass 3's typing without rendering: the
+        // render/reject decision in the typing paths consults `collecting`.
+        let saved = self.collecting;
+        self.collecting = true;
+        let result = (|| {
+            while self.collect_class_once(bindings, cls, fullname)? {}
+            Ok(())
+        })();
+        self.collecting = saved;
+        result
     }
 
     /// One collection sweep of one class: type every `self.<attr> = ...`
@@ -1378,9 +1450,9 @@ impl Driver {
                 BodyStmt::LocalAnnAssign {
                     name, ann, value, ..
                 } => {
-                    if let Ok(declared) = self.resolve_ann(&scope, ann) {
+                    if let Ok(declared_ty) = self.resolve_ann(&scope, ann) {
                         if self.type_expr(&scope, value).is_ok() {
-                            locals.insert(name.clone(), declared);
+                            locals.insert(name.clone(), declared_ty);
                         }
                     }
                 }
@@ -1401,7 +1473,10 @@ impl Driver {
                         self.collect_body_candidates(ctx, locals, else_body, candidates)?;
                     }
                 }
-                BodyStmt::Call(_) | BodyStmt::Return { .. } | BodyStmt::Pass => {}
+                BodyStmt::Call(_)
+                | BodyStmt::Return { .. }
+                | BodyStmt::AugAssign { .. }
+                | BodyStmt::Pass => {}
             }
         }
         Ok(())
@@ -1430,15 +1505,19 @@ impl Driver {
         body: &[BodyStmt],
         def_line: usize,
     ) -> Result<(), CheckError> {
+        // mypy checks an augmented assignment against the variable's
+        // current type and never rebinds it (an inferred local acts
+        // declared), so no declared-name set is needed.
         self.check_seq(bindings, frame, ret, locals, body)?;
         if matches!(ret, Type::NoneType) || always_returns(body) {
             return Ok(());
         }
         if self.is_main {
-            self.diagnostics.push(Diagnostic {
-                line: def_line,
-                message: "error: Missing return statement  [return]".to_string(),
-            });
+            self.push_diag(
+                def_line,
+                1,
+                "error: Missing return statement  [return]".to_string(),
+            );
             Ok(())
         } else {
             Err(input(
@@ -1521,7 +1600,7 @@ impl Driver {
                     let verdict =
                         require_decidable(self.sub(&vt, ret), "return-value", &self.path, *line)?;
                     if !verdict {
-                        self.incompatible_return_value(&vt, ret, *line)?;
+                        self.incompatible_return_value(&vt, ret, *line, v.col)?;
                     }
                 }
                 BodyStmt::Return { value: None, .. } | BodyStmt::Pass => {}
@@ -1531,22 +1610,56 @@ impl Driver {
                     value,
                     line,
                 } => {
-                    let declared = self.resolve_ann(&scope, ann)?;
+                    let declared_ty = self.resolve_ann(&scope, ann)?;
                     let expr_t = self.type_expr(&scope, value)?;
                     let verdict = require_decidable(
-                        self.sub(&expr_t, &declared),
+                        self.sub(&expr_t, &declared_ty),
                         "local assignment",
                         &self.path,
                         *line,
                     )?;
                     if !verdict {
-                        self.incompatible_assignment(&expr_t, &declared, *line)?;
+                        self.incompatible_assignment(&expr_t, &declared_ty, *line, value.col)?;
                     }
-                    locals.insert(name.clone(), declared);
+                    locals.insert(name.clone(), declared_ty);
                 }
                 BodyStmt::LocalAssign { name, value, .. } => {
                     let t = self.type_expr(&scope, value)?;
                     locals.insert(name.clone(), t);
+                }
+                BodyStmt::AugAssign {
+                    name,
+                    op,
+                    value,
+                    line,
+                    col,
+                } => {
+                    let target_t = locals.get(name).cloned().ok_or_else(|| {
+                        CheckError::Internal(format!(
+                            "the augmented-assignment local `{name}` vanished from the body"
+                        ))
+                    })?;
+                    let value_t = self.type_expr(&scope, value)?;
+                    let result = self.binop_typed(
+                        op,
+                        &target_t,
+                        &value_t,
+                        &BinopCols {
+                            line: *line,
+                            expr_col: *col,
+                            left_col: *col,
+                            right_col: value.col,
+                        },
+                    )?;
+                    let verdict = require_decidable(
+                        self.sub(&result, &target_t),
+                        "augmented assignment",
+                        &self.path,
+                        *line,
+                    )?;
+                    if !verdict {
+                        self.incompatible_assignment(&result, &target_t, *line, *col)?;
+                    }
                 }
                 BodyStmt::If {
                     branches,
@@ -1576,25 +1689,27 @@ impl Driver {
     /// builtins instances (the fixture-covered primitives); every other
     /// incompatibility is out of subset.
     fn incompatible_return_value(
-        &mut self,
+        &self,
         expr_t: &Type,
         declared: &Type,
         line: usize,
+        col: usize,
     ) -> Result<(), CheckError> {
         if self.is_main {
             if let (Type::Instance { type_ref: e, .. }, Type::Instance { type_ref: v, .. }) =
                 (expr_t, declared)
             {
                 if e.starts_with("builtins.") && v.starts_with("builtins.") {
-                    self.diagnostics.push(Diagnostic {
+                    self.push_diag(
                         line,
-                        message: format!(
+                        col,
+                        format!(
                             "error: Incompatible return value type (got \"{expr}\", \
                              expected \"{var}\")  [return-value]",
                             expr = display_type(e),
                             var = display_type(v),
                         ),
-                    });
+                    );
                     return Ok(());
                 }
             }
@@ -1787,17 +1902,14 @@ impl Driver {
             }
             ExprKind::Call { func, args } => self.type_call(scope, func, args, expr.line),
             ExprKind::BinOp { op, left, right } => {
-                self.type_binop(scope, op, left, right, expr.line)
+                self.type_binop(scope, op, left, right, expr.line, expr.col)
             }
             ExprKind::Compare { op, left, right } => {
                 self.type_compare(scope, op, left, right, expr.line)
             }
             ExprKind::BoolOp { op, operands } => self.type_boolop(scope, op, operands),
-            ExprKind::Not { operand } => {
-                // mypy accepts any operand type for `not` (the result is
-                // always bool); only the operand must type-check.
-                self.type_expr(scope, operand)?;
-                Ok(instance("builtins.bool", Vec::new()))
+            ExprKind::Unary { op, operand } => {
+                self.type_unary(scope, op, operand, expr.line, expr.col)
             }
         }
     }
@@ -2190,11 +2302,17 @@ impl Driver {
         Ok(())
     }
 
-    /// Binary `+`/`*`/`%`: the operand-pair result table decides which
-    /// pairs the slice supports first (unsupported pairs are out of
-    /// subset, whatever the closure holds), then the operator member
-    /// must exist in the left operand's snapshot closure (a kernel
-    /// consult, never a pure table).
+    /// The arithmetic operand types the fixture closure covers, the
+    /// narrowing the brief fixes for this slice (#150 Decision 4).
+    fn is_binop_operand(fullname: &str) -> bool {
+        matches!(
+            fullname,
+            "builtins.int" | "builtins.bool" | "builtins.float" | "builtins.str"
+        )
+    }
+
+    /// Binary arithmetic over the primitive instances: type both
+    /// operands, then the shared variant engine decides.
     fn type_binop(
         &self,
         scope: &Scope,
@@ -2202,55 +2320,271 @@ impl Driver {
         left: &Expr,
         right: &Expr,
         line: usize,
+        col: usize,
     ) -> Result<Type, CheckError> {
         let lt = self.type_expr(scope, left)?;
         let rt = self.type_expr(scope, right)?;
-        let Type::Instance { type_ref: lref, .. } = &lt else {
-            return Err(input(
-                &self.path,
+        self.binop_typed(
+            op,
+            &lt,
+            &rt,
+            &BinopCols {
                 line,
-                "binary operations on non-instance operands are outside \
-                 the skeleton subset",
-            ));
-        };
-        let result = match (&lt, &rt) {
-            (Type::Instance { type_ref: a, .. }, Type::Instance { type_ref: b, .. }) => {
-                match (a.as_str(), b.as_str(), op) {
-                    ("builtins.str", "builtins.str", BinOpKind::Add) => {
-                        instance("builtins.str", Vec::new())
-                    }
-                    (
-                        "builtins.float",
-                        "builtins.float",
-                        BinOpKind::Add | BinOpKind::Mult | BinOpKind::Mod,
-                    ) => instance("builtins.float", Vec::new()),
-                    ("builtins.int", "builtins.int", BinOpKind::Mod) => {
-                        instance("builtins.int", Vec::new())
-                    }
-                    _ => {
-                        return Err(input(
-                            &self.path,
-                            line,
-                            "binary operations on these types are outside the supported subset",
-                        ))
-                    }
-                }
+                expr_col: col,
+                left_col: left.col,
+                right_col: right.col,
+            },
+        )
+    }
+
+    /// Decide one typed binary operation (the augmented-assignment
+    /// engine as well): mypy builds forward and reflected call
+    /// variants in calling order, tries each, and on total failure
+    /// renders the first variant's error while binding the recovery
+    /// type (checkexpr.py:5900-6070). Same-type operands shortcut to
+    /// the forward variant alone (`op_methods_that_shortcut`), and a
+    /// dunder that does not exist is never a variant.
+    fn binop_typed(
+        &self,
+        op: &BinOpKind,
+        lt: &Type,
+        rt: &Type,
+        cols: &BinopCols,
+    ) -> Result<Type, CheckError> {
+        let BinopCols {
+            line,
+            expr_col,
+            left_col,
+            right_col,
+        } = *cols;
+        let (lref, rref) = match (lt, rt) {
+            (Type::Instance { type_ref: lref, .. }, Type::Instance { type_ref: rref, .. }) => {
+                (lref.as_str(), rref.as_str())
             }
             _ => {
                 return Err(input(
                     &self.path,
                     line,
-                    "binary operations on these types are outside the supported subset",
+                    "binary operations on non-instance operands are outside \
+                     the skeleton subset",
                 ))
             }
         };
-        let member = match op {
-            BinOpKind::Add => "__add__",
-            BinOpKind::Mult => "__mul__",
-            BinOpKind::Mod => "__mod__",
+        if !Self::is_binop_operand(lref) || !Self::is_binop_operand(rref) {
+            return Err(input(
+                &self.path,
+                line,
+                "binary operations on these types are outside the supported subset",
+            ));
+        }
+        let (fwd, refl) = op.dunders();
+        // (definer, member, argument type, the column mypy renders the
+        // variant's error at: the right operand for a forward call, the
+        // left operand for a reflected one).
+        let mut variants: Vec<(String, &'static str, &str, usize)> = Vec::new();
+        if let Some(definer) = self.snapshot_definer(lref, fwd, line)? {
+            variants.push((definer, fwd, rref, right_col));
+        }
+        if lref != rref {
+            if let Some(definer) = self.snapshot_definer(rref, refl, line)? {
+                variants.push((definer, refl, lref, left_col));
+            }
+        }
+        for (definer, member, arg, _) in &variants {
+            let (family, ret) = self.dunder_sig(definer, member, line)?;
+            if family.accepts(arg) {
+                return Ok(ret);
+            }
+        }
+        let sym = op.symbol();
+        if variants.is_empty() {
+            // No tried variant at all: mypy's left-operand fallback
+            // reports the left-shape message and recovers as Any.
+            let msg = format!(
+                "error: Unsupported left operand type for {sym} (\"{}\")  [operator]",
+                display_type(lref)
+            );
+            return self.operator_error(msg, line, expr_col, any_from_error());
+        }
+        // mypy binds errors[0] (the first tried variant) and results[0]
+        // when exactly one variant was tried, Any otherwise.
+        let (context_col, recovery) = if variants.len() == 1 {
+            let (definer, member, _, col) = &variants[0];
+            let (_, ret) = self.dunder_sig(definer, member, line)?;
+            (*col, ret)
+        } else {
+            (variants[0].3, any_from_error())
         };
-        self.require_snapshot_member(lref, member, line)?;
-        Ok(result)
+        let msg = format!(
+            "error: Unsupported operand types for {sym} (\"{}\" and \"{}\")  [operator]",
+            display_type(lref),
+            display_type(rref)
+        );
+        self.operator_error(msg, line, context_col, recovery)
+    }
+
+    /// The operator-error tail mypy shares across binops and unary
+    /// operators: the main file renders one diagnostic and the
+    /// statement continues with the recovery type; the collection
+    /// sweeps mirror the recovery without rendering (pass 3 re-types);
+    /// every other context hard-rejects.
+    fn operator_error(
+        &self,
+        message: String,
+        line: usize,
+        col: usize,
+        recovery: Type,
+    ) -> Result<Type, CheckError> {
+        if self.collecting {
+            return Ok(recovery);
+        }
+        if self.is_main {
+            self.push_diag(line, col, message);
+            return Ok(recovery);
+        }
+        Err(input(
+            &self.path,
+            line,
+            "operator type errors are outside the supported error classes",
+        ))
+    }
+
+    /// Unary `not` (any operand, result bool, mypy's truthiness rules)
+    /// and `-`/`+` resolved through the `__neg__`/`__pos__` dunders;
+    /// a missing dunder renders mypy's unary message and recovers
+    /// as Any.
+    fn type_unary(
+        &self,
+        scope: &Scope,
+        op: &UnaryOpKind,
+        operand: &Expr,
+        line: usize,
+        col: usize,
+    ) -> Result<Type, CheckError> {
+        let t = self.type_expr(scope, operand)?;
+        if matches!(op, UnaryOpKind::Not) {
+            return Ok(instance("builtins.bool", Vec::new()));
+        }
+        let (sym, member) = match op {
+            UnaryOpKind::USub => ("-", "__neg__"),
+            UnaryOpKind::UAdd => ("+", "__pos__"),
+            UnaryOpKind::Not => unreachable!("not returns above"),
+        };
+        let Type::Instance { type_ref, .. } = &t else {
+            return Err(input(
+                &self.path,
+                line,
+                "unary operations on non-instance operands are outside \
+                 the skeleton subset",
+            ));
+        };
+        if !Self::is_binop_operand(type_ref) {
+            return Err(input(
+                &self.path,
+                line,
+                "unary operations on these types are outside the supported subset",
+            ));
+        }
+        let Some(definer) = self.snapshot_definer(type_ref, member, line)? else {
+            let msg = format!(
+                "error: Unsupported operand type for unary {sym} (\"{}\")  [operator]",
+                display_type(type_ref)
+            );
+            return self.operator_error(msg, line, col, any_from_error());
+        };
+        match definer.as_str() {
+            "builtins.int" => Ok(instance("builtins.int", Vec::new())),
+            "builtins.float" => Ok(instance("builtins.float", Vec::new())),
+            other => Err(CheckError::Internal(format!(
+                "{}:{line}: the dunder `{member}` of {type_ref} resolves to an \
+                 uncovered definer ({other})",
+                self.path
+            ))),
+        }
+    }
+
+    /// The kernel consult the operator machinery resolves through: the
+    /// first snapshot MRO entry defining `member`, or `None` when no
+    /// entry does (mypy filters call variants by method existence). A
+    /// missing snapshot is an internal error, never a subset rejection.
+    fn snapshot_definer(
+        &self,
+        type_ref: &str,
+        member: &str,
+        line: usize,
+    ) -> Result<Option<String>, CheckError> {
+        let snap = self.resolver.get(type_ref).ok_or_else(|| {
+            CheckError::Internal(format!(
+                "{}:{line}: the snapshot for {type_ref} is missing; the fixture closure \
+                 no longer covers the corpus",
+                self.path
+            ))
+        })?;
+        for entry in &snap.mro {
+            let Some(entry_snap) = self.resolver.get(entry) else {
+                if entry == "typing.Generic" {
+                    // Outside the fixtures on purpose: no corpus member
+                    // resolves there.
+                    continue;
+                }
+                return Err(CheckError::Internal(format!(
+                    "{}:{line}: the snapshot for {entry} is missing; the fixture \
+                     closure no longer covers the corpus",
+                    self.path
+                )));
+            };
+            if let Some((_, definer)) = entry_snap.member_definers.get(member) {
+                return Ok(Some(definer.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The typeshed arithmetic dunder signatures the fixture closure
+    /// covers, keyed by defining class: the argument family the member
+    /// accepts and the declared return, which doubles as the recovery
+    /// type mypy binds when a one-variant call fails. A dunder that
+    /// exists in the snapshots but not here means the closure broke.
+    fn dunder_sig(
+        &self,
+        definer: &str,
+        member: &str,
+        line: usize,
+    ) -> Result<(DunderArg, Type), CheckError> {
+        let sig = match (definer, member) {
+            ("builtins.int", "__add__" | "__sub__" | "__mul__" | "__floordiv__" | "__mod__") => {
+                (DunderArg::Int, instance("builtins.int", Vec::new()))
+            }
+            ("builtins.int", "__truediv__") => {
+                (DunderArg::Int, instance("builtins.float", Vec::new()))
+            }
+            (
+                "builtins.int",
+                "__radd__" | "__rsub__" | "__rmul__" | "__rfloordiv__" | "__rmod__",
+            ) => (DunderArg::Int, instance("builtins.int", Vec::new())),
+            ("builtins.int", "__rtruediv__") => {
+                (DunderArg::Int, instance("builtins.float", Vec::new()))
+            }
+            (
+                "builtins.float",
+                "__add__" | "__sub__" | "__mul__" | "__truediv__" | "__floordiv__" | "__mod__"
+                | "__radd__" | "__rsub__" | "__rmul__" | "__rtruediv__" | "__rfloordiv__"
+                | "__rmod__",
+            ) => (DunderArg::Float, instance("builtins.float", Vec::new())),
+            ("builtins.str", "__add__") => (DunderArg::Str, instance("builtins.str", Vec::new())),
+            ("builtins.str", "__mod__") => (DunderArg::Any, instance("builtins.str", Vec::new())),
+            ("builtins.str", "__mul__" | "__rmul__") => {
+                (DunderArg::Int, instance("builtins.str", Vec::new()))
+            }
+            _ => {
+                return Err(CheckError::Internal(format!(
+                    "{}:{line}: the arithmetic dunder `{member}` of definer {definer} fell \
+                     outside the signature closure",
+                    self.path
+                )))
+            }
+        };
+        Ok(sig)
     }
 
     /// A comparison: both operands must be builtins int/float/bool
@@ -2548,5 +2882,51 @@ impl Driver {
 
     fn sub(&self, left: &Type, right: &Type) -> Option<bool> {
         is_subtype(left, right, &self.ctx, &self.resolver)
+    }
+}
+
+/// The columns mypy renders one call's operator errors at, captured
+/// from the operand positions: `expr_col` anchors the left-shape and
+/// unary messages, `left_col`/`right_col` anchor the reflected and
+/// forward variant contexts.
+struct BinopCols {
+    line: usize,
+    expr_col: usize,
+    left_col: usize,
+    right_col: usize,
+}
+
+/// The operand families a typeshed arithmetic dunder accepts, as the
+/// corpus uses them: int dunders also take bool, float dunders also
+/// take int and bool, str dunders take only str.
+enum DunderArg {
+    Int,
+    Float,
+    Str,
+    Any,
+}
+
+impl DunderArg {
+    fn accepts(self, operand: &str) -> bool {
+        match self {
+            DunderArg::Int => operand == "builtins.int" || operand == "builtins.bool",
+            DunderArg::Float => {
+                operand == "builtins.int"
+                    || operand == "builtins.bool"
+                    || operand == "builtins.float"
+            }
+            DunderArg::Str => operand == "builtins.str",
+            DunderArg::Any => true,
+        }
+    }
+}
+
+/// The Any mypy binds when an operator error is recovered with both
+/// variants tried (`Any(from_error)`, wire code 5).
+fn any_from_error() -> Type {
+    Type::AnyType {
+        type_of_any: 5,
+        source_any: None,
+        missing_import_name: None,
     }
 }

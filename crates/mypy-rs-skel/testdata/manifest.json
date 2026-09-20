@@ -283,11 +283,67 @@
     },
     {
       "id": "expressions.unary_operator",
-      "status": "unsupported",
+      "status": "supported",
       "arm": "expressions_unary_operator.py",
+      "exit_code": 0,
+      "notes": "Unary `-`/`+` over int/float/bool resolve through __neg__/__pos__ as mypy does; a missing dunder renders mypy's unary operator error and recovers as Any (#150)."
+    },
+    {
+      "id": "expressions.arithmetic_int",
+      "status": "supported",
+      "arm": "expressions_arithmetic_int.py",
+      "exit_code": 0,
+      "notes": "The six int operators over int literals: +, -, *, // and % keep int, / yields float, exactly as mypy (#150)."
+    },
+    {
+      "id": "expressions.arithmetic_float",
+      "status": "supported",
+      "arm": "expressions_arithmetic_float.py",
+      "exit_code": 1,
+      "notes": "float arithmetic including int/float mixes through the reflected dunders, plus one float*str operator error row (#150)."
+    },
+    {
+      "id": "expressions.arithmetic_str",
+      "status": "supported",
+      "arm": "expressions_arithmetic_str.py",
+      "exit_code": 0,
+      "notes": "str + str, str * int and int * str yield str; str % anything yields str because typeshed declares the value Any (#150)."
+    },
+    {
+      "id": "expressions.arithmetic_bool",
+      "status": "supported",
+      "arm": "expressions_arithmetic_bool.py",
+      "exit_code": 0,
+      "notes": "bool counts as int in arithmetic (b + b is int, b + f is float) and unary - binds int, as measured (#150)."
+    },
+    {
+      "id": "expressions.operator_unsupported_operands",
+      "status": "supported",
+      "arm": "expressions_operator_unsupported_operands.py",
+      "exit_code": 1,
+      "notes": "mypy's operator error rows over the slice's primitives, rendered byte-identically: both-operand shapes for +, *, // and augmented assignments whose recovery type then fails the assignment check (#150)."
+    },
+    {
+      "id": "expressions.operator_unsupported_left",
+      "status": "supported",
+      "arm": "expressions_operator_unsupported_left.py",
+      "exit_code": 1,
+      "notes": "mypy's left-operand and unary error rows: an operand with no dunder for the operator renders the left-operand message, unary -/+ over str render the unary message (#150)."
+    },
+    {
+      "id": "expressions.augmented_assignment",
+      "status": "supported",
+      "arm": "expressions_augmented_assignment.py",
+      "exit_code": 1,
+      "notes": "Augmented assignments desugar to the binop plus the assignment check against the variable's current type, which mypy never rebinds; one row per operator plus the incompatible float/bool rows (#150)."
+    },
+    {
+      "id": "expressions.pow",
+      "status": "unsupported",
+      "arm": "expressions_pow.py",
       "exit_code": 2,
-      "reject_marker": "unary operators other than `not` are outside the skeleton subset",
-      "notes": "mypy resolves -1 via __neg__; the subset only models `not`."
+      "reject_marker": "binary operator `**` is outside the skeleton subset",
+      "notes": "mypy types ** as Any; the skeleton has no Any-compatibility semantics, so accepting it would risk accepting programs mypy rejects (#150, decision 2)."
     },
     {
       "id": "module.value_used_before_definition",
