@@ -38,10 +38,7 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKEL = os.path.join(REPO_ROOT, "crates", "mypy-rs-skel")
 MANIFEST = os.path.join(SKEL, "testdata", "manifest.json")
 FIXTURES = os.path.join(SKEL, "fixtures", "skeleton_fixtures.json")
-SOURCE_ROOTS = (
-    os.path.join(SKEL, "src"),
-    os.path.join(REPO_ROOT, "crates", "type_kernel", "src"),
-)
+SOURCE_ROOTS = (os.path.join(SKEL, "src"), os.path.join(REPO_ROOT, "crates", "type_kernel", "src"))
 
 PRIMITIVES = {
     "int": "builtins.int",
@@ -96,9 +93,7 @@ def code_path_counts(facts: list[str]) -> dict[str, int]:
     for fact in facts:
         if fact in PRIMITIVES.values():
             continue
-        counts[fact] = sum(
-            len(re.findall(re.escape('"' + fact + '"'), text)) for text in texts
-        )
+        counts[fact] = sum(len(re.findall(re.escape('"' + fact + '"'), text)) for text in texts)
     return counts
 
 
@@ -120,9 +115,7 @@ def build_report() -> dict:
     return {
         "facts": facts,
         "symbols": symbols,
-        "arms": [
-            {"id": arm_id, "arm": arm, "facts": used} for arm_id, arm, used in rows
-        ],
+        "arms": [{"id": arm_id, "arm": arm, "facts": used} for arm_id, arm, used in rows],
         "by_fact": {fact: by_fact[fact] for fact in sorted(by_fact)},
         "families": {fact: sorted(families[fact]) for fact in sorted(families)},
         "code_path_counts": code_path_counts(facts),
