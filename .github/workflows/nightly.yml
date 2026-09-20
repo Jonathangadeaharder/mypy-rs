@@ -41,36 +41,8 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Record Rust toolchain version
-        id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target dir (build-extensions entry)
-        # This job builds no Rust; target/ only matters when the extension
-        # cache misses and the composite action rebuilds, so it restores
-        # the exact entry build-extensions saved in this run.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target
-          # Keyed on crate sources + toolchain (#3). Prefix fallback may
-          # restore an older target/ (cargo rebuilds the delta); it stays
-          # rustc-scoped, so a toolchain bump never reuses stale objects.
-          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+      - name: Rust CI setup (toolchain + registry cache)
+        uses: ./.github/actions/rust-ci-setup
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
@@ -82,6 +54,7 @@ jobs:
         uses: ./.github/actions/native-extensions
         with:
           copy-to-workspace: "true"
+          restore-target: "true"
 
       - name: Build in-repo librt (F3 wire cache)
         run: |
@@ -116,27 +89,16 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Record Rust toolchain version
+      - name: Rust CI setup (toolchain + registry cache)
+        # clippy and rustfmt are part of the workspace checks below.
         id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: ./.github/actions/rust-ci-setup
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
+          components: "clippy, rustfmt"
 
       - name: Cache cargo target dir (debug workspace build)
+        # This job owns the debug cargo-target entry, so it keeps the
+        # save-capable actions/cache (#104): consumers restore-only.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target
@@ -144,9 +106,9 @@ jobs:
           # restore an older target/ (cargo rebuilds the delta); it stays
           # rustc-scoped, so a toolchain bump never reuses stale objects.
           key: cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: |
-            cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
-            cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+          # No cargo-ext fallback: this job never builds the release
+          # profile, so the extension target/ entry cannot be reused here.
+          restore-keys: cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
 
       - name: Install uv
         uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3

@@ -39,27 +39,15 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Record Rust toolchain version
+      - name: Rust CI setup (toolchain + registry cache)
         id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: ./.github/actions/rust-ci-setup
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
+          components: "clippy, rustfmt"
 
       - name: Cache cargo target dir (debug workspace build)
+        # This job owns the debug cargo-target entry, so it keeps the
+        # save-capable actions/cache (#104): consumers restore-only.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: target
@@ -67,6 +55,9 @@ jobs:
           # restore an older target/ (cargo rebuilds the delta); it stays
           # rustc-scoped, so a toolchain bump never reuses stale objects.
           key: cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
+          # The cargo-ext prefix stays (unlike nightly rust-workspace,
+          # #104): this job calls the native-extensions action, whose
+          # release rebuild on an extension miss reuses that target/.
           restore-keys: |
             cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
             cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
@@ -169,11 +160,9 @@ jobs:
         run: uv run python -m pytest mypy/test/testinfer.py -q
 
       - name: Skeleton fixture freshness (#91)
-        # Fail when committed fixtures/expected outputs are stale;
-        # MYPY_RS_EXT_DIRS points the generator (in-process build and
-        # regen subprocess) at the restored extension cache.
-        # Step-level bound (job cap is 90 min): a hung regeneration
-        # must not hold the runner for the whole job window.
+        # Fail when committed fixtures are stale; MYPY_RS_EXT_DIRS points
+        # the in-process build and regen subprocess at the restored cache;
+        # the step bound stops a hung regeneration holding the job window.
         timeout-minutes: 15
         env:
           MYPY_RS_EXT_DIRS: ${{ env.SCRATCH }}
