@@ -476,6 +476,11 @@ def main(argv: list[str] | None = None) -> int:
             f"unclassified={baseline.get('unclassified')}"
         )
         if args.update_baseline:
+            if problems:
+                for problem in problems:
+                    print(f"FAIL: {problem}")
+                print("refusing to ratchet: curate the seed and re-run")
+                return 1
             update_baseline(args.seed, seed, metrics)
             print(f"baseline updated in {args.seed}")
             return 0
