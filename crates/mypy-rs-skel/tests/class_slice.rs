@@ -421,6 +421,64 @@ fn vardecl_base_member_override_rejected() {
     );
 }
 
+/// The float/float binop table is explicit: only the vetted operators
+/// (Add, Mult, Mod; mypy-clean in the corpus and evidence runs) check
+/// as float, and any other operator on floats is rejected at lowering
+/// time, never silently tabulated by a wildcard arm.
+#[test]
+fn float_binop_operator_closure() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-float-binop");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32, &str); 4] = [
+        (
+            "float_add.py",
+            "def f(a: float, b: float) -> float:\n    return a + b\n",
+            0,
+            "",
+        ),
+        (
+            "float_mult.py",
+            "def f(a: float, b: float) -> float:\n    return a * b\n",
+            0,
+            "",
+        ),
+        (
+            "float_mod.py",
+            "def f(a: float, b: float) -> float:\n    return a % b\n",
+            0,
+            "",
+        ),
+        (
+            "float_sub.py",
+            "def f(a: float, b: float) -> float:\n    return a - b\n",
+            2,
+            "binary operator `-` is outside the skeleton subset",
+        ),
+    ];
+    for (name, source, code, expect) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if code == 2 {
+            assert!(output.stdout.is_empty(), "no stdout for {name}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(expect), "stderr for {name}: {stderr}");
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+            assert!(output.stderr.is_empty(), "stderr for {name}");
+        }
+    }
+}
 /// The int/bool fixture records close the literal promote path: int
 /// promotes to float (clean, as in mypy), str(int) is clean, a bool
 /// from an int literal renders the exact mypy bytes, and a binop pair

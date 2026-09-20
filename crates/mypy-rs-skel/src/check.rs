@@ -1568,9 +1568,11 @@ impl Driver {
                     ("builtins.str", "builtins.str", BinOpKind::Add) => {
                         instance("builtins.str", Vec::new())
                     }
-                    ("builtins.float", "builtins.float", _) => {
-                        instance("builtins.float", Vec::new())
-                    }
+                    (
+                        "builtins.float",
+                        "builtins.float",
+                        BinOpKind::Add | BinOpKind::Mult | BinOpKind::Mod,
+                    ) => instance("builtins.float", Vec::new()),
                     ("builtins.int", "builtins.int", BinOpKind::Mod) => {
                         instance("builtins.int", Vec::new())
                     }
