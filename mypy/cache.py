@@ -82,6 +82,8 @@ ErrorTuple: _TypeAlias = tuple[str | None, int, int, int, int, str, str, str | N
 # M4 cache seam: when type_kernel is importable and the cache gate is on,
 # CacheMeta/CacheMetaEx fixed-format reads route through Rust, falling back
 # to pure Python on any decode failure. Mirrors the solve seam (M3).
+from mypy.type_kernel_access import _stale_kernel_remedy
+
 try:
     import type_kernel as _type_kernel
 
@@ -112,7 +114,11 @@ def _try_native_read_cache_meta(blob: bytes, data_file: str) -> CacheMeta | None
     if not (_HAS_TYPE_KERNEL and _native_cache_active):
         return None
     try:
-        decoded = _type_kernel.rust_read_cache_meta(blob)
+        try:
+            rust_read_cache_meta_entry = _type_kernel.rust_read_cache_meta
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        decoded = rust_read_cache_meta_entry(blob)
     except (AssertionError, NotImplementedError, ValueError, OverflowError):
         return None
     if decoded is None:
@@ -148,7 +154,11 @@ def _try_native_read_cache_meta_ex(blob: bytes) -> CacheMetaEx | None:
     if not (_HAS_TYPE_KERNEL and _native_cache_active):
         return None
     try:
-        decoded = _type_kernel.rust_read_cache_meta_ex(blob)
+        try:
+            rust_read_cache_meta_ex_entry = _type_kernel.rust_read_cache_meta_ex
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        decoded = rust_read_cache_meta_ex_entry(blob)
     except (AssertionError, NotImplementedError, ValueError, OverflowError):
         return None
     if decoded is None:
@@ -174,7 +184,11 @@ def _try_native_write_cache_meta(meta: CacheMeta) -> bytes | None:
     if not (_HAS_TYPE_KERNEL and _native_cache_active):
         return None
     try:
-        return _type_kernel.rust_write_cache_meta(meta)
+        try:
+            rust_write_cache_meta_entry = _type_kernel.rust_write_cache_meta
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_write_cache_meta_entry(meta)
     except (AssertionError, NotImplementedError, ValueError, OverflowError):
         return None
 
@@ -184,7 +198,11 @@ def _try_native_write_cache_meta_ex(meta_ex: CacheMetaEx) -> bytes | None:
     if not (_HAS_TYPE_KERNEL and _native_cache_active):
         return None
     try:
-        return _type_kernel.rust_write_cache_meta_ex(meta_ex)
+        try:
+            rust_write_cache_meta_ex_entry = _type_kernel.rust_write_cache_meta_ex
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_write_cache_meta_ex_entry(meta_ex)
     except (AssertionError, NotImplementedError, ValueError, OverflowError):
         return None
 

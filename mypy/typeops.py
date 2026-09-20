@@ -38,6 +38,11 @@ from mypy.nodes import (
     Var,
 )
 from mypy.state import state
+
+# Stage 3e type-kernel seam: when the `type_kernel` Rust extension is
+# importable and `Options.native_type_kernel` is set, union / literal
+# helpers route through Rust, falling back to Python on `None`.
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.types import (
     _BUILTIN_INSTANCE_BYTES,
     ELLIPSIS_TYPE_NAMES,
@@ -88,9 +93,6 @@ from mypy.typestate import type_state
 from mypy.typetraverser import TypeTraverserVisitor
 from mypy.typevars import fill_typevars
 
-# Stage 3e type-kernel seam: when the `type_kernel` Rust extension is
-# importable and `Options.native_type_kernel` is set, union / literal
-# helpers route through Rust, falling back to Python on `None`.
 try:
     import type_kernel as _type_kernel
     from librt.internal import ReadBuffer as _ReadBuffer, WriteBuffer as _WriteBuffer
@@ -385,9 +387,11 @@ def tuple_fallback(typ: TupleType) -> Instance:
         return typ.partial_fallback
     if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
         try:
-            result = _type_kernel.rust_tuple_fallback(
-                _serialize_type(typ), _native_typeops_resolver
-            )
+            try:
+                rust_tuple_fallback_entry = _type_kernel.rust_tuple_fallback
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_tuple_fallback_entry(_serialize_type(typ), _native_typeops_resolver)
             if result is not None:
                 decoded = _deserialize_type(bytes(result))
                 if decoded is not None and isinstance(decoded, Instance):
@@ -517,7 +521,11 @@ def type_object_type(
     # the live TypeInfo; Python applies every side effect in the shim below.
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            classified = _type_kernel.rust_classify_type_object_type(info)
+            try:
+                rust_classify_type_object_type_entry = _type_kernel.rust_classify_type_object_type
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            classified = rust_classify_type_object_type_entry(info)
         except (AssertionError, NotImplementedError, ValueError):
             classified = None
         if classified is not None:
@@ -625,7 +633,11 @@ def is_valid_constructor(n: SymbolNode | None) -> bool:
     """
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            result = _type_kernel.rust_is_valid_constructor(n)
+            try:
+                rust_is_valid_constructor_entry = _type_kernel.rust_is_valid_constructor
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_is_valid_constructor_entry(n)
             if result is not None:
                 return result
         except (AssertionError, NotImplementedError, ValueError):
@@ -679,7 +691,13 @@ def type_object_type_from_function(
         from mypy.wirefixup import resync_var_identities
 
         try:
-            result = _type_kernel.rust_type_object_type_from_function(
+            try:
+                rust_type_object_type_from_function_entry = (
+                    _type_kernel.rust_type_object_type_from_function
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_type_object_type_from_function_entry(
                 _serialize_type(signature),
                 info,
                 def_info,
@@ -816,7 +834,11 @@ def class_callable(
         ):
             is_st = is_subtype(explicit_type, default_ret_type, ignore_type_params=True)
         try:
-            result = _type_kernel.rust_class_callable(
+            try:
+                rust_class_callable_entry = _type_kernel.rust_class_callable
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_class_callable_entry(
                 _serialize_type(init_type),
                 _serialize_type(explicit_type) if explicit_type is not None else None,
                 _serialize_type(default_ret_type),
@@ -934,7 +956,11 @@ def map_type_from_supertype(typ: Type, sub_info: TypeInfo, super_info: TypeInfo)
         and not _needs_python(typ, definition_gate=False)
     ):
         try:
-            result = _type_kernel.rust_map_type_from_supertype(
+            try:
+                rust_map_type_from_supertype_entry = _type_kernel.rust_map_type_from_supertype
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_map_type_from_supertype_entry(
                 _native_typeops_resolver,
                 sub_info,
                 super_info,
@@ -1013,7 +1039,11 @@ def supported_self_type(
     """
     if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
         try:
-            result = _type_kernel.rust_supported_self_type(
+            try:
+                rust_supported_self_type_entry = _type_kernel.rust_supported_self_type
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_supported_self_type_entry(
                 _serialize_type(typ), _native_typeops_resolver, allow_callable, allow_instances
             )
             if result is not None:
@@ -1096,7 +1126,11 @@ def bind_self(
     # path below is untouched.
     if not func.variables and _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            result = _type_kernel.rust_bind_self(_serialize_type(func))
+            try:
+                rust_bind_self_entry = _type_kernel.rust_bind_self
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_bind_self_entry(_serialize_type(func))
             if result is not None:
                 decoded = _deserialize_type(bytes(result))
                 if decoded is not None and isinstance(decoded, CallableType):
@@ -1273,7 +1307,11 @@ def make_simplified_union(
         and not any(_has_mutated_truthiness(item) for item in items)
     ):
         try:
-            result = _type_kernel.rust_make_simplified_union(
+            try:
+                rust_make_simplified_union_entry = _type_kernel.rust_make_simplified_union
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_make_simplified_union_entry(
                 _serialize_type_list(items),
                 line,
                 column,
@@ -1367,7 +1405,13 @@ def _remove_redundant_union_items(items: list[Type], keep_erased: bool) -> list[
                     )
                 )
                 mutated_any = mutated_any or bool(flags_blob[-1])
-            result = _type_kernel.rust_remove_redundant_union_items(
+            try:
+                rust_remove_redundant_union_items_entry = (
+                    _type_kernel.rust_remove_redundant_union_items
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_remove_redundant_union_items_entry(
                 _serialize_type_list(items),
                 bytes(flags_blob),
                 keep_erased,
@@ -1566,7 +1610,11 @@ def true_only(t: Type) -> ProperType:
     else:
         if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
             try:
-                result = _type_kernel.rust_true_only(_serialize_type(t), _native_typeops_resolver)
+                try:
+                    rust_true_only_entry = _type_kernel.rust_true_only
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_true_only_entry(_serialize_type(t), _native_typeops_resolver)
                 if result is not None:
                     interpreted = _interpret_truthiness_result(result, t)
                     if interpreted is not None:
@@ -1611,7 +1659,11 @@ def false_only(t: Type) -> ProperType:
     else:
         if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
             try:
-                result = _type_kernel.rust_false_only(
+                try:
+                    rust_false_only_entry = _type_kernel.rust_false_only
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_false_only_entry(
                     _serialize_type(t), state.strict_optional, _native_typeops_resolver
                 )
                 if result is not None:
@@ -1646,7 +1698,11 @@ def true_or_false(t: Type) -> ProperType:
 
     if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
         try:
-            result = _type_kernel.rust_true_or_false(_serialize_type(t), _native_typeops_resolver)
+            try:
+                rust_true_or_false_entry = _type_kernel.rust_true_or_false
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_true_or_false_entry(_serialize_type(t), _native_typeops_resolver)
             if result is not None:
                 interpreted = _interpret_truthiness_result(result, t)
                 if interpreted is not None:
@@ -1692,7 +1748,11 @@ def function_type(func: FuncBase, fallback: Instance) -> FunctionLike:
         return func.type
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            result = _type_kernel.rust_function_type(func, _serialize_type(fallback))
+            try:
+                rust_function_type_entry = _type_kernel.rust_function_type
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_function_type_entry(func, _serialize_type(fallback))
             if result is not None:
                 is_passthrough, wire_bytes = result
                 if is_passthrough:
@@ -1801,7 +1861,13 @@ def try_getting_str_literals_from_type(typ: Type) -> list[str] | None:
     """
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            wire = _type_kernel.rust_try_getting_str_literals_from_type(_serialize_type(typ))
+            try:
+                rust_try_getting_str_literals_from_type_entry = (
+                    _type_kernel.rust_try_getting_str_literals_from_type
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            wire = rust_try_getting_str_literals_from_type_entry(_serialize_type(typ))
             if wire is not None:
                 decided, result = wire
                 if decided:
@@ -1821,7 +1887,13 @@ def try_getting_int_literals_from_type(typ: Type) -> list[int] | None:
     """
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            wire = _type_kernel.rust_try_getting_int_literals_from_type(_serialize_type(typ))
+            try:
+                rust_try_getting_int_literals_from_type_entry = (
+                    _type_kernel.rust_try_getting_int_literals_from_type
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            wire = rust_try_getting_int_literals_from_type_entry(_serialize_type(typ))
             if wire is not None:
                 decided, result = wire
                 if decided:
@@ -1849,7 +1921,13 @@ def try_getting_literals_from_type(
         and target_fullname == "builtins.bool"
     ):
         try:
-            wire = _type_kernel.rust_try_getting_bool_literals_from_type(_serialize_type(typ))
+            try:
+                rust_try_getting_bool_literals_from_type_entry = (
+                    _type_kernel.rust_try_getting_bool_literals_from_type
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            wire = rust_try_getting_bool_literals_from_type_entry(_serialize_type(typ))
             if wire is not None:
                 decided, result = wire
                 if decided:
@@ -1957,7 +2035,13 @@ def try_expanding_sum_type_to_union(typ: Type, target_fullname: str | None) -> T
 
             # when the input carries mutated truthiness.
             if not _has_mutated_truthiness(typ):
-                result = _type_kernel.rust_try_expanding_sum_type_to_union(
+                try:
+                    rust_try_expanding_sum_type_to_union_entry = (
+                        _type_kernel.rust_try_expanding_sum_type_to_union
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_try_expanding_sum_type_to_union_entry(
                     _serialize_type(typ),
                     target_fullname,
                     state.strict_optional,
@@ -2014,7 +2098,13 @@ def try_contracting_literals_in_union(types: Sequence[Type]) -> list[ProperType]
     # nested unions before invoking, so item types are all proper.
     if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
         try:
-            raw = _type_kernel.rust_try_contracting_literals_in_union(
+            try:
+                rust_try_contracting_literals_in_union_entry = (
+                    _type_kernel.rust_try_contracting_literals_in_union
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            raw = rust_try_contracting_literals_in_union_entry(
                 _serialize_type_list(list(types)), _native_typeops_resolver
             )
             if raw is not None:
@@ -2065,9 +2155,11 @@ def coerce_to_literal(typ: Type) -> Type:
     # is unavailable, or on a TypeAliasType (no wire target).
     if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
         try:
-            result = _type_kernel.rust_coerce_to_literal(
-                _serialize_type(typ), _native_typeops_resolver
-            )
+            try:
+                rust_coerce_to_literal_entry = _type_kernel.rust_coerce_to_literal
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_coerce_to_literal_entry(_serialize_type(typ), _native_typeops_resolver)
             if result is not None:
                 decoded = _deserialize_type(bytes(result))
                 if decoded is not None:
@@ -2106,11 +2198,19 @@ def _rust_type_vars(tp: Type) -> list[TypeVarLikeType] | None:
             if _native_typeops_resolver is not None:
                 # Alias-bearing trees expand through the resolver snapshot
                 # (rust_get_type_vars); the plain byte entry defers on them.
-                result = _type_kernel.rust_get_type_vars_live(
+                try:
+                    rust_get_type_vars_live_entry = _type_kernel.rust_get_type_vars_live
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_get_type_vars_live_entry(
                     _native_typeops_resolver, _serialize_type(tp), False
                 )
             else:
-                result = _type_kernel.rust_get_type_vars(_serialize_type(tp), False)
+                try:
+                    rust_get_type_vars_entry = _type_kernel.rust_get_type_vars
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_get_type_vars_entry(_serialize_type(tp), False)
         except (AssertionError, NotImplementedError):
             return None
         if result is not None:
@@ -2176,7 +2276,11 @@ def custom_special_method(typ: Type, name: str, check_all: bool = False) -> bool
     """
     if _HAS_TYPE_KERNEL and _native_typeops_active and _native_typeops_resolver is not None:
         try:
-            result = _type_kernel.rust_custom_special_method(
+            try:
+                rust_custom_special_method_entry = _type_kernel.rust_custom_special_method
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_custom_special_method_entry(
                 _serialize_type(typ), name, check_all, _native_typeops_resolver
             )
             if result is not None:
@@ -2219,7 +2323,11 @@ def _rust_separate_union_literals(
     """
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            result = _type_kernel.rust_separate_union_literals(_serialize_type(t))
+            try:
+                rust_separate_union_literals_entry = _type_kernel.rust_separate_union_literals
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_separate_union_literals_entry(_serialize_type(t))
         except (AssertionError, NotImplementedError):
             return None
         if result is None:
@@ -2276,7 +2384,13 @@ def try_getting_instance_fallback(typ: Type) -> Instance | None:
             # Issue #1101 decided-None protocol: (True, blob) is the
             # fallback Instance bytes, (True, None) means the
             # `else: return None` tail decided natively, None defers.
-            result = _type_kernel.rust_try_getting_instance_fallback(
+            try:
+                rust_try_getting_instance_fallback_entry = (
+                    _type_kernel.rust_try_getting_instance_fallback
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_try_getting_instance_fallback_entry(
                 _serialize_type(typ), _native_typeops_resolver
             )
             if result is not None:
@@ -2325,7 +2439,11 @@ def _is_disjoint_base(info: TypeInfo) -> bool:
     # It either has the @disjoint_base decorator or defines nonempty __slots__.
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            return _type_kernel.rust_is_disjoint_base(info)
+            try:
+                rust_is_disjoint_base_entry = _type_kernel.rust_is_disjoint_base
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            return rust_is_disjoint_base_entry(info)
         except (AssertionError, NotImplementedError):
             pass
     if info.is_disjoint_base:
@@ -2360,7 +2478,13 @@ def can_have_shared_disjoint_base(instances: list[Instance]) -> bool:
     """
     if _HAS_TYPE_KERNEL and _native_typeops_active:
         try:
-            return _type_kernel.rust_can_have_shared_disjoint_base(instances)
+            try:
+                rust_can_have_shared_disjoint_base_entry = (
+                    _type_kernel.rust_can_have_shared_disjoint_base
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            return rust_can_have_shared_disjoint_base_entry(instances)
         except (AssertionError, NotImplementedError):
             pass
     # Ignore None disjoint bases (which are `object`).

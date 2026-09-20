@@ -19,6 +19,7 @@ from librt.internal import (
 )
 
 from mypy import errorcodes as codes
+from mypy.type_kernel_access import _stale_kernel_remedy
 
 try:
     import type_kernel as _type_kernel
@@ -1049,7 +1050,13 @@ class Errors:
         if _HAS_TYPE_KERNEL and _native_errors_active:
             try:
                 if self.options.pretty:
-                    return _type_kernel.rust_format_messages_default_pretty(
+                    try:
+                        rust_format_messages_default_pretty_entry = (
+                            _type_kernel.rust_format_messages_default_pretty
+                        )
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    return rust_format_messages_default_pretty_entry(
                         error_tuples,
                         source_lines,
                         self.options.show_column_numbers,
@@ -1057,7 +1064,11 @@ class Errors:
                         self.hide_error_codes,
                         True,
                     )
-                return _type_kernel.rust_format_messages_default(
+                try:
+                    rust_format_messages_default_entry = _type_kernel.rust_format_messages_default
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                return rust_format_messages_default_entry(
                     error_tuples,
                     self.options.show_column_numbers,
                     self.options.show_error_end,

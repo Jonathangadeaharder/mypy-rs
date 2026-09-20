@@ -15,6 +15,7 @@ from mypy.subtypes import (
     is_same_type,
     is_subtype,
 )
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.typeops import is_recursive_pair, make_simplified_union, tuple_fallback
 from mypy.types import (
     MYPYC_NATIVE_INT_NAMES,
@@ -88,7 +89,13 @@ def trivial_meet(s: Type, t: Type) -> ProperType:
         and not isinstance(t, ErasedType)
     ):
         try:
-            result = join._type_kernel.rust_trivial_meet(  # type: ignore[attr-defined]
+            try:
+                rust_trivial_meet_entry = (
+                    join._type_kernel.rust_trivial_meet  # type: ignore[attr-defined]
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_trivial_meet_entry(
                 join._serialize_type(s),
                 join._serialize_type(t),
                 False,  # ignore_type_params
@@ -176,7 +183,13 @@ def meet_types(s: Type, t: Type) -> ProperType:
         and not isinstance(t, ErasedType)
     ):
         try:
-            result = join._type_kernel.rust_meet_types(  # type: ignore[attr-defined]
+            try:
+                rust_meet_types_entry = (
+                    join._type_kernel.rust_meet_types  # type: ignore[attr-defined]
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_meet_types_entry(
                 join._serialize_type(s),
                 join._serialize_type(t),
                 state.strict_optional,
@@ -249,7 +262,13 @@ def narrow_declared_type(declared: Type, narrowed: Type) -> Type:
         and not isinstance(narrowed, PartialType)
     ):
         try:
-            encoded = join._type_kernel.rust_narrow_declared_type(  # type: ignore[attr-defined]
+            try:
+                rust_narrow_declared_type_entry = (
+                    join._type_kernel.rust_narrow_declared_type  # type: ignore[attr-defined]
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            encoded = rust_narrow_declared_type_entry(
                 join._serialize_type(declared),
                 join._serialize_type(narrowed),
                 state.strict_optional,
@@ -529,7 +548,13 @@ def is_overlapping_types(
         and not isinstance(right, PartialType)
     ):
         try:
-            result = join._type_kernel.rust_is_overlapping_types(  # type: ignore[attr-defined]
+            try:
+                rust_is_overlapping_types_entry = (
+                    join._type_kernel.rust_is_overlapping_types  # type: ignore[attr-defined]
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_is_overlapping_types_entry(
                 join._serialize_type(left),
                 join._serialize_type(right),
                 ignore_promotions,
@@ -729,7 +754,13 @@ def is_overlapping_types(
             and join._native_join_resolver is not None
         ):
             try:
-                result = join._type_kernel.rust_are_parameters_compatible(  # type: ignore[attr-defined]
+                try:
+                    rust_are_parameters_compatible_entry = (
+                        join._type_kernel.rust_are_parameters_compatible  # type: ignore[attr-defined]
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_are_parameters_compatible_entry(
                     join._serialize_type(left),
                     join._serialize_type(right),
                     False,  # is_proper_subtype
@@ -1249,7 +1280,13 @@ class TypeMeetVisitor(TypeVisitor[ProperType]):
             and join._native_join_resolver is not None
         ):
             try:
-                result = join._type_kernel.rust_meet_tuples(  # type: ignore[attr-defined]
+                try:
+                    rust_meet_tuples_entry = (
+                        join._type_kernel.rust_meet_tuples  # type: ignore[attr-defined]
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_meet_tuples_entry(
                     join._serialize_type(s),
                     join._serialize_type(t),
                     state.strict_optional,

@@ -72,6 +72,7 @@ from mypy.subtypes import (
     is_same_type,
     is_subtype,
 )
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.typeops import separate_union_literals
 from mypy.types import (
     _BUILTIN_INSTANCE_BYTES,
@@ -428,7 +429,11 @@ class MessageBuilder:
 
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                tag, op, matches = _type_kernel.rust_classify_has_no_attr(
+                try:
+                    rust_classify_has_no_attr_entry = _type_kernel.rust_classify_has_no_attr
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                tag, op, matches = rust_classify_has_no_attr_entry(
                     member,
                     isinstance(original_type, Instance),
                     isinstance(original_type, FunctionLike),
@@ -1144,7 +1149,11 @@ class MessageBuilder:
         )
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_invalid_index_type(index_str, expected_str, base_str)
+                try:
+                    rust_invalid_index_type_entry = _type_kernel.rust_invalid_index_type
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_invalid_index_type_entry(index_str, expected_str, base_str)
                 return self.fail(msg, context, code=code)
             except (AssertionError, NotImplementedError, ValueError):
                 pass
@@ -1172,7 +1181,11 @@ class MessageBuilder:
     ) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                result = _type_kernel.rust_too_few_arguments(
+                try:
+                    rust_too_few_arguments_entry = _type_kernel.rust_too_few_arguments
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_too_few_arguments_entry(
                     self.prefer_simple_messages(),
                     list(argument_names) if argument_names is not None else None,
                     list(callee.arg_names),
@@ -1209,7 +1222,11 @@ class MessageBuilder:
     def missing_named_argument(self, callee: CallableType, context: Context, name: str) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_missing_named_argument(name, for_function(callee))
+                try:
+                    rust_missing_named_argument_entry = _type_kernel.rust_missing_named_argument
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_missing_named_argument_entry(name, for_function(callee))
                 self.fail(msg, context, code=codes.CALL_ARG)
                 self.note_defined_here(callee, context)
                 return
@@ -1222,7 +1239,11 @@ class MessageBuilder:
     def too_many_arguments(self, callee: CallableType, context: Context) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_too_many_arguments(
+                try:
+                    rust_too_many_arguments_entry = _type_kernel.rust_too_many_arguments
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_too_many_arguments_entry(
                     self.prefer_simple_messages(), for_function(callee)
                 )
                 self.fail(msg, context, code=codes.CALL_ARG)
@@ -1253,7 +1274,13 @@ class MessageBuilder:
     def too_many_positional_arguments(self, callee: CallableType, context: Context) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_too_many_positional_arguments(
+                try:
+                    rust_too_many_positional_arguments_entry = (
+                        _type_kernel.rust_too_many_positional_arguments
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_too_many_positional_arguments_entry(
                     self.prefer_simple_messages(), for_function(callee)
                 )
                 self.fail(msg, context, code=codes.CALL_ARG_MISC)
@@ -1288,9 +1315,13 @@ class MessageBuilder:
     ) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_unexpected_keyword_argument_for_function(
-                    for_func, name, matches
-                )
+                try:
+                    rust_unexpected_keyword_argument_for_function_entry = (
+                        _type_kernel.rust_unexpected_keyword_argument_for_function
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_unexpected_keyword_argument_for_function_entry(for_func, name, matches)
                 self.fail(msg, context, code=codes.CALL_ARG)
                 return
             except (AssertionError, NotImplementedError, ValueError):
@@ -1510,7 +1541,13 @@ class MessageBuilder:
     ) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_wrong_number_values_to_unpack(provided, expected)
+                try:
+                    rust_wrong_number_values_to_unpack_entry = (
+                        _type_kernel.rust_wrong_number_values_to_unpack
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_wrong_number_values_to_unpack_entry(provided, expected)
                 if msg:
                     self.fail(msg, context)
                 return
@@ -1578,7 +1615,13 @@ class MessageBuilder:
         target = self.override_target(name, name_in_super, supertype)
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                error_msg = _type_kernel.rust_signature_incompatible_with_supertype(name, target)
+                try:
+                    rust_signature_incompatible_with_supertype_entry = (
+                        _type_kernel.rust_signature_incompatible_with_supertype
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                error_msg = rust_signature_incompatible_with_supertype_entry(name, target)
                 error = self.fail(error_msg, context, code=codes.OVERRIDE)
             except (AssertionError, NotImplementedError, ValueError):
                 error = self.fail(
@@ -1796,7 +1839,11 @@ class MessageBuilder:
     def undefined_in_superclass(self, member: str, context: Context) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_undefined_in_superclass(member)
+                try:
+                    rust_undefined_in_superclass_entry = _type_kernel.rust_undefined_in_superclass
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_undefined_in_superclass_entry(member)
                 self.fail(msg, context)
                 return
             except (AssertionError, NotImplementedError, ValueError):
@@ -2137,7 +2184,11 @@ class MessageBuilder:
     def signatures_incompatible(self, method: str, other_method: str, context: Context) -> None:
         if _HAS_TYPE_KERNEL and _native_messages_active:
             try:
-                msg = _type_kernel.rust_signatures_incompatible(method, other_method)
+                try:
+                    rust_signatures_incompatible_entry = _type_kernel.rust_signatures_incompatible
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                msg = rust_signatures_incompatible_entry(method, other_method)
                 self.fail(msg, context)
                 return
             except (AssertionError, NotImplementedError, ValueError):
@@ -2946,7 +2997,11 @@ class MessageBuilder:
 def quote_type_string(type_string: str) -> str:
     """Quotes a type representation for use in messages."""
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_quote_type_string(type_string)
+        try:
+            rust_quote_type_string_entry = _type_kernel.rust_quote_type_string
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_quote_type_string_entry(type_string)
     if (
         type_string in ["Module", "overloaded function", "<deleted>"]
         or type_string.startswith("Module ")
@@ -3275,9 +3330,11 @@ def find_type_overlaps(*types: Type) -> set[str]:
     """
     if _HAS_TYPE_KERNEL and _native_messages_active:
         try:
-            raw = _type_kernel.rust_find_type_overlaps(
-                [_serialize_type_for_messages(t) for t in types]
-            )
+            try:
+                rust_find_type_overlaps_entry = _type_kernel.rust_find_type_overlaps
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            raw = rust_find_type_overlaps_entry([_serialize_type_for_messages(t) for t in types])
             if raw is not None:
                 return set(raw)
         except (AssertionError, NotImplementedError, ValueError):
@@ -3379,7 +3436,11 @@ def format_type(
     """
     if _HAS_TYPE_KERNEL and _native_messages_active and _native_messages_resolver is not None:
         try:
-            result = _type_kernel.rust_format_type(
+            try:
+                rust_format_type_entry = _type_kernel.rust_format_type
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_format_type_entry(
                 _serialize_type_for_messages(typ),
                 _native_messages_resolver,
                 verbosity,
@@ -3411,7 +3472,11 @@ def format_type_bare(
     """
     if _HAS_TYPE_KERNEL and _native_messages_active and _native_messages_resolver is not None:
         try:
-            result = _type_kernel.rust_format_type_bare(
+            try:
+                rust_format_type_bare_entry = _type_kernel.rust_format_type_bare
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_format_type_bare_entry(
                 _serialize_type_for_messages(typ),
                 _native_messages_resolver,
                 verbosity,
@@ -3563,7 +3628,11 @@ def format_type_distinctly(*types: Type, options: Options, bare: bool = False) -
                 hints = [None] * len(types)
             else:
                 hints = plan_hints
-            result = _type_kernel.rust_format_type_distinctly(
+            try:
+                rust_format_type_distinctly_entry = _type_kernel.rust_format_type_distinctly
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_format_type_distinctly_entry(
                 type_bytes_list,
                 _native_messages_resolver,
                 bare,
@@ -3639,7 +3708,11 @@ def pretty_callable(tp: CallableType, options: Options, skip_self: bool = False)
         and get_func_def(tp) is None
     ):
         try:
-            result = _type_kernel.rust_pretty_callable(
+            try:
+                rust_pretty_callable_entry = _type_kernel.rust_pretty_callable
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_pretty_callable_entry(
                 _serialize_type_for_messages(tp),
                 _native_messages_resolver,
                 options.reveal_verbose_types,
@@ -3770,7 +3843,11 @@ def get_first_arg(tp: CallableType) -> str | None:
 
 def variance_string(variance: int) -> str:
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_variance_string(variance)
+        try:
+            rust_variance_string_entry = _type_kernel.rust_variance_string
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_variance_string_entry(variance)
     if variance == COVARIANT:
         return "covariant"
     elif variance == CONTRAVARIANT:
@@ -3884,7 +3961,11 @@ def get_bad_protocol_flags(
 def capitalize(s: str) -> str:
     """Capitalize the first character of a string."""
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_capitalize(s)
+        try:
+            rust_capitalize_entry = _type_kernel.rust_capitalize
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_capitalize_entry(s)
     if s == "":
         return ""
     else:
@@ -3897,7 +3978,11 @@ def extract_type(name: str) -> str:
     unmodified.
     """
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_extract_type(name)
+        try:
+            rust_extract_type_entry = _type_kernel.rust_extract_type
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_extract_type_entry(name)
     name = re.sub('^"[a-zA-Z0-9_]+" of ', "", name)
     return name
 
@@ -3905,7 +3990,11 @@ def extract_type(name: str) -> str:
 def strip_quotes(s: str) -> str:
     """Strip a double quote at the beginning and end of the string, if any."""
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_strip_quotes(s)
+        try:
+            rust_strip_quotes_entry = _type_kernel.rust_strip_quotes
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_strip_quotes_entry(s)
     s = re.sub('^"', "", s)
     s = re.sub('"$', "", s)
     return s
@@ -3914,7 +4003,11 @@ def strip_quotes(s: str) -> str:
 def format_string_list(lst: list[str]) -> str:
     assert lst
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        result = _type_kernel.rust_format_string_list(lst)
+        try:
+            rust_format_string_list_entry = _type_kernel.rust_format_string_list
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        result = rust_format_string_list_entry(lst)
         if result is not None:
             return result
     if len(lst) == 1:
@@ -3932,7 +4025,11 @@ def format_string_list(lst: list[str]) -> str:
 def format_item_name_list(s: Iterable[str]) -> str:
     lst = list(s)
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_format_item_name_list(lst)
+        try:
+            rust_format_item_name_list_entry = _type_kernel.rust_format_item_name_list
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_format_item_name_list_entry(lst)
     if len(lst) <= 5:
         return "(" + ", ".join([f'"{name}"' for name in lst]) + ")"
     else:
@@ -3943,7 +4040,11 @@ def callable_name(type: FunctionLike) -> str | None:
     if _HAS_TYPE_KERNEL and _native_messages_active:
         name = type.get_name()
         if name is not None:
-            result = _type_kernel.rust_callable_name(name)
+            try:
+                rust_callable_name_entry = _type_kernel.rust_callable_name
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_callable_name_entry(name)
             if result is not None:
                 return result
     name = type.get_name()
@@ -3956,7 +4057,11 @@ def for_function(callee: CallableType) -> str:
     if _HAS_TYPE_KERNEL and _native_messages_active:
         name = callee.get_name()
         if name is not None:
-            result = _type_kernel.rust_for_function(name)
+            try:
+                rust_for_function_entry = _type_kernel.rust_for_function
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_for_function_entry(name)
             if result is not None:
                 return result
     name = callable_name(callee)
@@ -3967,7 +4072,11 @@ def for_function(callee: CallableType) -> str:
 
 def wrong_type_arg_count(low: int, high: int, act: str, name: str) -> str:
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_wrong_type_arg_count(low, high, act, name)
+        try:
+            rust_wrong_type_arg_count_entry = _type_kernel.rust_wrong_type_arg_count
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_wrong_type_arg_count_entry(low, high, act, name)
     if low == high:
         s = f"{low} type arguments"
         if low == 0:
@@ -4055,7 +4164,11 @@ def pretty_seq(args: Sequence[str], conjunction: str) -> str:
     if _HAS_SUGGESTIONS_KERNEL and _native_suggestions_active:
         return _rust_pretty_seq(list(args), conjunction)
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_pretty_seq(list(args), conjunction)
+        try:
+            rust_pretty_seq_entry = _type_kernel.rust_pretty_seq
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_pretty_seq_entry(list(args), conjunction)
     if not args:
         return ""
     quoted = ['"' + a + '"' for a in args]
@@ -4087,7 +4200,13 @@ def append_invariance_notes(
                 if len(arg_args) >= 2 and len(exp_args) >= 2:
                     key_same_result = is_same_type(arg_args[0], exp_args[0])
                     val_subtype_result = is_subtype(arg_args[1], exp_args[1])
-            result = _type_kernel.rust_append_invariance_notes_live(
+            try:
+                rust_append_invariance_notes_live_entry = (
+                    _type_kernel.rust_append_invariance_notes_live
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_append_invariance_notes_live_entry(
                 arg_type, expected_type, arg_subtype_result, key_same_result, val_subtype_result
             )
             if result is not None:
@@ -4096,7 +4215,11 @@ def append_invariance_notes(
             pass
         if _native_messages_resolver is not None:
             try:
-                result = _type_kernel.rust_append_invariance_notes(
+                try:
+                    rust_append_invariance_notes_entry = _type_kernel.rust_append_invariance_notes
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_append_invariance_notes_entry(
                     _serialize_type_for_messages(arg_type),
                     _serialize_type_for_messages(expected_type),
                     _native_messages_resolver,
@@ -4139,7 +4262,11 @@ def append_union_note(
     """Point to specific union item(s) that may cause failure in subtype check."""
     if _HAS_TYPE_KERNEL and _native_messages_active and _native_messages_resolver is not None:
         try:
-            result = _type_kernel.rust_append_union_note(
+            try:
+                rust_append_union_note_entry = _type_kernel.rust_append_union_note
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_append_union_note_entry(
                 _serialize_type_for_messages(arg_type),
                 _serialize_type_for_messages(expected_type),
                 _native_messages_resolver,
@@ -4168,15 +4295,21 @@ def append_numbers_notes(
     """Explain if an unsupported type from "numbers" is used in a subtype check."""
     if _HAS_TYPE_KERNEL and _native_messages_active:
         try:
-            result = _type_kernel.rust_append_numbers_notes_live(expected_type)
+            try:
+                rust_append_numbers_notes_live_entry = _type_kernel.rust_append_numbers_notes_live
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_append_numbers_notes_live_entry(expected_type)
             if result is not None:
                 return notes + result
         except (AssertionError, NotImplementedError):
             pass
         try:
-            result = _type_kernel.rust_append_numbers_notes(
-                _serialize_type_for_messages(expected_type)
-            )
+            try:
+                rust_append_numbers_notes_entry = _type_kernel.rust_append_numbers_notes
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_append_numbers_notes_entry(_serialize_type_for_messages(expected_type))
             if result is not None:
                 return notes + result
         except (AssertionError, NotImplementedError):
@@ -4207,7 +4340,13 @@ def make_inferred_type_note(
                     is_subtype(sub_arg, sup_arg)
                     for sub_arg, sup_arg in zip(subtype.args, supertype.args)
                 ]
-                if _type_kernel.rust_make_inferred_type_note_live(
+                try:
+                    rust_make_inferred_type_note_live_entry = (
+                        _type_kernel.rust_make_inferred_type_note_live
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                if rust_make_inferred_type_note_live_entry(
                     subtype, supertype, arg_results, context
                 ):
                     assert isinstance(context, ReturnStmt)
@@ -4242,7 +4381,11 @@ def make_inferred_type_note(
 
 def format_key_list(keys: list[str], *, short: bool = False) -> str:
     if _HAS_TYPE_KERNEL and _native_messages_active:
-        return _type_kernel.rust_format_key_list(keys, short)
+        try:
+            rust_format_key_list_entry = _type_kernel.rust_format_key_list
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_format_key_list_entry(keys, short)
     formatted_keys = [f'"{key}"' for key in keys]
     td = "" if short else "TypedDict "
     if len(keys) == 0:

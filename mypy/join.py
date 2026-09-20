@@ -18,6 +18,11 @@ from mypy.subtypes import (
     is_protocol_implementation,
     is_subtype,
 )
+
+# Stage 3c (M8d) type-kernel seam: when type_kernel is importable
+# and a resolver is installed, trivial_join routes through Rust.
+# Rust returns None for unhandled (non-Instance right).
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.types import (
     _BUILTIN_INSTANCE_BYTES,
     AnyType,
@@ -64,9 +69,6 @@ from mypy.types import (
     split_with_prefix_and_suffix,
 )
 
-# Stage 3c (M8d) type-kernel seam: when type_kernel is importable
-# and a resolver is installed, trivial_join routes through Rust.
-# Rust returns None for unhandled (non-Instance right).
 try:
     import type_kernel as _type_kernel
     from librt.internal import ReadBuffer as _ReadBuffer, WriteBuffer as _WriteBuffer
@@ -183,9 +185,11 @@ def _try_native_object_or_any_from_type(typ: ProperType) -> ProperType | None:
     pure-Python body runs unchanged (strangler-fig per-call gate).
     """
     try:
-        result = _type_kernel.rust_object_or_any_from_type(
-            _serialize_type(typ), _native_join_resolver
-        )
+        try:
+            rust_object_or_any_from_type_entry = _type_kernel.rust_object_or_any_from_type
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        result = rust_object_or_any_from_type_entry(_serialize_type(typ), _native_join_resolver)
     except (AssertionError, NotImplementedError, ValueError, AttributeError):
         return None
     if result is None:
@@ -202,7 +206,11 @@ def _try_native_combine_similar_callables(t: CallableType, s: CallableType) -> C
     body.
     """
     try:
-        result = _type_kernel.rust_combine_similar_callables(
+        try:
+            rust_combine_similar_callables_entry = _type_kernel.rust_combine_similar_callables
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        result = rust_combine_similar_callables_entry(
             _serialize_type(t), _serialize_type(s), state.strict_optional, _native_join_resolver
         )
     except (AssertionError, NotImplementedError, ValueError, AttributeError):
@@ -225,7 +233,11 @@ class InstanceJoiner:
             and (s, t) not in self.seen_instances
         ):
             try:
-                native_result = _type_kernel.rust_join_instances(
+                try:
+                    rust_join_instances_entry = _type_kernel.rust_join_instances
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                native_result = rust_join_instances_entry(
                     _serialize_type(t),
                     _serialize_type(s),
                     state.strict_optional,
@@ -452,7 +464,11 @@ def trivial_join(s: Type, t: Type) -> Type:
         and not isinstance(t, ErasedType)
     ):
         try:
-            result = _type_kernel.rust_trivial_join(
+            try:
+                rust_trivial_join_entry = _type_kernel.rust_trivial_join
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_trivial_join_entry(
                 _serialize_type(s),
                 _serialize_type(t),
                 False,  # ignore_type_params
@@ -534,7 +550,11 @@ def join_types(s: Type, t: Type, instance_joiner: InstanceJoiner | None = None) 
         and not isinstance(t, ErasedType)
     ):
         try:
-            result = _type_kernel.rust_join_types(
+            try:
+                rust_join_types_entry = _type_kernel.rust_join_types
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_join_types_entry(
                 _serialize_type(s),
                 _serialize_type(t),
                 state.strict_optional,
@@ -898,7 +918,11 @@ class TypeJoinVisitor(TypeVisitor[ProperType]):
         # Rust returns None for unhandled cases (defer to Python).
         if _HAS_TYPE_KERNEL and _native_join_active and _native_join_resolver is not None:
             try:
-                result = _type_kernel.rust_join_tuples(
+                try:
+                    rust_join_tuples_entry = _type_kernel.rust_join_tuples
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_join_tuples_entry(
                     _serialize_type(s),
                     _serialize_type(t),
                     state.strict_optional,
@@ -1206,7 +1230,11 @@ def is_better(t: Type, s: Type) -> bool:
         and not isinstance(s, ErasedType)
     ):
         try:
-            result = _type_kernel.rust_is_better(
+            try:
+                rust_is_better_entry = _type_kernel.rust_is_better
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_is_better_entry(
                 _serialize_type(t), _serialize_type(s), _native_join_resolver
             )
         except (AssertionError, NotImplementedError, ValueError, AttributeError):
@@ -1277,7 +1305,11 @@ def _try_native_match_generic_callables(
     body runs unchanged (strangler-fig per-call gate).
     """
     try:
-        result = _type_kernel.rust_match_generic_callables(
+        try:
+            rust_match_generic_callables_entry = _type_kernel.rust_match_generic_callables
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        result = rust_match_generic_callables_entry(
             max(len(t.variables), len(s.variables)),
             TypeVarId.next_raw_id,
             _serialize_type(t),
@@ -1460,9 +1492,11 @@ def _try_native_object_from_instance(instance: Instance) -> Instance | None:
     unchanged (strangler-fig per-call gate).
     """
     try:
-        result = _type_kernel.rust_object_from_instance(
-            _serialize_type(instance), _native_join_resolver
-        )
+        try:
+            rust_object_from_instance_entry = _type_kernel.rust_object_from_instance
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        result = rust_object_from_instance_entry(_serialize_type(instance), _native_join_resolver)
     except (AssertionError, NotImplementedError, ValueError, AttributeError):
         return None
     if result is None:
@@ -1525,9 +1559,11 @@ def join_type_list(types: Sequence[Type]) -> Type:
     if _HAS_TYPE_KERNEL and _native_join_active and _native_join_resolver is not None:
         try:
             blobs = [_serialize_type(t) for t in types]
-            result = _type_kernel.rust_join_type_list(
-                blobs, state.strict_optional, _native_join_resolver
-            )
+            try:
+                rust_join_type_list_entry = _type_kernel.rust_join_type_list
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_join_type_list_entry(blobs, state.strict_optional, _native_join_resolver)
             if result is not None:
                 decoded = _deserialize_type(bytes(result))
                 if decoded is not None:

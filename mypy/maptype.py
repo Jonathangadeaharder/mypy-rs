@@ -47,6 +47,8 @@ def _clear_map_supertype_decode_cache() -> None:
     _map_supertype_decode_cache.clear()
 
 
+from mypy.type_kernel_access import _stale_kernel_remedy
+
 try:
     import type_kernel as _type_kernel
     from librt.internal import ReadBuffer as _ReadBuffer, WriteBuffer as _WriteBuffer
@@ -172,7 +174,11 @@ def _native_map_instance_to_supertype(instance: Instance, superclass: TypeInfo) 
     ):
         return None
     try:
-        result = _type_kernel.rust_map_instance_to_supertype(
+        try:
+            rust_map_instance_to_supertype_entry = _type_kernel.rust_map_instance_to_supertype
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        result = rust_map_instance_to_supertype_entry(
             _native_map_resolver,
             instance.type.fullname,
             _serialize_type(instance),
@@ -289,7 +295,11 @@ def _native_map_step_frontier(
     try:
         buf = _WriteBuffer()
         write_type_list(buf, supported)
-        result = _type_kernel.rust_map_instance_to_supertypes(
+        try:
+            rust_map_instance_to_supertypes_entry = _type_kernel.rust_map_instance_to_supertypes
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        result = rust_map_instance_to_supertypes_entry(
             _native_map_resolver, buf.getvalue(), supertype.fullname
         )
         if result is None:

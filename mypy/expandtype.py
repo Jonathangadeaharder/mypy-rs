@@ -129,6 +129,8 @@ def _needs_python(typ: Type, *, definition_gate: bool = True) -> bool:
     return False
 
 
+from mypy.type_kernel_access import _stale_kernel_remedy
+
 try:
     import type_kernel as _type_kernel
     from librt.internal import (
@@ -441,7 +443,11 @@ def expand_type_by_instance(typ: Type, instance: Instance) -> Type:
             and not any(_needs_python(a, definition_gate=False) for a in instance.args)
         ):
             try:
-                result = _type_kernel.rust_expand_type_by_instance(
+                try:
+                    rust_expand_type_by_instance_entry = _type_kernel.rust_expand_type_by_instance
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_expand_type_by_instance_entry(
                     _native_expand_type_resolver,
                     _serialize_type(typ),
                     _serialize_type(instance),
@@ -596,7 +602,13 @@ def freshen_all_functions_type_vars(t: T) -> T:
             and not _needs_python(t, definition_gate=False)
         ):
             try:
-                call = _type_kernel.rust_freshen_all_functions_type_vars(
+                try:
+                    rust_freshen_all_functions_type_vars_entry = (
+                        _type_kernel.rust_freshen_all_functions_type_vars
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                call = rust_freshen_all_functions_type_vars_entry(
                     TypeVarId.next_raw_id,
                     _serialize_type(t),
                     state.strict_optional,
@@ -1147,7 +1159,11 @@ def remove_trivial(types: Iterable[Type]) -> list[Type]:
 
             buf = _WriteBuffer()
             write_type_list(buf, types_list)
-            result = _type_kernel.rust_remove_trivial(buf.getvalue(), state.strict_optional)
+            try:
+                rust_remove_trivial_entry = _type_kernel.rust_remove_trivial
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_remove_trivial_entry(buf.getvalue(), state.strict_optional)
             if result is not None:
                 raw = bytes(result)
                 cached = _expand_remove_trivial_cache.get(raw)

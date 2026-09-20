@@ -4,6 +4,11 @@ from typing import cast
 
 from mypy.erasetype import erase_typevars
 from mypy.nodes import TypeInfo
+
+# Stage 6c type-kernel seam: with the gate active, has_no_typevars and
+# fill_typevars_with_any route through Rust (None = unsupported, fall back).
+# fill_typevars is pure Python again: #1739 retired its losing shim.
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.types import (
     Instance,
     ParamSpecType,
@@ -19,9 +24,6 @@ from mypy.types import (
 )
 from mypy.typevartuples import erased_vars
 
-# Stage 6c type-kernel seam: with the gate active, has_no_typevars and
-# fill_typevars_with_any route through Rust (None = unsupported, fall back).
-# fill_typevars is pure Python again: #1739 retired its losing shim.
 try:
     import type_kernel as _type_kernel
     from librt.internal import ReadBuffer as _ReadBuffer, WriteBuffer as _WriteBuffer
@@ -137,7 +139,11 @@ def fill_typevars_with_any(typ: TypeInfo) -> Instance | TupleType:
     # tuple-erasure predicate, so its fallback carries the erased args.
     if _HAS_TYPE_KERNEL and _native_typevars_active:
         try:
-            result = _type_kernel.rust_fill_typevars_with_any(typ)
+            try:
+                rust_fill_typevars_with_any_entry = _type_kernel.rust_fill_typevars_with_any
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_fill_typevars_with_any_entry(typ)
             if result is not None:
                 decoded = _native_decode_well_formed(bytes(result))
                 if decoded is not None:
@@ -167,7 +173,11 @@ def has_no_typevars(typ: Type) -> bool:
         try:
             buf = _WriteBuffer()
             typ.write(buf)
-            result = _type_kernel.rust_has_no_typevars(buf.getvalue())
+            try:
+                rust_has_no_typevars_entry = _type_kernel.rust_has_no_typevars
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_has_no_typevars_entry(buf.getvalue())
             if result is not None:
                 return result
         except (NotImplementedError, AssertionError):
