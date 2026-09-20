@@ -8,7 +8,7 @@ interpreter startup, mypy imports and loop machinery cancel:
     per-call instructions = (instr(op run) - instr(control run)) / N
 
 Instructions come from /usr/bin/time -l ("instructions retired"), which is
-load-invariant. Each bench subprocess asserts, before and after the measured
+load-invariant. Each bench subprocess checks, before and after the measured
 loop, that the operation actually did its work (wire cache grew, counters
 moved, expected return values), so a bench cannot silently measure a no-op;
 the parent exits non-zero if any engagement check fails.
@@ -86,7 +86,7 @@ def run_measured(child_args: list[str], env: dict[str, str]) -> int:
         raise SystemExit(f"bench subprocess failed: {child_args}")
     for line in proc.stderr.splitlines():
         if "instructions retired" in line:
-            return int(line.split()[0].replace(",", "."))
+            return int(line.split()[0].replace(",", ""))
     raise SystemExit(f"no instructions line for {child_args}: {proc.stderr[-2000:]}")
 
 
@@ -146,6 +146,12 @@ def parent() -> int:
 
 def noop(*args: object) -> None:
     return None
+
+
+def require(cond: object, msg: str) -> None:
+    """Engagement check; a bare assert would vanish under python -O."""
+    if not cond:
+        raise SystemExit(f"engagement check failed: {msg}")
 
 
 # One measured-loop helper per call arity: a shared tail would union every
@@ -226,19 +232,22 @@ def child(name: str, iters: int, control: bool) -> int:
                 and not isinstance(r, ErasedType)
             )
 
-        assert gate(l) is True, "gate unexpectedly false"
+        require(gate(l) is True, "gate unexpectedly false")
         loop1(iters, control, gate, (l,))
 
     elif name == "ser_hit":
         info = fixture_info("mod.A")
         t = types.Instance(info, [])
         b1 = subtypes._serialize_type(t)
-        assert isinstance(b1, bytes) and b1, "prewarm failed"
+        require(isinstance(b1, bytes) and b1, "prewarm failed")
         before = len(subtypes._type_wire_cache)
         for _ in range(3):
             subtypes._serialize_type(t)
-        assert len(subtypes._type_wire_cache) == before, "hit path wrote to the cache"
-        assert subtypes._type_wire_cache.get(id(t), (None,))[1] is b1 or before >= 1
+        require(len(subtypes._type_wire_cache) == before, "hit path wrote to the cache")
+        require(
+            subtypes._type_wire_cache.get(id(t), (None,))[1] is b1 or before >= 1,
+            "hit path did not serve the prewarmed blob",
+        )
         loop1(iters, control, subtypes._serialize_type, (t,))
 
     elif name == "ser_miss_any":
@@ -251,7 +260,7 @@ def child(name: str, iters: int, control: bool) -> int:
             return subtypes._serialize_type(objs[i])
 
         ser_any(None)
-        assert len(subtypes._type_wire_cache) >= 1, "miss path did not populate the cache"
+        require(len(subtypes._type_wire_cache) >= 1, "miss path did not populate the cache")
         loop1(iters, control, ser_any, (None,))
 
     elif name == "ser_miss_instance":
@@ -265,18 +274,18 @@ def child(name: str, iters: int, control: bool) -> int:
             return subtypes._serialize_type(objs[i])
 
         ser_inst(None)
-        assert len(subtypes._type_wire_cache) >= 1, "miss path did not populate the cache"
+        require(len(subtypes._type_wire_cache) >= 1, "miss path did not populate the cache")
         loop1(iters, control, ser_inst, (None,))
 
     elif name == "ser_visitor_hit":
         info = fixture_info("mod.A")
         t = types.Instance(info, [])
         b1 = types._serialize_type_for_visitor(t)
-        assert isinstance(b1, bytes) and b1
+        require(isinstance(b1, bytes) and b1, "prewarm failed")
         before = len(types._type_wire_cache)
         for _ in range(3):
             types._serialize_type_for_visitor(t)
-        assert len(types._type_wire_cache) == before, "hit path wrote to the cache"
+        require(len(types._type_wire_cache) == before, "hit path wrote to the cache")
         loop1(iters, control, types._serialize_type_for_visitor, (t,))
 
     elif name == "ser_visitor_miss":
@@ -290,7 +299,7 @@ def child(name: str, iters: int, control: bool) -> int:
             return types._serialize_type_for_visitor(objs[i])
 
         ser_v(None)
-        assert len(types._type_wire_cache) >= 1, "miss path did not populate the cache"
+        require(len(types._type_wire_cache) >= 1, "miss path did not populate the cache")
         loop1(iters, control, ser_v, (None,))
 
     elif name == "wire_store":
@@ -302,7 +311,7 @@ def child(name: str, iters: int, control: bool) -> int:
             types._type_wire_cache[k] = (None, b"x", None)
 
         store(None)
-        assert len(types._type_wire_cache) >= 1, "store did not run"
+        require(len(types._type_wire_cache) >= 1, "store did not run")
         loop1(iters, control, store, (None,))
 
     elif name == "content_probe":
@@ -312,7 +321,7 @@ def child(name: str, iters: int, control: bool) -> int:
         def probe(t: object) -> bool:
             return key in subtypes._subtype_answers
 
-        assert probe(key) is True, "probe missed a present key"
+        require(probe(key) is True, "probe missed a present key")
         loop1(iters, control, probe, (key,))
 
     elif name == "content_store":
@@ -321,14 +330,14 @@ def child(name: str, iters: int, control: bool) -> int:
             subtypes._subtype_answers[(b"l", t, (False,) * 6)] = True
 
         cstore(b"r")
-        assert len(subtypes._subtype_answers) >= 1, "store did not run"
+        require(len(subtypes._subtype_answers) >= 1, "store did not run")
         loop1(iters, control, cstore, (b"r",))
 
     elif name == "pyo3_noarg":
         import type_kernel as tk
 
         v = tk.rust_checker_driver_counters()
-        assert isinstance(v, tuple) and len(v) == 9, f"unexpected counters {v!r}"
+        require(isinstance(v, tuple) and len(v) == 9, f"unexpected counters {v!r}")
         loop0(iters, control, tk.rust_checker_driver_counters, ())
 
     elif name == "pyo3_1arg":
@@ -337,7 +346,7 @@ def child(name: str, iters: int, control: bool) -> int:
         before = tk.rust_checker_driver_counters()[0]
         tk.rust_checker_driver_record(0)
         after = tk.rust_checker_driver_counters()[0]
-        assert after == before + 1, "counter did not move"
+        require(after == before + 1, "counter did not move")
         loop1(iters, control, tk.rust_checker_driver_record, (0,))
 
     elif name == "pyo3_13args":
@@ -353,12 +362,12 @@ def child(name: str, iters: int, control: bool) -> int:
         rb = subtypes._serialize_type(inst)
         args = (lb, rb, False, False, False, False, False, False, False, False, resolver, False)
         code = tk.rust_is_subtype_coded(*args)
-        assert code == 1, f"identity pair not decided natively: {code}"
+        require(code == 1, f"identity pair not decided natively: {code}")
 
         def coded13(*a: object) -> int:
             return tk.rust_is_subtype_coded(*a)  # type: ignore[attr-defined]
 
-        assert coded13(*args) == 1, "crossing stopped answering"
+        require(coded13(*args) == 1, "crossing stopped answering")
         loop13(iters, control, coded13, args)
 
     elif name == "callback_r2p":
@@ -369,9 +378,10 @@ def child(name: str, iters: int, control: bool) -> int:
                 return False
 
         reg = Reg()
-        assert (
-            tk.rust_resolve_plugin_hook(reg, "mod.A.f", [], "get_function_hook") is None
-        ), "expected None from the Rust callback path"
+        require(
+            tk.rust_resolve_plugin_hook(reg, "mod.A.f", [], "get_function_hook") is None,
+            "expected None from the Rust callback path",
+        )
         loop4(
             iters, control, tk.rust_resolve_plugin_hook, (reg, "mod.A.f", [], "get_function_hook")
         )
@@ -383,7 +393,10 @@ def child(name: str, iters: int, control: bool) -> int:
                 return False
 
         reg = Reg()
-        assert reg.has_hook_for("get_function_hook", "mod.A.f") is False
+        require(
+            reg.has_hook_for("get_function_hook", "mod.A.f") is False,
+            "expected has_hook_for to answer False",
+        )
         loop2(iters, control, reg.has_hook_for, ("get_function_hook", "mod.A.f"))
 
     elif name.startswith("is_subtype_e2e_"):
@@ -409,10 +422,10 @@ def child(name: str, iters: int, control: bool) -> int:
             subtypes._set_native_subtype_active(name.endswith("_on"))
             subtypes._set_native_subtype_resolver(resolver)
             la, ra = types.Instance(info_b, []), types.Instance(info_a, [])
-            assert subtypes.is_subtype(la, ra) is True, "warm call failed"
+            require(subtypes.is_subtype(la, ra) is True, "warm call failed")
             if name.endswith("_on"):
-                assert len(subtypes._subtype_answers) >= 1, "native path did not engage"
-            assert subtypes.is_subtype(la, ra) is True
+                require(len(subtypes._subtype_answers) >= 1, "native path did not engage")
+            require(subtypes.is_subtype(la, ra) is True, "warm call failed")
             loop2(iters, control, subtypes.is_subtype, (la, ra))
         else:  # distinct
             infos = [sub_info(f"mod.C{i}") for i in range(iters + 1)]
@@ -430,9 +443,11 @@ def child(name: str, iters: int, control: bool) -> int:
                 idx[0] = i + 1
                 return subtypes.is_subtype(pairs[i][0], pairs[i][1])
 
-            assert e2e(None) is True, "first distinct call failed"
+            require(e2e(None) is True, "first distinct call failed")
             if name.endswith("_on"):
-                assert len(subtypes._subtype_answers) >= 1, "native distinct path did not engage"
+                require(
+                    len(subtypes._subtype_answers) >= 1, "native distinct path did not engage"
+                )
             idx[0] = 0  # re-measure pair 0 too; identical work either way
             loop1(iters, control, e2e, (None,))
     else:

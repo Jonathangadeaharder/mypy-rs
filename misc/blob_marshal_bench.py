@@ -9,7 +9,7 @@ loop machinery cancel:
     per-call instructions = (instr(op run) - instr(control run)) / N
 
 Instructions come from /usr/bin/time -l ("instructions retired"), which is
-load-invariant. Each bench subprocess asserts, before the measured loop,
+load-invariant. Each bench subprocess checks, before the measured loop,
 that the operation actually did its work (codes match the 12-arg coded
 entry on a true pair and a false pair, the blob layout parses, counters
 moved), so a bench cannot silently measure a no-op; the parent exits
@@ -91,9 +91,25 @@ def parent() -> int:
     default_iters = None
     reps = 3
     if "--iters" in sys.argv:
-        default_iters = int(sys.argv[sys.argv.index("--iters") + 1])
+        _iters_idx = sys.argv.index("--iters") + 1
+        if _iters_idx >= len(sys.argv):
+            raise SystemExit("--iters requires a positive integer")
+        try:
+            default_iters = int(sys.argv[_iters_idx])
+        except ValueError:
+            raise SystemExit(f"--iters needs an integer, got {sys.argv[_iters_idx]!r}") from None
+        if default_iters <= 0:
+            raise SystemExit(f"--iters must be positive, got {default_iters}")
     if "--reps" in sys.argv:
-        reps = int(sys.argv[sys.argv.index("--reps") + 1])
+        _reps_idx = sys.argv.index("--reps") + 1
+        if _reps_idx >= len(sys.argv):
+            raise SystemExit("--reps requires a positive integer")
+        try:
+            reps = int(sys.argv[_reps_idx])
+        except ValueError:
+            raise SystemExit(f"--reps needs an integer, got {sys.argv[_reps_idx]!r}") from None
+        if reps <= 0:
+            raise SystemExit(f"--reps must be positive, got {reps}")
     if not os.path.exists(TK_SO):
         raise SystemExit(f"every bench needs the scratch type_kernel .so at {TK_SO}")
     os.makedirs(OUT_DIR, exist_ok=True)
@@ -124,6 +140,12 @@ def parent() -> int:
 
 def noop(*args: object) -> None:
     return None
+
+
+def require(cond: object, msg: str) -> None:
+    """Engagement check; a bare assert would vanish under python -O."""
+    if not cond:
+        raise SystemExit(f"engagement check failed: {msg}")
 
 
 # One measured-loop helper per call arity (as in gap_attrib_microbench.py):
@@ -185,7 +207,7 @@ def build_blob(lb: bytes, rb: bytes, mask: int) -> bytes:
 def kernel_fixtures():
     """The true/false pair, coded args and blobs every kernel bench shares.
 
-    Engagement is cross-checked, not just asserted: the blob entry must
+    Engagement is cross-checked against the coded entry: the blob entry must
     answer exactly what the 12-arg coded entry answers on both pairs.
     """
     import type_kernel as tk
@@ -201,7 +223,7 @@ def kernel_fixtures():
     inst_c = types.Instance(info_c, [])
     lb_a = subtypes._serialize_type(inst_a)
     lb_c = subtypes._serialize_type(inst_c)
-    assert isinstance(lb_a, bytes) and lb_a, "serialization failed"
+    require(isinstance(lb_a, bytes) and lb_a, "serialization failed")
     # Same argument shape as the #61 pyo3_13args bench: identity pair,
     # every context flag False, infer_unions False -> mask 0.
     true_args = (
@@ -235,12 +257,12 @@ def kernel_fixtures():
     true_blob = build_blob(lb_a, lb_a, 0)
     false_blob = build_blob(lb_c, lb_a, 0)
     blob_entry = tk.rust_is_subtype_blob_bench
-    assert tk.rust_is_subtype_coded(*true_args) == 1, "coded true pair not decided natively"
-    assert tk.rust_is_subtype_coded(*false_args) == 0, "coded false pair not decided natively"
-    assert blob_entry(true_blob, resolver) == 1, "blob true pair disagrees with coded entry"
-    assert blob_entry(false_blob, resolver) == 0, "blob false pair disagrees with coded entry"
-    assert blob_entry(b"\x00\x00", resolver) == -1, "short blob must defer (code -1)"
-    assert true_blob == _BLOB_HDR.pack(0, len(lb_a)) + lb_a + lb_a, "blob layout drifted"
+    require(tk.rust_is_subtype_coded(*true_args) == 1, "coded true pair not decided natively")
+    require(tk.rust_is_subtype_coded(*false_args) == 0, "coded false pair not decided natively")
+    require(blob_entry(true_blob, resolver) == 1, "blob true pair disagrees with coded entry")
+    require(blob_entry(false_blob, resolver) == 0, "blob false pair disagrees with coded entry")
+    require(blob_entry(b"\x00\x00", resolver) == -1, "short blob must defer (code -1)")
+    require(true_blob == _BLOB_HDR.pack(0, len(lb_a)) + lb_a + lb_a, "blob layout drifted")
     return tk, resolver, true_args, true_blob, lb_a
 
 
@@ -252,7 +274,7 @@ def child(name: str, iters: int, control: bool) -> int:
         before = tk.rust_checker_driver_counters()[0]
         tk.rust_checker_driver_record(0)
         after = tk.rust_checker_driver_counters()[0]
-        assert after == before + 1, "counter did not move"
+        require(after == before + 1, "counter did not move")
         loop1(iters, control, tk.rust_checker_driver_record, (0,))
 
     elif name == "coded12":
@@ -261,24 +283,24 @@ def child(name: str, iters: int, control: bool) -> int:
         def coded12(*a: object) -> int:
             return tk.rust_is_subtype_coded(*a)  # type: ignore[attr-defined]
 
-        assert coded12(*args) == 1, "crossing stopped answering"
+        require(coded12(*args) == 1, "crossing stopped answering")
         loop12(iters, control, coded12, args)
 
     elif name == "blob_call":
         tk, resolver, _, blob, _ = kernel_fixtures()
         blob_entry = tk.rust_is_subtype_blob_bench
-        assert blob_entry(blob, resolver) == 1, "blob entry stopped answering"
+        require(blob_entry(blob, resolver) == 1, "blob entry stopped answering")
         loop2(iters, control, blob_entry, (blob, resolver))
 
     elif name == "blob_build_call":
         tk, resolver, _, blob, lb = kernel_fixtures()
         blob_entry = tk.rust_is_subtype_blob_bench
-        assert blob_entry(blob, resolver) == 1, "blob entry stopped answering"
+        require(blob_entry(blob, resolver) == 1, "blob entry stopped answering")
 
         def build_call() -> int:
             return blob_entry(build_blob(lb, lb, 0), resolver)
 
-        assert build_call() == 1, "build+call stopped answering"
+        require(build_call() == 1, "build+call stopped answering")
         loop0(iters, control, build_call, ())
 
     elif name == "blob_build":
@@ -287,10 +309,10 @@ def child(name: str, iters: int, control: bool) -> int:
         info = fixture_info("mod.A")
         inst = types.Instance(info, [])
         lb = subtypes._serialize_type(inst)
-        assert isinstance(lb, bytes) and lb, "serialization failed"
+        require(isinstance(lb, bytes) and lb, "serialization failed")
         built = build_blob(lb, lb, 0)
-        assert built == _BLOB_HDR.pack(0, len(lb)) + lb + lb, "blob layout drifted"
-        assert len(built) == 6 + 2 * len(lb), "blob length wrong"
+        require(built == _BLOB_HDR.pack(0, len(lb)) + lb + lb, "blob layout drifted")
+        require(len(built) == 6 + 2 * len(lb), "blob length wrong")
         loop3(iters, control, build_blob, (lb, lb, 0))
 
     else:
