@@ -56,6 +56,7 @@ on:
       - .github/workflows/native-kernel-parity.yml
       - .github/workflows/native-extensions.yml
       - .github/actions/native-extensions/**
+      - .github/actions/rustc-version/**
   workflow_dispatch:
 
 permissions:
@@ -106,6 +107,9 @@ jobs:
           while IFS= read -r f || [ -n "$f" ]; do
             case "$f" in
               .github/workflows/native-kernel-parity.yml) ast=true ;;
+              .github/workflows/native-extensions.yml) ast=true ;;
+              .github/actions/native-extensions/*) ast=true ;;
+              .github/actions/rustc-version/*) ast=true ;;
               crates/ast_serialize/*) ast=true ;;
               stubs/ast_serialize.pyi) ast=true ;;
               mypy/nativeparse.py|mypy/fastparse.py|mypy/parse.py) ast=true ;;

@@ -11,12 +11,9 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # The group embeds github.workflow: it is this workflow's own name on
-  # a direct dispatch, and the caller's name under workflow_call, so two
-  # callers on one ref can never cancel each other's job.
-  group: native-extensions-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+# No `concurrency:` here on purpose: this is a reusable workflow, and any
+# ref-keyed group would be evaluated against the caller's run, overriding
+# callers like nightly that deliberately allow overlapping runs.
 
 jobs:
   build-extensions:
