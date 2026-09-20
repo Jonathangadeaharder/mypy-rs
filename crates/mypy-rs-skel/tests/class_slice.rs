@@ -421,18 +421,24 @@ fn vardecl_base_member_override_rejected() {
     );
 }
 
-/// The float/float binop table is explicit: only the vetted operators
-/// (Add, Mult, Mod; mypy-clean in the corpus and evidence runs) check
-/// as float, and any other operator on floats is rejected at lowering
-/// time, never silently tabulated by a wildcard arm.
+/// The float binop slice now covers every arithmetic operator the
+/// #150 matrix fixes (+, -, *, /, //, %: float/float checks as float);
+/// `**` stays rejected at lowering time with the construct-naming
+/// message, never silently tabulated by a wildcard arm.
 #[test]
 fn float_binop_operator_closure() {
     let dir = std::env::temp_dir().join("mypy-rs-skel-float-binop");
     fs::create_dir_all(&dir).expect("temp dir");
-    let cases: [(&str, &str, i32, &str); 4] = [
+    let cases: [(&str, &str, i32, &str); 7] = [
         (
             "float_add.py",
             "def f(a: float, b: float) -> float:\n    return a + b\n",
+            0,
+            "",
+        ),
+        (
+            "float_sub.py",
+            "def f(a: float, b: float) -> float:\n    return a - b\n",
             0,
             "",
         ),
@@ -443,16 +449,28 @@ fn float_binop_operator_closure() {
             "",
         ),
         (
+            "float_truediv.py",
+            "def f(a: float, b: float) -> float:\n    return a / b\n",
+            0,
+            "",
+        ),
+        (
+            "float_floordiv.py",
+            "def f(a: float, b: float) -> float:\n    return a // b\n",
+            0,
+            "",
+        ),
+        (
             "float_mod.py",
             "def f(a: float, b: float) -> float:\n    return a % b\n",
             0,
             "",
         ),
         (
-            "float_sub.py",
-            "def f(a: float, b: float) -> float:\n    return a - b\n",
+            "float_pow.py",
+            "def f(a: float, b: float) -> float:\n    return a ** b\n",
             2,
-            "binary operator `-` is outside the skeleton subset",
+            "binary operator `**` is outside the skeleton subset",
         ),
     ];
     for (name, source, code, expect) in cases {
@@ -737,9 +755,9 @@ fn subset_rejection_messages_name_the_construct() {
 
 /// The int/bool fixture records close the literal promote path: int
 /// promotes to float (clean, as in mypy), str(int) is clean, a bool
-/// from an int literal renders the exact mypy bytes, and a binop pair
-/// the table does not support rejects as out-of-subset (exit 2), never
-/// an internal (exit 3).
+/// from an int literal renders the exact mypy bytes, and a binop over
+/// a class instance rejects as out-of-subset (exit 2), never an
+/// internal (exit 3).
 #[test]
 fn int_bool_literal_promote_closure() {
     let dir = std::env::temp_dir().join("mypy-rs-skel-class-slice-promote");
@@ -758,8 +776,15 @@ fn int_bool_literal_promote_closure() {
             ),
         ),
         (
-            "int_binop.py",
-            "n = 1 + 1\n",
+            "instance_binop.py",
+            concat!(
+                "class C:\n",
+                "    def __init__(self) -> None:\n",
+                "        pass\n",
+                "\n",
+                "\n",
+                "n = C() + 1\n",
+            ),
             2,
             "binary operations on these types are outside the supported subset",
         ),

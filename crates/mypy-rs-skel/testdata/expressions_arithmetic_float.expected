@@ -1,0 +1,2 @@
+expressions_arithmetic_float.py:8: error: Unsupported operand types for * ("float" and "str")  [operator]
+Found 1 error in 1 file (checked 1 source file)

@@ -1,0 +1,10 @@
+expressions_operator_unsupported_operands.py:4: error: Unsupported operand types for + ("str" and "int")  [operator]
+expressions_operator_unsupported_operands.py:5: error: Unsupported operand types for + ("int" and "str")  [operator]
+expressions_operator_unsupported_operands.py:6: error: Unsupported operand types for + ("float" and "str")  [operator]
+expressions_operator_unsupported_operands.py:7: error: Unsupported operand types for * ("str" and "str")  [operator]
+expressions_operator_unsupported_operands.py:8: error: Unsupported operand types for // ("int" and "str")  [operator]
+expressions_operator_unsupported_operands.py:10: error: Incompatible types in assignment (expression has type "int", variable has type "bool")  [assignment]
+expressions_operator_unsupported_operands.py:10: error: Unsupported operand types for + ("bool" and "str")  [operator]
+expressions_operator_unsupported_operands.py:12: error: Incompatible types in assignment (expression has type "int", variable has type "bool")  [assignment]
+expressions_operator_unsupported_operands.py:14: error: Unsupported operand types for + ("float" and "str")  [operator]
+Found 9 errors in 1 file (checked 1 source file)

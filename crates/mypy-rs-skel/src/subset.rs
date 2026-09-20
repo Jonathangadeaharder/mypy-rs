@@ -3,13 +3,14 @@
 //! The skeleton supports the statement shapes of the trivial corpus plus
 //! the class/member slice of #118 and the conditional slice of #136:
 //! imports, `TypeVar` declarations, plain and annotated module
-//! assignments, class definitions (single or generic bases, class
-//! attributes, methods with `self` and `super()` calls), module
-//! functions, calls, attribute reads, subscripts on classes, the
-//! `str`/`float` binary operators the corpus uses, `%` on int,
-//! comparisons, boolean operators and `not`, `if`/`elif`/`else` bodies
-//! with local assignments and value returns. Anything else is a hard
-//! error: the skeleton never guesses at semantics it does not implement
+//! assignments, augmented assignments to existing variables, class
+//! definitions (single or generic bases, class attributes, methods
+//! with `self` and `super()` calls), module functions, calls,
+//! attribute reads, subscripts on classes, the six arithmetic binary
+//! operators over int/bool/float/str, comparisons, boolean operators,
+//! `not` and unary `-`/`+`, `if`/`elif`/`else` bodies with local
+//! assignments and value returns. Anything else is a hard error: the
+//! skeleton never guesses at semantics it does not implement
 //! (#93 invariant, tracked as #115).
 
 use ruff_python_ast::{self as ast, PySourceType, Stmt};
@@ -54,12 +55,52 @@ pub struct Ann {
     pub line: usize,
 }
 
-/// A binary operator the corpus uses and the checker tabulates.
+/// A binary operator the checker tabulates: the six arithmetic
+/// operators mypy resolves through int/float/str dunders.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BinOpKind {
     Add,
+    Sub,
     Mult,
+    Div,
     Mod,
+    FloorDiv,
+}
+
+impl BinOpKind {
+    /// The source spelling, for mypy-format messages.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOpKind::Add => "+",
+            BinOpKind::Sub => "-",
+            BinOpKind::Mult => "*",
+            BinOpKind::Div => "/",
+            BinOpKind::Mod => "%",
+            BinOpKind::FloorDiv => "//",
+        }
+    }
+
+    /// The forward and reflected dunder member names mypy tries, in
+    /// its calling order (`op_methods`/`complementary_methods`).
+    pub fn dunders(self) -> (&'static str, &'static str) {
+        match self {
+            BinOpKind::Add => ("__add__", "__radd__"),
+            BinOpKind::Sub => ("__sub__", "__rsub__"),
+            BinOpKind::Mult => ("__mul__", "__rmul__"),
+            BinOpKind::Div => ("__truediv__", "__rtruediv__"),
+            BinOpKind::Mod => ("__mod__", "__rmod__"),
+            BinOpKind::FloorDiv => ("__floordiv__", "__rfloordiv__"),
+        }
+    }
+}
+
+/// A unary operator: `not` over any operand, `-`/`+` over the
+/// arithmetic primitives.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UnaryOpKind {
+    Not,
+    USub,
+    UAdd,
 }
 
 /// A comparison operator; the checker tabulates the supported pairs and
@@ -81,11 +122,13 @@ pub enum BoolOpKind {
     Or,
 }
 
-/// An expression in the supported subset, with its source line.
+/// An expression in the supported subset, with its source line and
+/// 1-based column.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Expr {
     pub kind: ExprKind,
     pub line: usize,
+    pub col: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -122,8 +165,10 @@ pub enum ExprKind {
         op: BoolOpKind,
         operands: Vec<Expr>,
     },
-    /// `not <operand>`; the operand may have any type, like mypy.
-    Not {
+    /// `not <operand>` (any operand type, like mypy) or unary
+    /// `-`/`+` over the arithmetic primitives.
+    Unary {
+        op: UnaryOpKind,
         operand: Box<Expr>,
     },
 }
@@ -182,6 +227,15 @@ pub enum BodyStmt {
         ann: Ann,
         value: Expr,
         line: usize,
+    },
+    /// `<name> <op>= <value>`, top level only, target an existing
+    /// local: read, binop, check the result against the current type.
+    AugAssign {
+        name: String,
+        op: BinOpKind,
+        value: Expr,
+        line: usize,
+        col: usize,
     },
     Pass,
 }
@@ -251,6 +305,16 @@ pub enum StmtKind {
         value: Expr,
         line: usize,
     },
+    /// `<name> <op>= <value>`: read, binop, check the result against
+    /// the variable's current type (mypy desugars the same way and
+    /// never rebinds the variable).
+    AugAssign {
+        name: String,
+        op: BinOpKind,
+        value: Expr,
+        line: usize,
+        col: usize,
+    },
     ClassDef(ClassDefStmt),
     FuncDef(FuncDefStmt),
     Pass,
@@ -268,25 +332,35 @@ pub struct ModuleAst {
 }
 
 /// Byte offsets of line starts (0 first): the ast_serialize line map,
-/// computed once per parse so every lowered statement resolves its line
-/// by binary search instead of rescanning the source.
-struct LineIndex {
+/// computed once per parse so every lowered expression resolves its
+/// line and column by binary search instead of rescanning the source.
+struct LineIndex<'a> {
     starts: Vec<usize>,
+    source: &'a str,
 }
 
-impl LineIndex {
-    fn new(source: &str) -> Self {
+impl<'a> LineIndex<'a> {
+    fn new(source: &'a str) -> Self {
         let mut starts = vec![0];
         for (index, byte) in source.bytes().enumerate() {
             if byte == b'\n' {
                 starts.push(index + 1);
             }
         }
-        LineIndex { starts }
+        LineIndex { starts, source }
     }
 
     fn line_of(&self, offset: usize) -> usize {
         self.starts.partition_point(|start| *start <= offset)
+    }
+
+    /// The 1-based line and character column of a byte offset, the
+    /// position mypy renders diagnostics at.
+    fn line_col_of(&self, offset: usize) -> (usize, usize) {
+        let line = self.line_of(offset);
+        let start = self.starts[line - 1];
+        let col = self.source[start..offset].chars().count() + 1;
+        (line, col)
     }
 }
 
@@ -451,7 +525,7 @@ fn lower_top(stmt: Stmt, lines: &LineIndex, path: &str) -> Result<TopStmt, Strin
                     line,
                 });
             }
-            let value = lower_expr(&assign.value, path, line)?;
+            let value = lower_expr(&assign.value, lines, path)?;
             Ok(TopStmt {
                 kind: StmtKind::Assign { name, value, line },
                 line,
@@ -477,13 +551,35 @@ fn lower_top(stmt: Stmt, lines: &LineIndex, path: &str) -> Result<TopStmt, Strin
                     "annotated assignment must have a value",
                 ));
             };
-            let value = lower_expr(&value, path, line)?;
+            let value = lower_expr(&value, lines, path)?;
             Ok(TopStmt {
                 kind: StmtKind::AnnAssign {
                     name,
                     ann: ann_out,
                     value,
                     line,
+                },
+                line,
+            })
+        }
+        Stmt::AugAssign(aug) => {
+            let (line, col) = lines.line_col_of(aug.range.start().to_usize());
+            let ast::Expr::Name(n) = &*aug.target else {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "augmented assignment target must be a single plain name",
+                ));
+            };
+            let op = lower_binop_kind(aug.op, path, line)?;
+            let value = lower_expr(&aug.value, lines, path)?;
+            Ok(TopStmt {
+                kind: StmtKind::AugAssign {
+                    name: n.id.to_string(),
+                    op,
+                    value,
+                    line,
+                    col,
                 },
                 line,
             })
@@ -543,6 +639,30 @@ fn string_lit_value(s: &ast::ExprStringLiteral, path: &str, line: usize) -> Resu
         ));
     }
     Ok(s.value.to_str().to_string())
+}
+
+/// Map a ruff binary operator to the tabulated kind; anything outside
+/// the six arithmetic operators rejects by source spelling.
+fn lower_binop_kind(op: ast::Operator, path: &str, line: usize) -> Result<BinOpKind, String> {
+    let kind = match op {
+        ast::Operator::Add => BinOpKind::Add,
+        ast::Operator::Sub => BinOpKind::Sub,
+        ast::Operator::Mult => BinOpKind::Mult,
+        ast::Operator::Div => BinOpKind::Div,
+        ast::Operator::Mod => BinOpKind::Mod,
+        ast::Operator::FloorDiv => BinOpKind::FloorDiv,
+        other => {
+            return Err(subset_error(
+                path,
+                line,
+                &format!(
+                    "binary operator `{}` is outside the skeleton subset",
+                    operator_name(other)
+                ),
+            ))
+        }
+    };
+    Ok(kind)
 }
 
 fn is_super_call(call: &ast::ExprCall) -> bool {
@@ -668,7 +788,7 @@ fn lower_class_stmt(stmt: Stmt, lines: &LineIndex, path: &str) -> Result<ClassSt
                     "class attribute declarations without a value are outside the skeleton subset",
                 ));
             };
-            let value = lower_lit(&value, path, line)?;
+            let value = lower_lit(&value, lines, path)?;
             Ok(ClassStmt::VarDecl {
                 name,
                 ann: ann_out,
@@ -883,6 +1003,24 @@ fn check_body_shape(
                 }
                 locals.push(name.clone());
             }
+            BodyStmt::AugAssign { name, line: at, .. } => {
+                if !top {
+                    return Err(subset_error(
+                        path,
+                        *at,
+                        "augmented assignments inside conditionals are outside \
+                         the skeleton subset",
+                    ));
+                }
+                if !locals.contains(name) {
+                    return Err(subset_error(
+                        path,
+                        *at,
+                        "augmented assignment to a name that is not an existing local \
+                         variable is outside the skeleton subset",
+                    ));
+                }
+            }
             BodyStmt::If {
                 branches,
                 else_body,
@@ -942,13 +1080,13 @@ fn lower_body_stmt(
         Stmt::Return(ret) => Ok(BodyStmt::Return {
             value: ret
                 .value
-                .map(|boxed| lower_expr(&boxed, path, line))
+                .map(|boxed| lower_expr(&boxed, lines, path))
                 .transpose()?,
             line,
         }),
         Stmt::Expr(expr_stmt) => {
             if let ast::Expr::Call(_) = &*expr_stmt.value {
-                Ok(BodyStmt::Call(lower_expr(&expr_stmt.value, path, line)?))
+                Ok(BodyStmt::Call(lower_expr(&expr_stmt.value, lines, path)?))
             } else {
                 Err(subset_error(
                     path,
@@ -962,7 +1100,7 @@ fn lower_body_stmt(
                 if let ast::Expr::Attribute(attr) = &assign.targets[0] {
                     if let ast::Expr::Name(obj) = &*attr.value {
                         if obj.id == "self" {
-                            let value = lower_expr(&assign.value, path, line)?;
+                            let value = lower_expr(&assign.value, lines, path)?;
                             return Ok(BodyStmt::SelfAssign {
                                 attr: attr.attr.id.to_string(),
                                 value,
@@ -974,7 +1112,7 @@ fn lower_body_stmt(
             }
             if assign.targets.len() == 1 {
                 if let ast::Expr::Name(n) = &assign.targets[0] {
-                    let value = lower_expr(&assign.value, path, line)?;
+                    let value = lower_expr(&assign.value, lines, path)?;
                     return Ok(BodyStmt::LocalAssign {
                         name: n.id.to_string(),
                         value,
@@ -1004,7 +1142,7 @@ fn lower_body_stmt(
                     "annotated assignment must have a value",
                 ));
             };
-            let value = lower_expr(&value, path, line)?;
+            let value = lower_expr(&value, lines, path)?;
             Ok(BodyStmt::LocalAnnAssign {
                 name: n.id.to_string(),
                 ann: ann_out,
@@ -1012,9 +1150,28 @@ fn lower_body_stmt(
                 line,
             })
         }
+        Stmt::AugAssign(aug) => {
+            let (line, col) = lines.line_col_of(aug.range.start().to_usize());
+            let ast::Expr::Name(n) = &*aug.target else {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "augmented assignment target must be a single plain name",
+                ));
+            };
+            let op = lower_binop_kind(aug.op, path, line)?;
+            let value = lower_expr(&aug.value, lines, path)?;
+            Ok(BodyStmt::AugAssign {
+                name: n.id.to_string(),
+                op,
+                value,
+                line,
+                col,
+            })
+        }
         Stmt::If(ifs) => {
             let mut branches = Vec::with_capacity(ifs.elif_else_clauses.len() + 1);
-            let test = lower_expr(&ifs.test, path, line)?;
+            let test = lower_expr(&ifs.test, lines, path)?;
             let mut body = Vec::with_capacity(ifs.body.len());
             for stmt in ifs.body {
                 body.push(lower_body_stmt(stmt, lines, path, is_method)?);
@@ -1022,15 +1179,12 @@ fn lower_body_stmt(
             branches.push((test, body));
             let mut else_body = None;
             for clause in ifs.elif_else_clauses {
-                let clause_line = lines.line_of(clause.range.start().to_usize());
                 let mut clause_body = Vec::with_capacity(clause.body.len());
                 for stmt in clause.body {
                     clause_body.push(lower_body_stmt(stmt, lines, path, is_method)?);
                 }
                 match clause.test {
-                    Some(test) => {
-                        branches.push((lower_expr(&test, path, clause_line)?, clause_body))
-                    }
+                    Some(test) => branches.push((lower_expr(&test, lines, path)?, clause_body)),
                     None => else_body = Some(clause_body),
                 }
             }
@@ -1085,7 +1239,8 @@ fn lower_ann(expr: &ast::Expr, path: &str, line: usize) -> Result<Ann, String> {
     Ok(Ann { kind, line })
 }
 
-fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String> {
+fn lower_expr(expr: &ast::Expr, lines: &LineIndex, path: &str) -> Result<Expr, String> {
+    let (line, col) = lines.line_col_of(expr.range().start().to_usize());
     let kind = match expr {
         ast::Expr::NumberLiteral(n) => ExprKind::Lit(lower_number(n, path, line)?),
         ast::Expr::StringLiteral(s) => ExprKind::Lit(Lit::Str(string_lit_value(s, path, line)?)),
@@ -1100,9 +1255,9 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
         }
         ast::Expr::Attribute(attr) => {
             let obj = match attr.value.as_ref() {
-                inner @ ast::Expr::Name(_) => lower_expr(inner, path, line)?,
+                inner @ ast::Expr::Name(_) => lower_expr(inner, lines, path)?,
                 ast::Expr::Call(call) if is_super_call(call) => {
-                    lower_expr(&attr.value, path, line)?
+                    lower_expr(&attr.value, lines, path)?
                 }
                 _ => {
                     return Err(subset_error(
@@ -1166,10 +1321,10 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
                         "keyword arguments are outside the skeleton subset",
                     ));
                 }
-                let func = lower_expr(&call.func, path, line)?;
+                let func = lower_expr(&call.func, lines, path)?;
                 let mut args = Vec::with_capacity(call.arguments.args.len());
                 for arg in &call.arguments.args {
-                    args.push(lower_expr(arg, path, line)?);
+                    args.push(lower_expr(arg, lines, path)?);
                 }
                 ExprKind::Call {
                     func: Box::new(func),
@@ -1178,25 +1333,11 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
             }
         }
         ast::Expr::BinOp(binop) => {
-            let op = match binop.op {
-                ast::Operator::Add => BinOpKind::Add,
-                ast::Operator::Mult => BinOpKind::Mult,
-                ast::Operator::Mod => BinOpKind::Mod,
-                other => {
-                    return Err(subset_error(
-                        path,
-                        line,
-                        &format!(
-                            "binary operator `{}` is outside the skeleton subset",
-                            operator_name(other)
-                        ),
-                    ))
-                }
-            };
+            let op = lower_binop_kind(binop.op, path, line)?;
             ExprKind::BinOp {
                 op,
-                left: Box::new(lower_expr(&binop.left, path, line)?),
-                right: Box::new(lower_expr(&binop.right, path, line)?),
+                left: Box::new(lower_expr(&binop.left, lines, path)?),
+                right: Box::new(lower_expr(&binop.right, lines, path)?),
             }
         }
         ast::Expr::Compare(cmp) => {
@@ -1227,8 +1368,8 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
             };
             ExprKind::Compare {
                 op,
-                left: Box::new(lower_expr(&cmp.left, path, line)?),
-                right: Box::new(lower_expr(&cmp.comparators[0], path, line)?),
+                left: Box::new(lower_expr(&cmp.left, lines, path)?),
+                right: Box::new(lower_expr(&cmp.comparators[0], lines, path)?),
             }
         }
         ast::Expr::BoolOp(boolop) => {
@@ -1238,20 +1379,26 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
             };
             let mut operands = Vec::with_capacity(boolop.values.len());
             for value in &boolop.values {
-                operands.push(lower_expr(value, path, line)?);
+                operands.push(lower_expr(value, lines, path)?);
             }
             ExprKind::BoolOp { op, operands }
         }
         ast::Expr::UnaryOp(unary) => {
-            if !matches!(unary.op, ast::UnaryOp::Not) {
-                return Err(subset_error(
-                    path,
-                    line,
-                    "unary operators other than `not` are outside the skeleton subset",
-                ));
-            }
-            ExprKind::Not {
-                operand: Box::new(lower_expr(&unary.operand, path, line)?),
+            let op = match unary.op {
+                ast::UnaryOp::Not => UnaryOpKind::Not,
+                ast::UnaryOp::UAdd => UnaryOpKind::UAdd,
+                ast::UnaryOp::USub => UnaryOpKind::USub,
+                ast::UnaryOp::Invert => {
+                    return Err(subset_error(
+                        path,
+                        line,
+                        "unary operator `~` is outside the skeleton subset",
+                    ));
+                }
+            };
+            ExprKind::Unary {
+                op,
+                operand: Box::new(lower_expr(&unary.operand, lines, path)?),
             }
         }
         other => {
@@ -1265,7 +1412,7 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
             ))
         }
     };
-    Ok(Expr { kind, line })
+    Ok(Expr { kind, line, col })
 }
 
 fn lower_number(n: &ast::ExprNumberLiteral, path: &str, line: usize) -> Result<Lit, String> {
@@ -1287,8 +1434,9 @@ fn lower_number(n: &ast::ExprNumberLiteral, path: &str, line: usize) -> Result<L
     }
 }
 
-fn lower_lit(expr: &ast::Expr, path: &str, line: usize) -> Result<Lit, String> {
-    match lower_expr(expr, path, line)? {
+fn lower_lit(expr: &ast::Expr, lines: &LineIndex, path: &str) -> Result<Lit, String> {
+    let (line, _) = lines.line_col_of(expr.range().start().to_usize());
+    match lower_expr(expr, lines, path)? {
         Expr {
             kind: ExprKind::Lit(lit),
             ..
