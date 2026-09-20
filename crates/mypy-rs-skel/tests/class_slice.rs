@@ -479,6 +479,7 @@ fn float_binop_operator_closure() {
         }
     }
 }
+
 /// Generic constructor inference validates argument-count arity before
 /// the parameter/argument zip (#129): a too-short call used to
 /// truncate silently and surface the vague inference error, a
@@ -515,6 +516,7 @@ fn generic_constructor_arity_checked_before_inference() {
         );
     }
 }
+
 /// Class-object attribute reads are conservative (#127): a read on a
 /// parameterized class object (concrete args via a module var, or a
 /// bare generic's frame tvars) rejects instead of leaking an
@@ -617,6 +619,7 @@ fn class_object_attr_read_closure() {
         }
     }
 }
+
 /// `__init__` resolution for construction is corpus-only (#131): a
 /// class whose corpus MRO defines no `__init__` rejects with the
 /// intended message (the fixture walk used to surface builtins.object
@@ -707,17 +710,18 @@ fn subset_rejection_messages_name_the_construct() {
         (
             "global_stmt.py",
             "global g\n",
-            "statement `Global` is outside the skeleton subset",
+            "statement `Global` is outside the skeleton subset\n",
         ),
         (
             "global_in_body.py",
             "def f() -> None:\n    global g\n    return\n",
-            "statement `Global` is outside the skeleton subset in a body",
+            "statement `Global` is outside the skeleton subset in a body\n",
         ),
         (
             "value_subscript.py",
             "items = 5\nx = items[0]\n",
-            "subscript arguments in value position must be type expressions",
+            "subscript arguments in value position must be type expressions: \
+             annotation `NumberLiteral` is outside the skeleton subset\n",
         ),
     ];
     for (name, source, needle) in cases {

@@ -1126,11 +1126,16 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
                 ));
             };
             let args = subscript_args(&sub.slice, path, line).map_err(|err| {
+                // The inner error is already subset_error-formatted with
+                // this call's path and line; keep its detail so the
+                // wrapped message carries exactly one prefix.
+                let prefix = format!("{path}:{line}: skeleton subset error: ");
+                let detail = err.strip_prefix(&prefix).unwrap_or(&err);
                 subset_error(
                     path,
                     line,
                     &format!(
-                        "subscript arguments in value position must be type expressions: {err}"
+                        "subscript arguments in value position must be type expressions: {detail}"
                     ),
                 )
             })?;
