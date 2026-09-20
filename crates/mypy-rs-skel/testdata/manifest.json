@@ -52,6 +52,14 @@
       "notes": "mypy accepts the bare-generic class-object read; the subset would need frame substitution, so it rejects (#127)."
     },
     {
+      "id": "classes.shadowed_base_attr",
+      "status": "unsupported",
+      "arm": "classes_shadowed_base_attr.py",
+      "exit_code": 2,
+      "reject_marker": "instance attribute assignment incompatibility",
+      "notes": "A subclass attribute overriding a base attribute whose type binds only later in the module: mypy renders an assignment error, the subset loudly rejects it instead of silently keeping the provisional own member (#139 review)."
+    },
+    {
       "id": "classes.inherited_classvar_read",
       "status": "unsupported",
       "arm": "classes_inherited_classvar_read.py",

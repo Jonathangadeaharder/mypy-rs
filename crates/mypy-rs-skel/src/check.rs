@@ -933,6 +933,52 @@ impl Driver {
                 }
             }
         }
+        // Drop provisional own attributes that shadow a base member, so
+        // pass 3 checks the override against the base (#139 review, #93).
+        for stmt in body {
+            let StmtKind::ClassDef(cls) = &stmt.kind else {
+                continue;
+            };
+            let fullname = format!("{module}.{}", cls.name);
+            self.drop_shadowed_base_attrs(&fullname)?;
+        }
+        Ok(())
+    }
+
+    /// Remove own instance attributes that a base class also defines.
+    /// The sweeps consider a class's own members before its base's
+    /// later-collected candidates, so a provisional own attribute can
+    /// outlive the base member it should be overriding.
+    fn drop_shadowed_base_attrs(&mut self, fullname: &str) -> Result<(), CheckError> {
+        let (names, receiver) = {
+            let model_ref = self.classes.get(fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {fullname} is missing"))
+            })?;
+            let names: Vec<String> = model_ref
+                .members
+                .iter()
+                .filter(|(_, member)| matches!(member, Member::InstanceVar(_)))
+                .map(|(name, _)| name.clone())
+                .collect();
+            let receiver = instance(fullname, model::class_frame_tvars(model_ref));
+            (names, receiver)
+        };
+        let mut dropped = false;
+        for name in names {
+            if self
+                .find_member(&receiver, &name, Some(fullname))?
+                .is_some()
+            {
+                let model_ref = self.classes.get_mut(fullname).ok_or_else(|| {
+                    CheckError::Internal(format!("the class model for {fullname} is missing"))
+                })?;
+                model_ref.members.remove(&name);
+                dropped = true;
+            }
+        }
+        if dropped {
+            self.refresh(fullname)?;
+        }
         Ok(())
     }
 

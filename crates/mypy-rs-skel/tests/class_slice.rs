@@ -1024,3 +1024,95 @@ fn override_selfattr_inference_differential() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A subclass attribute that overrides a base attribute must not be
+/// silently kept as a fresh own member when the base's same-named
+/// candidate binds only later in the module (the sweep registered it
+/// first and first-wins insertion kept it, so an incompatible
+/// override passed as `Success`). The provisional own member is
+/// dropped after collection, so pass 3 checks the override against the
+/// base member and loudly rejects the incompatibility (#93).
+#[test]
+fn shadowed_base_attr_loudly_rejects() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-shadowed-base");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32); 3] = [
+        (
+            "later_call.py",
+            concat!(
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = later()\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = 1\n",
+                "\n",
+                "\n",
+                "def later() -> str:\n",
+                "    return \"s\"\n",
+            ),
+            2,
+        ),
+        (
+            "later_class.py",
+            concat!(
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = A()\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = 1\n",
+                "\n",
+                "\n",
+                "class A:\n",
+                "    def __init__(self) -> None:\n",
+                "        pass\n",
+            ),
+            2,
+        ),
+        (
+            "clean_override.py",
+            concat!(
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = 1\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = 2\n",
+            ),
+            0,
+        ),
+    ];
+    for (name, source, expect_code) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(expect_code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if expect_code == 0 {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+            assert!(output.stderr.is_empty(), "stderr for {name}");
+            continue;
+        }
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("instance attribute assignment incompatibility"),
+            "stderr for {name}: {stderr}"
+        );
+    }
+}
