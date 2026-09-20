@@ -4478,16 +4478,14 @@ pub(crate) fn rust_is_subtype(
     is_subtype(&left, &right, &ctx, resolver.resolver())
 }
 
-/// `#[pyfunction]` entry: single-pair variant of `rust_is_subtype` that
-/// reports the batch entry's i8 code so the Python shim can persist the
-/// answer directly instead of buffering it for a later batch flush
-/// (which re-evaluated every scalar-answered pair, #33). Codes match
-/// `rust_is_subtype_batch` exactly: 1 = true, 0 = false, 3 =
-/// true-via-consult-cut (uncacheable), -1 = defer.
-#[pyfunction]
-#[pyo3(signature = (left_bytes, right_bytes, ignore_type_params, ignore_declared_variance, always_covariant, ignore_promotions, proper_subtype, strict_optional, ignore_pos_arg_names, strict_concatenate, resolver, infer_unions = false))]
-#[allow(clippy::too_many_arguments, dead_code)]
-pub(crate) fn rust_is_subtype_coded(
+/// Shared tail of `rust_is_subtype_coded` and its bench-only blob variant
+/// `rust_is_subtype_blob_bench` (#77): decode both operands, expand top
+/// aliases, run the nominal engine under the given context flags, and map
+/// the answer onto the shim's i8 codes. Both entries MUST answer through
+/// this helper so a re-run of the #70 benchmark stays comparable with the
+/// production seam.
+#[allow(clippy::too_many_arguments)]
+fn is_subtype_coded_core(
     left_bytes: &[u8],
     right_bytes: &[u8],
     ignore_type_params: bool,
@@ -4547,6 +4545,45 @@ pub(crate) fn rust_is_subtype_coded(
     }
 }
 
+/// `#[pyfunction]` entry: single-pair variant of `rust_is_subtype` that
+/// reports the batch entry's i8 code so the Python shim can persist the
+/// answer directly instead of buffering it for a later batch flush
+/// (which re-evaluated every scalar-answered pair, #33). Codes match
+/// `rust_is_subtype_batch` exactly: 1 = true, 0 = false, 3 =
+/// true-via-consult-cut (uncacheable), -1 = defer.
+#[pyfunction]
+#[pyo3(signature = (left_bytes, right_bytes, ignore_type_params, ignore_declared_variance, always_covariant, ignore_promotions, proper_subtype, strict_optional, ignore_pos_arg_names, strict_concatenate, resolver, infer_unions = false))]
+#[allow(clippy::too_many_arguments, dead_code)]
+pub(crate) fn rust_is_subtype_coded(
+    left_bytes: &[u8],
+    right_bytes: &[u8],
+    ignore_type_params: bool,
+    ignore_declared_variance: bool,
+    always_covariant: bool,
+    ignore_promotions: bool,
+    proper_subtype: bool,
+    strict_optional: bool,
+    ignore_pos_arg_names: bool,
+    strict_concatenate: bool,
+    resolver: &mut NativeTypeResolver,
+    infer_unions: bool,
+) -> i8 {
+    is_subtype_coded_core(
+        left_bytes,
+        right_bytes,
+        ignore_type_params,
+        ignore_declared_variance,
+        always_covariant,
+        ignore_promotions,
+        proper_subtype,
+        strict_optional,
+        ignore_pos_arg_names,
+        strict_concatenate,
+        resolver,
+        infer_unions,
+    )
+}
+
 /// Bench-only blob parse for `rust_is_subtype_blob_bench` (#70).
 /// Wire layout: u16 LE flag mask, u32 LE left length, left bytes, right
 /// bytes. `None` on a short buffer or a left length past the end.
@@ -4575,8 +4612,9 @@ fn subtype_bench_flags(mask: u16) -> [bool; 9] {
 /// caller is `misc/blob_marshal_bench.py`. The Python side prebuilds one
 /// buffer holding both type blobs plus the flag set, so the crossing
 /// marshals two arguments instead of twelve. Wire layout and flag order:
-/// see `parse_subtype_blob_bench` / `subtype_bench_flags`. The body mirrors
-/// `rust_is_subtype_coded` exactly; codes match it 1:1.
+/// see `parse_subtype_blob_bench` / `subtype_bench_flags`. Both entries
+/// answer through the shared `is_subtype_coded_core` tail, so code parity
+/// with the production entry is structural (#77), not conventional.
 #[pyfunction]
 #[pyo3(signature = (blob, resolver))]
 #[allow(dead_code)]
@@ -4587,25 +4625,9 @@ pub(crate) fn rust_is_subtype_blob_bench(blob: &[u8], resolver: &mut NativeTypeR
     };
     let [ignore_type_params, ignore_declared_variance, always_covariant, ignore_promotions, proper_subtype, strict_optional, ignore_pos_arg_names, strict_concatenate, infer_unions] =
         subtype_bench_flags(mask);
-    let _infer_unions_guard = crate::unify::InferUnionsGuard::install(infer_unions);
-    let left = match decode_type(left_bytes) {
-        Some(t) => t,
-        None => return -1,
-    };
-    let right = match decode_type(right_bytes) {
-        Some(t) => t,
-        None => return -1,
-    };
-    let alias_resolver = resolver.alias_resolver().shared();
-    let left = match expand_top_aliases(&left, &alias_resolver, strict_optional) {
-        Some(t) => t,
-        None => return -1,
-    };
-    let right = match expand_top_aliases(&right, &alias_resolver, strict_optional) {
-        Some(t) => t,
-        None => return -1,
-    };
-    let ctx = SubtypeContext::with_callable_flags(
+    is_subtype_coded_core(
+        left_bytes,
+        right_bytes,
         ignore_type_params,
         ignore_declared_variance,
         always_covariant,
@@ -4614,15 +4636,9 @@ pub(crate) fn rust_is_subtype_blob_bench(blob: &[u8], resolver: &mut NativeTypeR
         strict_optional,
         ignore_pos_arg_names,
         strict_concatenate,
-    );
-    crate::protocols::consult_cut_reset();
-    let answer = is_subtype(&left, &right, &ctx, resolver.resolver());
-    match answer {
-        Some(true) if crate::protocols::consult_cut_taken() => 3,
-        Some(true) => 1,
-        Some(false) => 0,
-        None => -1,
-    }
+        resolver,
+        infer_unions,
+    )
 }
 
 /// `#[pyfunction]` entry: batch variant of `rust_is_subtype`.
@@ -7486,6 +7502,75 @@ mod tests {
         assert_eq!(code(&ok_left, &ok_right, &mut native), 1);
         assert_eq!(code(&false_left, &false_right, &mut native), 0);
         assert_eq!(code(&defer_left, &defer_right, &mut native), -1);
+    }
+
+    #[test]
+    fn blob_bench_entry_matches_coded_entry() {
+        // #77 parity: both entries must answer with the same i8 code for
+        // identical pairs and flag sets. The mask is rebuilt from the flag
+        // semantics independently of subtype_bench_flags.
+        let mut gen = snap("a.Gen", "Gen");
+        gen.type_vars = vec!["T".to_string()];
+        gen.type_vars_with_variance = vec![("T".to_string(), COVARIANT, 0)];
+        let mut derived = snap("a.Sub", "Sub");
+        derived.has_base.insert("a.Gen".to_string());
+        derived.mro.push("a.Gen".to_string());
+        let r = make_resolver(vec![gen, derived, snap("builtins.object", "object")]);
+        let mut native = NativeTypeResolver::from_resolver(r);
+        let sub_any = encode(&instance("a.Sub", vec![any_type()]));
+        let obj = encode(&instance("builtins.object", vec![]));
+        let gen_any = encode(&instance("a.Gen", vec![any_type()]));
+        let any = encode(&any_type());
+        // proper_subtype sits at flags index 4 (mask bit 4).
+        let mut proper_only = [false; 9];
+        proper_only[4] = true;
+        // (left, right, flags, expected code)
+        let cases: &[(&[u8], &[u8], [bool; 9], i8)] = &[
+            // Decided true: a.Sub[Any] <: builtins.object.
+            (&sub_any, &obj, [false; 9], 1),
+            // Decided false: builtins.object <: a.Sub[Any].
+            (&obj, &sub_any, [false; 9], 0),
+            // Flag-set case: proper_subtype flips a.Sub[Any] <: Any from
+            // the non-proper short-circuit (1) to the proper answer (0).
+            (&sub_any, &any, [false; 9], 1),
+            (&sub_any, &any, proper_only, 0),
+            // Defer case: a.Sub[Any] <: a.Gen[Any] needs bases blobs the
+            // resolver does not carry, so the kernel declines.
+            (&sub_any, &gen_any, [false; 9], -1),
+        ];
+        for (left, right, flags, expected) in cases {
+            let [ignore_type_params, ignore_declared_variance, always_covariant, ignore_promotions, proper_subtype, strict_optional, ignore_pos_arg_names, strict_concatenate, infer_unions] =
+                *flags;
+            let coded = rust_is_subtype_coded(
+                left,
+                right,
+                ignore_type_params,
+                ignore_declared_variance,
+                always_covariant,
+                ignore_promotions,
+                proper_subtype,
+                strict_optional,
+                ignore_pos_arg_names,
+                strict_concatenate,
+                &mut native,
+                infer_unions,
+            );
+            assert_eq!(
+                coded, *expected,
+                "coded entry diverged for {left:?} < {right:?}"
+            );
+            let mask = flags
+                .iter()
+                .enumerate()
+                .fold(0u16, |m, (i, f)| m | (*f as u16) << i);
+            let mut blob = Vec::with_capacity(6 + left.len() + right.len());
+            blob.extend_from_slice(&mask.to_le_bytes());
+            blob.extend_from_slice(&(left.len() as u32).to_le_bytes());
+            blob.extend_from_slice(left);
+            blob.extend_from_slice(right);
+            let bench = rust_is_subtype_blob_bench(&blob, &mut native);
+            assert_eq!(bench, coded, "blob bench entry diverged from coded");
+        }
     }
 
     #[test]
