@@ -210,12 +210,14 @@ pub struct ClassDefStmt {
     pub line: usize,
 }
 
-/// A module-level function: all parameters annotated, no self.
+/// A function or method definition: every parameter annotated, with
+/// `self` already stripped for methods and the return annotation
+/// always present (lowering rejects a bare def).
 #[derive(Debug)]
 pub struct FuncDefStmt {
     pub name: String,
     pub params: Vec<Param>,
-    pub ret: Option<Ann>,
+    pub ret: Ann,
     pub body: Vec<BodyStmt>,
     pub line: usize,
 }
@@ -265,21 +267,46 @@ pub struct ModuleAst {
     pub body: Vec<TopStmt>,
 }
 
+/// Byte offsets of line starts (0 first): the ast_serialize line map,
+/// computed once per parse so every lowered statement resolves its line
+/// by binary search instead of rescanning the source.
+struct LineIndex {
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let mut starts = vec![0];
+        for (index, byte) in source.bytes().enumerate() {
+            if byte == b'\n' {
+                starts.push(index + 1);
+            }
+        }
+        LineIndex { starts }
+    }
+
+    fn line_of(&self, offset: usize) -> usize {
+        self.starts.partition_point(|start| *start <= offset)
+    }
+}
+
 /// Parse + lower `source`. Fails hard on any construct outside the
 /// subset; the message names the offending line and construct.
 pub fn parse_module(source: &str, path: &str) -> Result<ModuleAst, String> {
     let parsed = parse_unchecked_source(source, PySourceType::Python);
     if let Some(err) = parsed.errors().first() {
+        let lines = LineIndex::new(source);
         return Err(format!(
             "{path}:{}: skeleton subset error: syntax error: {}",
-            line_of(source, err.range().start().to_usize()),
+            lines.line_of(err.range().start().to_usize()),
             err
         ));
     }
     let module = parsed.into_syntax();
+    let lines = LineIndex::new(source);
     let mut body = Vec::with_capacity(module.body.len());
     for stmt in module.body {
-        body.push(lower_top(stmt, source, path)?);
+        body.push(lower_top(stmt, &lines, path)?);
     }
     Ok(ModuleAst { body })
 }
@@ -316,8 +343,8 @@ pub fn parse_string_annotation(source: &str, path: &str, line: usize) -> Result<
     }
 }
 
-fn lower_top(stmt: Stmt, source: &str, path: &str) -> Result<TopStmt, String> {
-    let line = line_of(source, stmt.range().start().to_usize());
+fn lower_top(stmt: Stmt, lines: &LineIndex, path: &str) -> Result<TopStmt, String> {
+    let line = lines.line_of(stmt.range().start().to_usize());
     match stmt {
         Stmt::Import(imp) => {
             let mut names = Vec::with_capacity(imp.names.len());
@@ -462,11 +489,11 @@ fn lower_top(stmt: Stmt, source: &str, path: &str) -> Result<TopStmt, String> {
             })
         }
         Stmt::ClassDef(cls) => Ok(TopStmt {
-            kind: StmtKind::ClassDef(lower_class(cls, source, path, line)?),
+            kind: StmtKind::ClassDef(lower_class(cls, lines, path, line)?),
             line,
         }),
         Stmt::FunctionDef(f) => {
-            let func = lower_function(f, source, path, line, false)?;
+            let func = lower_function(f, lines, path, line, false)?;
             Ok(TopStmt {
                 kind: StmtKind::FuncDef(func),
                 line,
@@ -524,7 +551,7 @@ fn is_super_call(call: &ast::ExprCall) -> bool {
 
 fn lower_class(
     cls: ast::StmtClassDef,
-    source: &str,
+    lines: &LineIndex,
     path: &str,
     line: usize,
 ) -> Result<ClassDefStmt, String> {
@@ -551,12 +578,12 @@ fn lower_class(
     }
     let mut bases = Vec::with_capacity(cls.bases().len());
     for base in cls.bases() {
-        let base_line = line_of(source, base.range().start().to_usize());
+        let base_line = lines.line_of(base.range().start().to_usize());
         bases.push(lower_base_ref(base, path, base_line)?);
     }
     let mut body = Vec::with_capacity(cls.body.len());
     for stmt in cls.body {
-        body.push(lower_class_stmt(stmt, source, path)?);
+        body.push(lower_class_stmt(stmt, lines, path)?);
     }
     Ok(ClassDefStmt {
         name: cls.name.id.to_string(),
@@ -618,8 +645,8 @@ fn subscript_args(slice: &ast::Expr, path: &str, line: usize) -> Result<Vec<Ann>
     }
 }
 
-fn lower_class_stmt(stmt: Stmt, source: &str, path: &str) -> Result<ClassStmt, String> {
-    let line = line_of(source, stmt.range().start().to_usize());
+fn lower_class_stmt(stmt: Stmt, lines: &LineIndex, path: &str) -> Result<ClassStmt, String> {
+    let line = lines.line_of(stmt.range().start().to_usize());
     match stmt {
         Stmt::AnnAssign(ann) => {
             if !matches!(*ann.target, ast::Expr::Name(_)) {
@@ -650,7 +677,7 @@ fn lower_class_stmt(stmt: Stmt, source: &str, path: &str) -> Result<ClassStmt, S
             })
         }
         Stmt::FunctionDef(f) => {
-            let method = lower_function(f, source, path, line, true)?;
+            let method = lower_function(f, lines, path, line, true)?;
             Ok(ClassStmt::Method(method))
         }
         Stmt::Pass(_) => Ok(ClassStmt::Pass),
@@ -670,7 +697,7 @@ fn lower_class_stmt(stmt: Stmt, source: &str, path: &str) -> Result<ClassStmt, S
 /// is annotated and carries no default.
 fn lower_function(
     f: ast::StmtFunctionDef,
-    source: &str,
+    lines: &LineIndex,
     path: &str,
     line: usize,
     is_method: bool,
@@ -710,7 +737,7 @@ fn lower_function(
     }
     let mut raw_params: Vec<(&ast::Parameter, usize)> = Vec::new();
     for param in f.parameters.args.iter() {
-        let param_line = line_of(source, param.range().start().to_usize());
+        let param_line = lines.line_of(param.range().start().to_usize());
         if param.default.is_some() {
             return Err(subset_error(
                 path,
@@ -760,8 +787,8 @@ fn lower_function(
     }
     let ret = match f.returns.as_deref() {
         Some(annotation) => {
-            let ret_line = line_of(source, annotation.range().start().to_usize());
-            Some(lower_ann(annotation, path, ret_line)?)
+            let ret_line = lines.line_of(annotation.range().start().to_usize());
+            lower_ann(annotation, path, ret_line)?
         }
         None => {
             return Err(subset_error(
@@ -773,7 +800,7 @@ fn lower_function(
     };
     let mut body = Vec::with_capacity(f.body.len());
     for stmt in f.body {
-        body.push(lower_body_stmt(stmt, source, path, is_method)?);
+        body.push(lower_body_stmt(stmt, lines, path, is_method)?);
     }
     let mut locals = Vec::with_capacity(params.len() + 1);
     if is_method {
@@ -800,13 +827,13 @@ fn lower_function(
 /// missing-return diagnostic, except for the single-pass pass body.
 fn check_body_shape(
     body: &[BodyStmt],
-    ret: &Option<Ann>,
+    ret: &Ann,
     path: &str,
     line: usize,
     locals: &mut Vec<String>,
     top: bool,
 ) -> Result<(), String> {
-    let none_ret = matches!(ret, Some(ann) if ann.kind == AnnKind::NoneT);
+    let none_ret = ret.kind == AnnKind::NoneT;
     for (index, stmt) in body.iter().enumerate() {
         let is_last = index + 1 == body.len();
         match stmt {
@@ -906,11 +933,11 @@ pub fn always_returns(body: &[BodyStmt]) -> bool {
 
 fn lower_body_stmt(
     stmt: Stmt,
-    source: &str,
+    lines: &LineIndex,
     path: &str,
     is_method: bool,
 ) -> Result<BodyStmt, String> {
-    let line = line_of(source, stmt.range().start().to_usize());
+    let line = lines.line_of(stmt.range().start().to_usize());
     match stmt {
         Stmt::Return(ret) => Ok(BodyStmt::Return {
             value: ret
@@ -990,15 +1017,15 @@ fn lower_body_stmt(
             let test = lower_expr(&ifs.test, path, line)?;
             let mut body = Vec::with_capacity(ifs.body.len());
             for stmt in ifs.body {
-                body.push(lower_body_stmt(stmt, source, path, is_method)?);
+                body.push(lower_body_stmt(stmt, lines, path, is_method)?);
             }
             branches.push((test, body));
             let mut else_body = None;
             for clause in ifs.elif_else_clauses {
-                let clause_line = line_of(source, clause.range.start().to_usize());
+                let clause_line = lines.line_of(clause.range.start().to_usize());
                 let mut clause_body = Vec::with_capacity(clause.body.len());
                 for stmt in clause.body {
-                    clause_body.push(lower_body_stmt(stmt, source, path, is_method)?);
+                    clause_body.push(lower_body_stmt(stmt, lines, path, is_method)?);
                 }
                 match clause.test {
                     Some(test) => {
@@ -1098,10 +1125,21 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
                     "subscript base must be a bare class name",
                 ));
             };
-            ExprKind::Subscript {
-                base,
-                args: subscript_args(&sub.slice, path, line)?,
-            }
+            let args = subscript_args(&sub.slice, path, line).map_err(|err| {
+                // The inner error is already subset_error-formatted with
+                // this call's path and line; keep its detail so the
+                // wrapped message carries exactly one prefix.
+                let prefix = format!("{path}:{line}: skeleton subset error: ");
+                let detail = err.strip_prefix(&prefix).unwrap_or(&err);
+                subset_error(
+                    path,
+                    line,
+                    &format!(
+                        "subscript arguments in value position must be type expressions: {detail}"
+                    ),
+                )
+            })?;
+            ExprKind::Subscript { base, args }
         }
         ast::Expr::Call(call) => {
             if matches!(&*call.func, ast::Expr::Name(n) if n.id == "super") {
@@ -1263,44 +1301,77 @@ fn lower_lit(expr: &ast::Expr, path: &str, line: usize) -> Result<Lit, String> {
     }
 }
 
+/// The ruff statement kind, for subset-rejection messages. Exhaustive
+/// over every `Stmt` variant so a future parser update fails to compile
+/// here instead of silently reporting `unsupported`.
 fn stmt_kind_name(stmt: &Stmt) -> &'static str {
     match stmt {
+        Stmt::FunctionDef(_) => "FunctionDef",
         Stmt::ClassDef(_) => "ClassDef",
-        Stmt::Import(_) => "Import",
-        Stmt::ImportFrom(_) => "ImportFrom",
-        Stmt::If(_) => "If",
-        Stmt::While(_) => "While",
-        Stmt::For(_) => "For",
-        Stmt::Expr(_) => "Expr",
+        Stmt::Return(_) => "Return",
+        Stmt::Delete(_) => "Delete",
+        Stmt::TypeAlias(_) => "TypeAlias",
         Stmt::Assign(_) => "Assign",
         Stmt::AugAssign(_) => "AugAssign",
-        Stmt::Delete(_) => "Delete",
+        Stmt::AnnAssign(_) => "AnnAssign",
+        Stmt::For(_) => "For",
+        Stmt::While(_) => "While",
+        Stmt::If(_) => "If",
         Stmt::With(_) => "With",
-        Stmt::Try(_) => "Try",
-        Stmt::Raise(_) => "Raise",
-        Stmt::Assert(_) => "Assert",
         Stmt::Match(_) => "Match",
-        _ => "unsupported",
+        Stmt::Raise(_) => "Raise",
+        Stmt::Try(_) => "Try",
+        Stmt::Assert(_) => "Assert",
+        Stmt::Import(_) => "Import",
+        Stmt::ImportFrom(_) => "ImportFrom",
+        Stmt::Global(_) => "Global",
+        Stmt::Nonlocal(_) => "Nonlocal",
+        Stmt::Expr(_) => "Expr",
+        Stmt::Pass(_) => "Pass",
+        Stmt::Break(_) => "Break",
+        Stmt::Continue(_) => "Continue",
+        Stmt::IpyEscapeCommand(_) => "IpyEscapeCommand",
     }
 }
 
+/// The ruff expression kind, for subset-rejection messages. Exhaustive
+/// over every `Expr` variant so a future parser update fails to compile
+/// here instead of silently reporting `unsupported`.
 fn expr_kind_name(expr: &ast::Expr) -> &'static str {
     match expr {
-        ast::Expr::Name(_) => "Name",
-        ast::Expr::Call(_) => "Call",
-        ast::Expr::BinOp(_) => "BinOp",
-        ast::Expr::Compare(_) => "Compare",
         ast::Expr::BoolOp(_) => "BoolOp",
+        ast::Expr::Named(_) => "Named",
+        ast::Expr::BinOp(_) => "BinOp",
         ast::Expr::UnaryOp(_) => "UnaryOp",
-        ast::Expr::Attribute(_) => "Attribute",
-        ast::Expr::Subscript(_) => "Subscript",
         ast::Expr::Lambda(_) => "Lambda",
         ast::Expr::If(_) => "IfExp",
-        ast::Expr::Tuple(_) => "Tuple",
-        ast::Expr::List(_) => "List",
         ast::Expr::Dict(_) => "Dict",
+        ast::Expr::Set(_) => "Set",
+        ast::Expr::ListComp(_) => "ListComp",
+        ast::Expr::SetComp(_) => "SetComp",
+        ast::Expr::DictComp(_) => "DictComp",
+        ast::Expr::Generator(_) => "Generator",
+        ast::Expr::Await(_) => "Await",
+        ast::Expr::Yield(_) => "Yield",
+        ast::Expr::YieldFrom(_) => "YieldFrom",
+        ast::Expr::Compare(_) => "Compare",
+        ast::Expr::Call(_) => "Call",
         ast::Expr::FString(_) => "FString",
-        _ => "unsupported",
+        ast::Expr::TString(_) => "TString",
+        ast::Expr::StringLiteral(_) => "StringLiteral",
+        ast::Expr::BytesLiteral(_) => "BytesLiteral",
+        ast::Expr::NumberLiteral(_) => "NumberLiteral",
+        ast::Expr::BooleanLiteral(_) => "BooleanLiteral",
+        ast::Expr::NoneLiteral(_) => "NoneLiteral",
+        ast::Expr::EllipsisLiteral(_) => "EllipsisLiteral",
+        ast::Expr::Attribute(_) => "Attribute",
+        ast::Expr::Subscript(_) => "Subscript",
+        ast::Expr::Starred(_) => "Starred",
+        ast::Expr::Name(_) => "Name",
+        ast::Expr::List(_) => "List",
+        ast::Expr::Tuple(_) => "Tuple",
+        ast::Expr::Slice(_) => "Slice",
+        ast::Expr::IpyEscapeCommand(_) => "IpyEscapeCommand",
     }
 }
 
@@ -1324,20 +1395,4 @@ fn operator_name(op: ast::Operator) -> &'static str {
 
 fn subset_error(path: &str, line: usize, detail: &str) -> String {
     format!("{path}:{line}: skeleton subset error: {detail}")
-}
-
-/// Byte offsets of line starts (0 first): the ast_serialize line map.
-fn line_starts(source: &str) -> Vec<usize> {
-    let mut starts = vec![0];
-    for (index, byte) in source.bytes().enumerate() {
-        if byte == b'\n' {
-            starts.push(index + 1);
-        }
-    }
-    starts
-}
-
-fn line_of(source: &str, offset: usize) -> usize {
-    let starts = line_starts(source);
-    starts.partition_point(|start| *start <= offset)
 }

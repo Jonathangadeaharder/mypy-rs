@@ -30,6 +30,52 @@
       "notes": "Class definition with an empty body; supported since the #118 class/member slice."
     },
     {
+      "id": "functions.forward_references",
+      "status": "supported",
+      "arm": "forward_references.py",
+      "exit_code": 0,
+      "notes": "Function and method bodies resolve names bound later in the module: later functions, methods and module variables, plus self attributes assigned in a later method (#126)."
+    },
+    {
+      "id": "classes.override_selfattr_inference",
+      "status": "supported",
+      "arm": "classes_override_selfattr_inference.py",
+      "exit_code": 0,
+      "notes": "A self attribute assigned from an overridden method infers the override's return type, not the base's: the collection sweep resolves the class's own members (stale-snapshot fix from the #139 review)."
+    },
+    {
+      "id": "classes.generic_classvar_read",
+      "status": "unsupported",
+      "arm": "classes_generic_classvar_read.py",
+      "exit_code": 2,
+      "reject_marker": "reading a class variable through a parameterized class object",
+      "notes": "mypy accepts the bare-generic class-object read; the subset would need frame substitution, so it rejects (#127)."
+    },
+    {
+      "id": "classes.shadowed_base_attr",
+      "status": "unsupported",
+      "arm": "classes_shadowed_base_attr.py",
+      "exit_code": 2,
+      "reject_marker": "instance attribute assignment incompatibility",
+      "notes": "A subclass attribute overriding a base attribute whose type binds only later in the module: mypy renders an assignment error, the subset loudly rejects it instead of silently keeping the provisional own member (#139 review)."
+    },
+    {
+      "id": "classes.shadowed_base_classvar",
+      "status": "unsupported",
+      "arm": "classes_shadowed_base_classvar.py",
+      "exit_code": 2,
+      "reject_marker": "overriding a base class member",
+      "notes": "A subclass class variable shadowing a base instance attribute collected only in pass 2 escaped the pass-1 VarDecl guard; mypy renders an incompatible-override assignment error, the subset loudly rejects it (round-5 review, #93). A covariant override stays supported."
+    },
+    {
+      "id": "classes.inherited_classvar_read",
+      "status": "unsupported",
+      "arm": "classes_inherited_classvar_read.py",
+      "exit_code": 2,
+      "reject_marker": "reading a class variable this class does not define",
+      "notes": "mypy accepts the inherited class-variable read; own-member lookup cannot model it (#127)."
+    },
+    {
       "id": "control_flow.conditional",
       "status": "supported",
       "arm": "control_flow.py",

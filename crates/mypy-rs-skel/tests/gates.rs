@@ -260,6 +260,18 @@ fn manifest_three_way_partition() {
                     ));
                     continue;
                 };
+                if marker.trim().is_empty() {
+                    failures.push(format!(
+                        "{}: unsupported entry declares an empty reject_marker; an empty \
+                         substring matches any stderr",
+                        cap.id
+                    ));
+                    continue;
+                }
+                let Some(&want_code) = cap.exit_code.as_ref() else {
+                    failures.push(format!("{}: unsupported entry has no exit_code", cap.id));
+                    continue;
+                };
                 if expected_path(arm).exists() {
                     failures.push(format!(
                         "{}: unsupported arm {arm} has an .expected file; unsupported and \
@@ -270,10 +282,6 @@ fn manifest_three_way_partition() {
                 }
                 let (code, stdout, stderr) = run_bin(arm);
                 let stderr = String::from_utf8_lossy(&stderr);
-                let Some(&want_code) = cap.exit_code.as_ref() else {
-                    failures.push(format!("{}: unsupported entry has no exit_code", cap.id));
-                    continue;
-                };
                 if code != want_code {
                     failures.push(format!(
                         "{}: arm {arm} exited {code}, manifest declares {want_code}; \
@@ -304,13 +312,21 @@ fn manifest_three_way_partition() {
         manifest.capabilities.len()
     );
     assert!(
-        failures.is_empty(),
-        "manifest partition failures:\n{}",
-        failures.join("\n")
+        supported > 0,
+        "the supported category collapsed; the manifest must keep supported arms"
+    );
+    assert!(
+        unsupported > 0,
+        "the unsupported category collapsed; the manifest must keep unsupported arms"
     );
     assert_eq!(
         semantic_differences, 0,
         "no arm may differ from Python mypy; the semantic-difference count must stay zero"
+    );
+    assert!(
+        failures.is_empty(),
+        "manifest partition failures:\n{}",
+        failures.join("\n")
     );
 }
 
@@ -387,9 +403,14 @@ fn gate3_production_seam_count_unchanged() {
 #[test]
 fn gate4_cache_and_corpus_isolation() {
     let dir = testdata_dir();
+    // Control arms plus the manifest arms, deduplicated: empty_control.py
+    // is both a gate 1 control and the module.pass_statement arm.
+    let manifest = load_manifest();
     let mut arms = vec![TRIVIAL.to_string(), EMPTY_CONTROL.to_string()];
-    for cap in &load_manifest().capabilities {
-        arms.push(cap.arm.clone());
+    for cap in &manifest.capabilities {
+        if !arms.contains(&cap.arm) {
+            arms.push(cap.arm.clone());
+        }
     }
     let before: Vec<(PathBuf, Vec<u8>)> = arms
         .iter()

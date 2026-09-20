@@ -107,14 +107,23 @@ pub fn class_frame_tvars(model: &ClassModel) -> Vec<Type> {
 pub type SubstEnv = HashMap<(i64, String), Type>;
 
 /// Build the env mapping the class-frame type variables of `model` to
-/// `args` (same length required).
-pub fn frame_env(model: &ClassModel, args: &[Type]) -> SubstEnv {
-    debug_assert_eq!(model.tvars.len(), args.len());
+/// `args`. A length mismatch is a broken invariant (the caller
+/// validated the argument count), so it is a checked failure, never a
+/// silently truncating zip.
+pub fn frame_env(model: &ClassModel, args: &[Type]) -> Result<SubstEnv, String> {
+    if model.tvars.len() != args.len() {
+        return Err(format!(
+            "the class frame of {} holds {} type variables but {} arguments",
+            model.fullname,
+            model.tvars.len(),
+            args.len()
+        ));
+    }
     let mut env = SubstEnv::new();
     for (tvar, arg) in model.tvars.iter().zip(args) {
         env.insert((tvar.raw_id, model.fullname.clone()), arg.clone());
     }
-    env
+    Ok(env)
 }
 
 /// Replace every type variable whose (raw id, namespace) is in `env`.

@@ -237,7 +237,7 @@ def classify(
     SEMANTIC_DIFF. Exit 2 without the declared marker lands in the tracked
     UNCLASSIFIED bucket.
     """
-    if capability.status == "unsupported" and capability.reject_marker is None:
+    if capability.status == "unsupported" and not (capability.reject_marker or "").strip():
         raise GateError(f"manifest entry {capability.id} is unsupported without a marker")
     program = "\n".join(case.main) + "\n" if case.main else ""
     code, stdout, stderr = run_skeleton(binary, program)

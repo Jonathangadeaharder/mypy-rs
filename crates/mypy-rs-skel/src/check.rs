@@ -76,6 +76,11 @@ fn input(path: &str, line: usize, detail: &str) -> CheckError {
 #[derive(Clone)]
 enum Binding {
     Var(Type),
+    /// A module-level value statement bound by name but not yet typed;
+    /// pass 3 fills the real type at its position. Reading one before
+    /// its definition is mypy's used-before-def, which the subset
+    /// rejects instead of modeling.
+    Pending,
     Class(String),
     Function(Sig),
     /// `<binding> = TypeVar(...)`: `name` is the string passed to
@@ -102,6 +107,15 @@ struct ClassFrame {
 /// `resolve_bases` output: the resolved (base fullname, base args)
 /// pairs plus each base's MRO, used by the linearizer.
 type ResolvedBases = (Vec<(String, Vec<Type>)>, Vec<Vec<String>>);
+
+/// The per-class state one collection sweep walks with: the lookups
+/// a candidate's value typing needs, shared by every method body.
+struct CollectCtx<'a> {
+    bindings: &'a HashMap<String, Binding>,
+    frame: &'a ClassFrame,
+    self_ty: Type,
+    model: &'a ClassModel,
+}
 
 /// The name-resolution environment of one checked position.
 struct Scope<'a> {
@@ -208,9 +222,32 @@ impl Driver {
     ) -> Result<HashMap<String, Binding>, CheckError> {
         let ast = crate::subset::parse_module(source, path).map_err(CheckError::Input)?;
         let mut bindings: HashMap<String, Binding> = HashMap::new();
+        // Pass 1: bind every top-level name. A class body gets its frame,
+        // bases, MRO, class variables and method signatures; a module
+        // value statement binds a placeholder whose type lands in pass 3.
         for stmt in &ast.body {
-            self.check_top_stmt(&mut bindings, module, dir, &stmt.kind, stmt.line)?;
+            self.bind_top_stmt(&mut bindings, module, dir, &stmt.kind, stmt.line)?;
         }
+        // Pass 1b: resolve the module annotations now that every name is
+        // bound. mypy resolves annotations after semantic analysis, so a
+        // forward reference in an annotation must not reject.
+        for stmt in &ast.body {
+            if let StmtKind::AnnAssign { name, ann, .. } = &stmt.kind {
+                let declared = {
+                    let scope = Scope {
+                        module: &bindings,
+                        locals: None,
+                        frame: None,
+                    };
+                    self.resolve_ann(&scope, ann)?
+                };
+                bindings.insert(name.clone(), Binding::Var(declared));
+            }
+        }
+        // Pass 3 walks the module in statement order; a class collects
+        // its instance attributes and validates its class-variable
+        // overrides as the walk reaches it. See `check_module_ordered`.
+        self.check_module_ordered(&mut bindings, module, &ast.body)?;
         Ok(bindings)
     }
 
@@ -259,7 +296,9 @@ impl Driver {
         Ok(())
     }
 
-    fn check_top_stmt(
+    /// Pass 1: bind one top-level statement's names. Function and
+    /// class bodies are deferred to `check_top_bodies`.
+    fn bind_top_stmt(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         module: &str,
@@ -303,7 +342,10 @@ impl Driver {
                         Binding::Class(full) => Binding::Class(full.clone()),
                         Binding::Function(sig) => Binding::Function(sig.clone()),
                         Binding::Var(t) => Binding::Var(t.clone()),
-                        Binding::TypeVar { .. } | Binding::Module | Binding::Marker => {
+                        Binding::TypeVar { .. }
+                        | Binding::Module
+                        | Binding::Marker
+                        | Binding::Pending => {
                             return Err(input(
                                 &self.path,
                                 line,
@@ -341,43 +383,21 @@ impl Driver {
                     },
                 );
             }
-            StmtKind::Assign { name, value, line } => {
+            StmtKind::Assign { name, line, .. } => {
                 self.reject_module_rebind(bindings, name, *line)?;
-                let scope = Scope {
-                    module: bindings,
-                    locals: None,
-                    frame: None,
-                };
-                let t = self.type_expr(&scope, value)?;
-                bindings.insert(name.clone(), Binding::Var(t));
+                // The value types in pass 3, in statement order, so a
+                // module value that names a later definition rejects the
+                // way mypy's used-before-def does.
+                bindings.insert(name.clone(), Binding::Pending);
             }
-            StmtKind::AnnAssign {
-                name,
-                ann,
-                value,
-                line,
-            } => {
+            StmtKind::AnnAssign { name, line, .. } => {
                 self.reject_module_rebind(bindings, name, *line)?;
-                let scope = Scope {
-                    module: bindings,
-                    locals: None,
-                    frame: None,
-                };
-                let declared = self.resolve_ann(&scope, ann)?;
-                let expr_t = self.type_expr(&scope, value)?;
-                let verdict = require_decidable(
-                    self.sub(&expr_t, &declared),
-                    "assignment",
-                    &self.path,
-                    *line,
-                )?;
-                if !verdict {
-                    self.incompatible_assignment(&expr_t, &declared, *line)?;
-                }
-                bindings.insert(name.clone(), Binding::Var(declared));
+                // Pass 1b resolves the annotation once every name is
+                // bound; pass 3 checks the value.
+                bindings.insert(name.clone(), Binding::Pending);
             }
             StmtKind::ClassDef(cls) => self.process_class(bindings, module, cls)?,
-            StmtKind::FuncDef(func) => self.process_function(bindings, func)?,
+            StmtKind::FuncDef(func) => self.bind_function(bindings, func)?,
             StmtKind::Pass => {}
         }
         Ok(())
@@ -445,7 +465,7 @@ impl Driver {
             ));
         }
         model_ref.members.insert(name.to_string(), member);
-        self.refresh(class_fullname)
+        Ok(())
     }
 
     fn process_class(
@@ -506,32 +526,18 @@ impl Driver {
                              the supported error classes",
                         ));
                     }
-                    let receiver = {
-                        let model_ref = self.classes.get(&fullname).ok_or_else(|| {
-                            CheckError::Internal(format!(
-                                "the class model for {fullname} is missing"
-                            ))
-                        })?;
-                        instance(&fullname, model::class_frame_tvars(model_ref))
-                    };
-                    if self
-                        .find_member(&receiver, name, Some(&fullname))?
-                        .is_some()
-                    {
-                        return Err(input(
-                            &self.path,
-                            *line,
-                            "overriding a base class member is outside the skeleton subset",
-                        ));
-                    }
+                    // A base-member override is validated in pass 2b, once
+                    // the base instance attributes exist; here the member
+                    // registers unconditionally.
                     self.register_member(&fullname, name, Member::ClassVar(declared), *line)?;
                 }
-                ClassStmt::Method(func) => {
-                    self.process_method(bindings, &frame, &fullname, func)?
-                }
+                ClassStmt::Method(func) => self.bind_method(bindings, &frame, &fullname, func)?,
                 ClassStmt::Pass => {}
             }
         }
+        // Splice the class variables and method signatures into the
+        // resolver snapshot, so a later member lookup resolves them.
+        self.refresh(&fullname)?;
         Ok(())
     }
 
@@ -711,7 +717,9 @@ impl Driver {
         Ok(model_ref)
     }
 
-    fn process_method(
+    /// Pass 1 for a method: resolve and register its signature. The
+    /// body checks later, in `check_method_body`.
+    fn bind_method(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         frame: &ClassFrame,
@@ -726,35 +734,12 @@ impl Driver {
             };
             self.resolve_sig(&scope, func)?
         };
-        self.register_member(
-            class_fullname,
-            &func.name,
-            Member::Method(sig.clone()),
-            func.line,
-        )?;
-        let self_ty = {
-            let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
-                CheckError::Internal(format!("the class model for {class_fullname} is missing"))
-            })?;
-            instance(class_fullname, model::class_frame_tvars(model_ref))
-        };
-        let mut locals: HashMap<String, Type> = HashMap::new();
-        locals.insert("self".to_string(), self_ty);
-        for (pname, ptype) in &sig.params {
-            locals.insert(pname.clone(), ptype.clone());
-        }
-        self.check_body(
-            bindings,
-            Some(frame),
-            &sig.ret,
-            &mut locals,
-            &func.body,
-            func.line,
-        )?;
-        self.check_override(class_fullname, &func.name, &sig, func.line)
+        self.register_member(class_fullname, &func.name, Member::Method(sig), func.line)
     }
 
-    fn process_function(
+    /// Pass 1 for a module function: bind its signature only. The
+    /// body checks later, in `check_function_body`.
+    fn bind_function(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         func: &FuncDefStmt,
@@ -768,7 +753,26 @@ impl Driver {
             };
             self.resolve_sig(&scope, func)?
         };
-        bindings.insert(func.name.clone(), Binding::Function(sig.clone()));
+        bindings.insert(func.name.clone(), Binding::Function(sig));
+        Ok(())
+    }
+
+    /// Pass 3: check a deferred module-function body against the
+    /// full module bindings.
+    fn check_function_body(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        func: &FuncDefStmt,
+    ) -> Result<(), CheckError> {
+        let sig = match bindings.get(&func.name) {
+            Some(Binding::Function(sig)) => sig.clone(),
+            _ => {
+                return Err(CheckError::Internal(format!(
+                    "the binding for the function `{}` is missing",
+                    func.name
+                )))
+            }
+        };
         let mut locals: HashMap<String, Type> = HashMap::new();
         for (pname, ptype) in &sig.params {
             locals.insert(pname.clone(), ptype.clone());
@@ -776,15 +780,364 @@ impl Driver {
         self.check_body(bindings, None, &sig.ret, &mut locals, &func.body, func.line)
     }
 
+    /// Pass 3: check a deferred method body against the full module
+    /// bindings and the class model, then the override check (the
+    /// body-then-override order mypy uses).
+    fn check_method_body(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        class_fullname: &str,
+        func: &FuncDefStmt,
+    ) -> Result<(), CheckError> {
+        let (tvars, sig) = {
+            let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {class_fullname} is missing"))
+            })?;
+            match model_ref.members.get(&func.name) {
+                Some(Member::Method(sig)) => (model_ref.tvars.clone(), sig.clone()),
+                _ => {
+                    return Err(CheckError::Internal(format!(
+                        "the method `{}` is missing from the model of {class_fullname}",
+                        func.name
+                    )))
+                }
+            }
+        };
+        let frame = ClassFrame {
+            fullname: class_fullname.to_string(),
+            tvars,
+        };
+        let self_ty = {
+            let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {class_fullname} is missing"))
+            })?;
+            instance(class_fullname, model::class_frame_tvars(model_ref))
+        };
+        let mut locals: HashMap<String, Type> = HashMap::new();
+        locals.insert("self".to_string(), self_ty);
+        for (pname, ptype) in &sig.params {
+            locals.insert(pname.clone(), ptype.clone());
+        }
+        self.check_body(
+            bindings,
+            Some(&frame),
+            &sig.ret,
+            &mut locals,
+            &func.body,
+            func.line,
+        )?;
+        self.check_override(class_fullname, &func.name, &sig, func.line)
+    }
+
+    /// Pass 3 driver: walk the module in statement order. Module values
+    /// type against `visible`, the names the earlier statements defined;
+    /// bodies type against every name (`bindings`, which holds the
+    /// module annotations resolved in pass 1b). A class's method bodies
+    /// check here, in file order, so a base precedes its subclasses and
+    /// its own collected attributes are already present.
+    fn check_module_ordered(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        module: &str,
+        body: &[crate::subset::TopStmt],
+    ) -> Result<(), CheckError> {
+        let mut visible: HashMap<String, Binding> = HashMap::new();
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Assign { name, value, .. } => {
+                    let t = {
+                        let scope = Scope {
+                            module: &visible,
+                            locals: None,
+                            frame: None,
+                        };
+                        self.type_expr(&scope, value)?
+                    };
+                    let binding = Binding::Var(t);
+                    bindings.insert(name.clone(), binding.clone());
+                    visible.insert(name.clone(), binding);
+                }
+                StmtKind::AnnAssign {
+                    name, value, line, ..
+                } => {
+                    let declared = match bindings.get(name) {
+                        Some(Binding::Var(t)) => t.clone(),
+                        _ => {
+                            return Err(CheckError::Internal(format!(
+                                "the annotation for the module variable {name} did not resolve"
+                            )))
+                        }
+                    };
+                    let expr_t = {
+                        let scope = Scope {
+                            module: &visible,
+                            locals: None,
+                            frame: None,
+                        };
+                        self.type_expr(&scope, value)?
+                    };
+                    let verdict = require_decidable(
+                        self.sub(&expr_t, &declared),
+                        "assignment",
+                        &self.path,
+                        *line,
+                    )?;
+                    if !verdict {
+                        self.incompatible_assignment(&expr_t, &declared, *line)?;
+                    }
+                    let binding = Binding::Var(declared);
+                    bindings.insert(name.clone(), binding.clone());
+                    visible.insert(name.clone(), binding);
+                }
+                StmtKind::FuncDef(func) => {
+                    self.check_function_body(&*bindings, func)?;
+                    if let Some(binding) = bindings.get(&func.name).cloned() {
+                        visible.insert(func.name.clone(), binding);
+                    }
+                }
+                StmtKind::ClassDef(cls) => {
+                    let fullname = format!("{module}.{}", cls.name);
+                    // Instance attributes collect and class-variable
+                    // overrides validate here, so a base precedes its
+                    // subclasses and its members are present.
+                    self.collect_class_instance_vars(&*bindings, cls, &fullname)?;
+                    self.check_classvar_overrides(cls, &fullname)?;
+                    for stmt in &cls.body {
+                        if let ClassStmt::Method(func) = stmt {
+                            self.check_method_body(&*bindings, &fullname, func)?;
+                        }
+                    }
+                    if let Some(binding) = bindings.get(&cls.name).cloned() {
+                        visible.insert(cls.name.clone(), binding);
+                    }
+                }
+                StmtKind::Import { names } | StmtKind::ImportFrom { names, .. } => {
+                    for name in names {
+                        if let Some(binding) = bindings.get(name).cloned() {
+                            visible.insert(name.clone(), binding);
+                        }
+                    }
+                }
+                StmtKind::TypeVarDecl { binding, .. } => {
+                    if let Some(b) = bindings.get(binding).cloned() {
+                        visible.insert(binding.clone(), b);
+                    }
+                }
+                StmtKind::Pass => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Pass 2 over one class: collect its instance attributes from its
+    /// method bodies before its bodies check, so a method may read an
+    /// attribute another method assigns (mypy binds every instance
+    /// variable during semantic analysis). A loop retries until no
+    /// attribute is added, so a value naming an attribute a later method
+    /// registers still lands.
+    fn collect_class_instance_vars(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        cls: &crate::subset::ClassDefStmt,
+        fullname: &str,
+    ) -> Result<(), CheckError> {
+        while self.collect_class_once(bindings, cls, fullname)? {}
+        Ok(())
+    }
+
+    /// One collection sweep of one class: type every `self.<attr> = ...`
+    /// whose attribute is neither an own member nor base-defined (those
+    /// subtype against the existing member in pass 3, so they must not
+    /// be re-registered), and register the rest. Returns whether any
+    /// attribute was added.
+    fn collect_class_once(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        cls: &crate::subset::ClassDefStmt,
+        fullname: &str,
+    ) -> Result<bool, CheckError> {
+        let mut candidates: Vec<(String, Type)> = Vec::new();
+        {
+            let model_ref = self.classes.get(fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {fullname} is missing"))
+            })?;
+            let frame = ClassFrame {
+                fullname: fullname.to_string(),
+                tvars: model_ref.tvars.clone(),
+            };
+            let ctx = CollectCtx {
+                bindings,
+                frame: &frame,
+                self_ty: instance(fullname, model::class_frame_tvars(model_ref)),
+                model: model_ref,
+            };
+            for stmt in &cls.body {
+                let ClassStmt::Method(func) = stmt else {
+                    continue;
+                };
+                let Some(Member::Method(sig)) = ctx.model.members.get(&func.name) else {
+                    continue;
+                };
+                let mut locals: HashMap<String, Type> = HashMap::new();
+                locals.insert("self".to_string(), ctx.self_ty.clone());
+                for (pname, ptype) in &sig.params {
+                    locals.insert(pname.clone(), ptype.clone());
+                }
+                self.collect_body_candidates(&ctx, &mut locals, &func.body, &mut candidates)?;
+            }
+        }
+        let mut applied = false;
+        for (attr, vt) in candidates {
+            let Some(model_ref) = self.classes.get_mut(fullname) else {
+                return Err(CheckError::Internal(format!(
+                    "the class model for {fullname} is missing"
+                )));
+            };
+            if model_ref.members.contains_key(&attr) {
+                continue;
+            }
+            model_ref.members.insert(attr, Member::InstanceVar(vt));
+            applied = true;
+        }
+        if applied {
+            self.refresh(fullname)?;
+        }
+        Ok(applied)
+    }
+
+    /// Pass 2b: reject a class variable that overrides a base member
+    /// incompatibly. mypy allows a covariant override and rejects the
+    /// rest as an assignment error, which the subset loudly rejects.
+    /// Runs after pass 2, so a base instance attribute the pass-1 class
+    /// body could not see is present here.
+    fn check_classvar_overrides(
+        &mut self,
+        cls: &crate::subset::ClassDefStmt,
+        fullname: &str,
+    ) -> Result<(), CheckError> {
+        let lines: HashMap<String, usize> = cls
+            .body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                ClassStmt::VarDecl { name, line, .. } => Some((name.clone(), *line)),
+                _ => None,
+            })
+            .collect();
+        let (classvars, receiver) = {
+            let model_ref = self.classes.get(fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {fullname} is missing"))
+            })?;
+            let classvars: Vec<(String, Type)> = model_ref
+                .members
+                .iter()
+                .filter_map(|(name, member)| match member {
+                    Member::ClassVar(t) => Some((name.clone(), t.clone())),
+                    _ => None,
+                })
+                .collect();
+            let receiver = instance(fullname, model::class_frame_tvars(model_ref));
+            (classvars, receiver)
+        };
+        for (name, own_ty) in classvars {
+            let line = lines.get(&name).copied().ok_or_else(|| {
+                CheckError::Internal(format!(
+                    "the declaration line for the class variable {fullname}.{name} is missing"
+                ))
+            })?;
+            let Some(found) = self.find_member(&receiver, &name, Some(fullname))? else {
+                continue;
+            };
+            let Found::Var(base_ty) = found else {
+                return Err(input(
+                    &self.path,
+                    line,
+                    "overriding a base class member is outside the skeleton subset",
+                ));
+            };
+            let verdict = require_decidable(
+                self.sub(&own_ty, &base_ty),
+                "class attribute override",
+                &self.path,
+                line,
+            )?;
+            if !verdict {
+                return Err(input(
+                    &self.path,
+                    line,
+                    "overriding a base class member is outside the skeleton subset",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The per-body walk of one sweep: collect self-attribute
+    /// candidates and mirror the local-assignment typing so later
+    /// candidates see the same names pass 3 will. A typing failure is
+    /// skipped, never an error: pass 3 re-types the statement and
+    /// rejects it with the construct-naming message.
+    fn collect_body_candidates(
+        &self,
+        ctx: &CollectCtx,
+        locals: &mut HashMap<String, Type>,
+        seq: &[BodyStmt],
+        candidates: &mut Vec<(String, Type)>,
+    ) -> Result<(), CheckError> {
+        for stmt in seq {
+            let scope = Scope {
+                module: ctx.bindings,
+                locals: Some(&*locals),
+                frame: Some(ctx.frame),
+            };
+            match stmt {
+                BodyStmt::SelfAssign { attr, value, .. } => {
+                    if ctx.model.members.contains_key(attr)
+                        || self.find_member(&ctx.self_ty, attr, None)?.is_some()
+                    {
+                        continue;
+                    }
+                    if let Ok(vt) = self.type_expr(&scope, value) {
+                        candidates.push((attr.clone(), vt));
+                    }
+                }
+                BodyStmt::LocalAnnAssign {
+                    name, ann, value, ..
+                } => {
+                    if let Ok(declared) = self.resolve_ann(&scope, ann) {
+                        if self.type_expr(&scope, value).is_ok() {
+                            locals.insert(name.clone(), declared);
+                        }
+                    }
+                }
+                BodyStmt::LocalAssign { name, value, .. } => {
+                    if let Ok(t) = self.type_expr(&scope, value) {
+                        locals.insert(name.clone(), t);
+                    }
+                }
+                BodyStmt::If {
+                    branches,
+                    else_body,
+                    ..
+                } => {
+                    for (_, body) in branches {
+                        self.collect_body_candidates(ctx, locals, body, candidates)?;
+                    }
+                    if let Some(else_body) = else_body {
+                        self.collect_body_candidates(ctx, locals, else_body, candidates)?;
+                    }
+                }
+                BodyStmt::Call(_) | BodyStmt::Return { .. } | BodyStmt::Pass => {}
+            }
+        }
+        Ok(())
+    }
+
     fn resolve_sig(&self, scope: &Scope, func: &FuncDefStmt) -> Result<Sig, CheckError> {
         let mut params = Vec::with_capacity(func.params.len());
         for p in &func.params {
             params.push((p.name.clone(), self.resolve_ann(scope, &p.ann)?));
         }
-        let ret = match &func.ret {
-            Some(ann) => self.resolve_ann(scope, ann)?,
-            None => Type::NoneType,
-        };
+        let ret = self.resolve_ann(scope, &func.ret)?;
         Ok(Sig { params, ret })
     }
 
@@ -870,18 +1223,15 @@ impl Driver {
                             ))
                         }
                         None => {
-                            let class_fullname =
-                                scope.frame.map(|f| f.fullname.clone()).ok_or_else(|| {
-                                    CheckError::Internal(
-                                        "a self assignment outside a class frame".to_string(),
-                                    )
-                                })?;
-                            self.register_member(
-                                &class_fullname,
-                                attr,
-                                Member::InstanceVar(vt),
+                            // Collection ran against these bindings just
+                            // before this body, so an unregistered
+                            // attribute means its value never typed.
+                            return Err(input(
+                                &self.path,
                                 *line,
-                            )?;
+                                "an instance attribute whose value the collection \
+                                 pass could not type is outside the skeleton subset",
+                            ));
                         }
                     }
                 }
@@ -983,8 +1333,9 @@ impl Driver {
 
     /// The method-override check: every base definer in the MRO (mypy
     /// checks each, not just the nearest) must accept the override's
-    /// parameters and return a supertype. `__init__`/`__new__` are
-    /// exempt, as in mypy.
+    /// parameters and return a supertype. `__init__`, `__new__`,
+    /// `__init_subclass__` and `__post_init__` are exempt, matching
+    /// mypy's checker.py exemption list.
     fn check_override(
         &self,
         class_fullname: &str,
@@ -992,7 +1343,10 @@ impl Driver {
         sig: &Sig,
         line: usize,
     ) -> Result<(), CheckError> {
-        if name == "__init__" || name == "__new__" {
+        if matches!(
+            name,
+            "__init__" | "__new__" | "__init_subclass__" | "__post_init__"
+        ) {
             return Ok(());
         }
         let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
@@ -1179,6 +1533,11 @@ impl Driver {
         }
         match scope.module.get(name) {
             Some(Binding::Var(t)) => Ok(t.clone()),
+            Some(Binding::Pending) => Err(input(
+                &self.path,
+                line,
+                &format!("reading `{name}` before its definition is outside the skeleton subset"),
+            )),
             Some(Binding::Class(full)) => {
                 let model_ref = self.classes.get(full).ok_or_else(|| {
                     CheckError::Internal(format!("the class model for {full} is missing"))
@@ -1250,7 +1609,7 @@ impl Driver {
                 )),
             },
             Type::TypeType { item, .. } => match *item {
-                Type::Instance { type_ref, .. } => {
+                Type::Instance { type_ref, args, .. } => {
                     let model_ref = self.classes.get(&type_ref).ok_or_else(|| {
                         input(
                             &self.path,
@@ -1260,12 +1619,29 @@ impl Driver {
                             ),
                         )
                     })?;
+                    // Conservative (#127): parameterized class objects
+                    // would need frame_env substitution first; reject so
+                    // no bare tvar reaches the kernel.
+                    if !args.is_empty() {
+                        return Err(input(
+                            &self.path,
+                            line,
+                            "reading a class variable through a parameterized class \
+                             object is outside the skeleton subset",
+                        ));
+                    }
                     match model_ref.members.get(name) {
                         Some(Member::ClassVar(t)) => Ok(t.clone()),
-                        _ => Err(input(
+                        Some(_) => Err(input(
                             &self.path,
                             line,
                             "reading a non-class-variable through a class object \
+                             is outside the skeleton subset",
+                        )),
+                        None => Err(input(
+                            &self.path,
+                            line,
+                            "reading a class variable this class does not define \
                              is outside the skeleton subset",
                         )),
                     }
@@ -1460,16 +1836,13 @@ impl Driver {
             )
         })?;
         let receiver = instance(fullname, model::class_frame_tvars(model_ref));
-        let init = match self.find_member(&receiver, "__init__", None)? {
-            Some(Found::Method(sig)) => sig,
-            _ => {
-                return Err(input(
-                    &self.path,
-                    line,
-                    "constructing a class without an __init__ is outside \
-                     the skeleton subset",
-                ))
-            }
+        let Some((init, _)) = self.find_corpus_method(&receiver, "__init__")? else {
+            return Err(input(
+                &self.path,
+                line,
+                "constructing a class without an __init__ is outside \
+                 the skeleton subset",
+            ));
         };
         let class_args = match explicit {
             Some(args) => {
@@ -1487,6 +1860,13 @@ impl Driver {
                 args
             }
             None => {
+                if init.params.len() != arg_types.len() {
+                    return Err(input(
+                        &self.path,
+                        line,
+                        "an argument count mismatch is outside the skeleton subset",
+                    ));
+                }
                 let mut inferred = Vec::with_capacity(model_ref.tvars.len());
                 for tvar in &model_ref.tvars {
                     let needle = model::tvar_type(tvar, fullname);
@@ -1508,7 +1888,7 @@ impl Driver {
                 inferred
             }
         };
-        let env = frame_env(model_ref, &class_args);
+        let env = frame_env(model_ref, &class_args).map_err(CheckError::Internal)?;
         let sig = subst_sig(&init, &env);
         self.check_call_sig(&sig, arg_types, line)?;
         Ok(instance(fullname, class_args))
@@ -1564,9 +1944,11 @@ impl Driver {
                     ("builtins.str", "builtins.str", BinOpKind::Add) => {
                         instance("builtins.str", Vec::new())
                     }
-                    ("builtins.float", "builtins.float", _) => {
-                        instance("builtins.float", Vec::new())
-                    }
+                    (
+                        "builtins.float",
+                        "builtins.float",
+                        BinOpKind::Add | BinOpKind::Mult | BinOpKind::Mod,
+                    ) => instance("builtins.float", Vec::new()),
                     ("builtins.int", "builtins.int", BinOpKind::Mod) => {
                         instance("builtins.int", Vec::new())
                     }
@@ -1791,7 +2173,7 @@ impl Driver {
                         self.path
                     ))
                 })?;
-            let env = frame_env(model_ref, &args_at);
+            let env = frame_env(model_ref, &args_at).map_err(CheckError::Internal)?;
             let found = match member {
                 Member::Method(sig) => Found::Method(subst_sig(sig, &env)),
                 Member::ClassVar(t) | Member::InstanceVar(t) => Found::Var(subst(t, &env)),
@@ -1813,6 +2195,53 @@ impl Driver {
             .map(|(found, _)| found))
     }
 
+    /// Resolve a method against corpus class models only: walk the
+    /// receiver's MRO like `find_member_entry`, but skip MRO entries
+    /// with no corpus model (builtins.object, typing.Generic) instead
+    /// of surfacing their fixture-backed members. Callers whose
+    /// intended diagnostic is "the corpus does not define this" get it
+    /// instead of the fixture-walk's outside-the-subset error.
+    fn find_corpus_method(
+        &self,
+        receiver: &Type,
+        name: &str,
+    ) -> Result<Option<(Sig, String)>, CheckError> {
+        let Type::Instance {
+            type_ref: recv_ref,
+            args: recv_args,
+            ..
+        } = receiver
+        else {
+            return Err(CheckError::Internal(
+                "a member lookup on a non-instance receiver".to_string(),
+            ));
+        };
+        let snap = self.resolver.get(recv_ref).ok_or_else(|| {
+            CheckError::Internal(format!(
+                "{}: the snapshot for {recv_ref} is missing; the fixture closure \
+                 no longer covers the corpus",
+                self.path
+            ))
+        })?;
+        for entry in &snap.mro {
+            let Some(model_ref) = self.classes.get(entry) else {
+                continue;
+            };
+            let Some(Member::Method(sig)) = model_ref.members.get(name) else {
+                continue;
+            };
+            let args_at = self.map_args(recv_ref, recv_args, entry)?.ok_or_else(|| {
+                CheckError::Internal(format!(
+                    "{}: no inheritance path from {recv_ref} to {entry}",
+                    self.path
+                ))
+            })?;
+            let env = frame_env(model_ref, &args_at).map_err(CheckError::Internal)?;
+            return Ok(Some((subst_sig(sig, &env), entry.to_string())));
+        }
+        Ok(None)
+    }
+
     /// Map the receiver's type arguments to the definer's frame: follow
     /// the model's bases, substituting outward, until `target` is
     /// reached. Non-corpus bases (typing.Generic, builtins.object) end
@@ -1829,7 +2258,7 @@ impl Driver {
         let Some(model_ref) = self.classes.get(from_ref) else {
             return Ok(None);
         };
-        let env = frame_env(model_ref, from_args);
+        let env = frame_env(model_ref, from_args).map_err(CheckError::Internal)?;
         for (b_ref, b_args) in &model_ref.bases {
             let concrete: Vec<Type> = b_args.iter().map(|a| subst(a, &env)).collect();
             if b_ref == target {
