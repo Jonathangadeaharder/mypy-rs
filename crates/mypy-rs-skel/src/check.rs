@@ -93,7 +93,7 @@ fn ordered_classes<'a>(
             _ => None,
         })
         .collect();
-    classes.sort_by_key(|cls| {
+    classes.sort_by_cached_key(|cls| {
         let fullname = format!("{module}.{}", cls.name);
         rank.get(fullname.as_str()).copied().unwrap_or(usize::MAX)
     });
@@ -264,17 +264,10 @@ impl Driver {
         // the completed bindings. mypy resolves annotations after
         // semantic analysis, so a forward reference must not reject.
         self.bind_module_declarations(&mut bindings, module, &ast.body)?;
-        // Pass 3 pre-sweep: collect instance attributes in dependency
-        // order (bases before subclasses); candidates the pre-sweep
-        // cannot type re-run in pass 3b.
-        for cls in ordered_classes(module, &ast.body, &class_order) {
-            let fullname = format!("{module}.{}", cls.name);
-            self.collect_class_instance_vars(&bindings, cls, &fullname)?;
-        }
-        // Pass 3 is two passes: 3a types module values in statement order
-        // (used-before-def); 3b checks every body against the completed
-        // bindings, like mypy (#126).
-        self.check_module_values(&mut bindings, &ast.body)?;
+        // Pass 3: 3a types module values in statement order and
+        // collects class members; 3b re-derives instance attributes in
+        // dependency order and checks the bodies (#126).
+        self.check_module_values(&mut bindings, module, &ast.body)?;
         self.check_module_bodies(&bindings, &class_order, module, &ast.body)?;
         Ok(bindings)
     }
@@ -1044,15 +1037,17 @@ impl Driver {
         self.check_override(class_fullname, &func.name, &sig, func.line)
     }
 
-    /// Pass 3a: type every module-level value in statement order. A
-    /// module value that reads a later name rejects the way mypy's
-    /// used-before-def does; function, class, import and TypeVar names
-    /// enter `visible` at their position, so a module value that calls a
-    /// later function rejects too. Function and method bodies, and class
-    /// instance-attribute collection, defer to pass 3b.
+    /// Pass 3a: type every module-level value in statement order, and
+    /// collect each class's members at its position so a later module
+    /// value sees them. A module value that reads a later name rejects
+    /// the way mypy's used-before-def does; function, class, import and
+    /// TypeVar names enter `visible` at their position, so a module value
+    /// that calls a later function rejects too. Function and method
+    /// bodies defer to pass 3b.
     fn check_module_values(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
+        module: &str,
         body: &[crate::subset::TopStmt],
     ) -> Result<(), CheckError> {
         let mut visible: HashMap<String, Binding> = HashMap::new();
@@ -1121,9 +1116,11 @@ impl Driver {
                     }
                 }
                 StmtKind::ClassDef(cls) => {
-                    // The class name becomes visible here in statement
-                    // order; its instance attributes collect in pass 3b
-                    // in dependency order.
+                    let fullname = format!("{module}.{}", cls.name);
+                    // Collect here in statement order so a later module
+                    // value sees the members; pass 3b re-derives in
+                    // dependency order for inheritance correctness.
+                    self.collect_class_instance_vars(bindings, cls, &fullname)?;
                     if let Some(binding) = bindings.get(&cls.name).cloned() {
                         visible.insert(cls.name.clone(), binding);
                     }
@@ -1139,9 +1136,10 @@ impl Driver {
     /// bodies after semantic analysis, so a body may read any module name
     /// regardless of statement position (#126); only module-level
     /// *values* keep ordered semantics. The class walk runs three sweeps:
-    /// re-collect every class's instance attributes in dependency order
-    /// (the pre-sweep skipped candidates whose value named a module
-    /// variable that had no type yet), validate the class-variable
+    /// drop every class's own instance attributes and re-collect them in
+    /// dependency order (a base before its subclass, so a subclass never
+    /// steals an inherited attribute and no member keeps a type derived
+    /// from one that moved to a base), validate the class-variable
     /// overrides now that every base attribute exists, then check bodies.
     fn check_module_bodies(
         &mut self,
@@ -1151,16 +1149,16 @@ impl Driver {
         body: &[crate::subset::TopStmt],
     ) -> Result<(), CheckError> {
         let classes = ordered_classes(module, body, class_order);
+        // Pass 3a collected in statement order; drop instance attributes
+        // and re-derive them base-first so a base owns an inherited
+        // attribute and no member keeps a stale derived type.
+        for cls in &classes {
+            let fullname = format!("{module}.{}", cls.name);
+            self.clear_instance_vars(&fullname)?;
+        }
         for cls in &classes {
             let fullname = format!("{module}.{}", cls.name);
             self.collect_class_instance_vars(bindings, cls, &fullname)?;
-        }
-        // A base's candidate can still be pending (its value named a
-        // module variable pass 3a had not typed) while the subclass
-        // registered the same attribute; retract those so the base owns it.
-        for cls in &classes {
-            let fullname = format!("{module}.{}", cls.name);
-            self.retract_base_owned_instance_vars(&fullname)?;
         }
         for cls in &classes {
             let fullname = format!("{module}.{}", cls.name);
@@ -1259,44 +1257,24 @@ impl Driver {
         Ok(applied)
     }
 
-    /// Remove every own instance attribute a base also defines: the base
-    /// owns it (mypy binds it on the first definer in the MRO), so the
-    /// subclass's assignment checks against the base's type. A subclass
-    /// only holds such a member when the pre-sweep registered it while
-    /// the base's candidate was still pending.
-    fn retract_base_owned_instance_vars(&mut self, fullname: &str) -> Result<(), CheckError> {
-        let own: Vec<String> = {
-            let Some(model_ref) = self.classes.get(fullname) else {
-                return Err(CheckError::Internal(format!(
-                    "the class model for {fullname} is missing"
-                )));
-            };
-            model_ref
-                .members
-                .iter()
-                .filter(|(_, member)| matches!(member, Member::InstanceVar(_)))
-                .map(|(attr, _)| attr.clone())
-                .collect()
+    /// Drop every own instance attribute, keeping methods and class
+    /// variables. Pass 3a collected in statement order, so a subclass may
+    /// hold an attribute a base owns and a member may hold a type derived
+    /// from one; pass 3b re-derives instance attributes base-first after
+    /// the drop. Refreshes the snapshot so the re-collection's member
+    /// lookups stop seeing the removed attributes.
+    fn clear_instance_vars(&mut self, fullname: &str) -> Result<(), CheckError> {
+        let Some(model_ref) = self.classes.get_mut(fullname) else {
+            return Err(CheckError::Internal(format!(
+                "the class model for {fullname} is missing"
+            )));
         };
-        let self_ty = instance(
-            fullname,
-            model::class_frame_tvars(self.classes.get(fullname).expect("checked above")),
-        );
-        let mut retracted = false;
-        for attr in own {
-            // Skip this class's own MRO entry: only a base's definition
-            // proves the attribute is inherited, not owned.
-            if self.find_member(&self_ty, &attr, Some(fullname))?.is_some() {
-                let Some(model_ref) = self.classes.get_mut(fullname) else {
-                    return Err(CheckError::Internal(format!(
-                        "the class model for {fullname} is missing"
-                    )));
-                };
-                model_ref.members.remove(&attr);
-                retracted = true;
-            }
-        }
-        if retracted {
+        let before = model_ref.members.len();
+        model_ref
+            .members
+            .retain(|_, member| !matches!(member, Member::InstanceVar(_)));
+        let cleared = model_ref.members.len() != before;
+        if cleared {
             self.refresh(fullname)?;
         }
         Ok(())

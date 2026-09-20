@@ -1529,7 +1529,7 @@ fn forward_base_owns_inherited_attribute() {
     let dir = std::env::temp_dir().join("mypy-rs-skel-fwd-attr-owner");
     fs::create_dir_all(&dir).expect("temp dir");
 
-    let cases: [(&str, &str, i32, &str); 3] = [
+    let cases: [(&str, &str, i32, &str); 4] = [
         (
             "fwd_conflict.py",
             concat!(
@@ -1580,6 +1580,26 @@ fn forward_base_owns_inherited_attribute() {
             ),
             2,
             "instance attribute assignment incompatibility",
+        ),
+        // A module value that reads the attribute must still see it: the
+        // attribute's value names a plain module assignment, which pass 3a
+        // collects at the class's statement position (OCR review of #157).
+        (
+            "module_value_reads_attr.py",
+            concat!(
+                "modvar = 7\n",
+                "\n",
+                "\n",
+                "class C:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = modvar\n",
+                "\n",
+                "\n",
+                "c = C()\n",
+                "n: int = c.x\n",
+            ),
+            0,
+            "",
         ),
     ];
     for (name, source, code, marker) in cases {
