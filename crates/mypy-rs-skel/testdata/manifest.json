@@ -24,11 +24,34 @@
     },
     {
       "id": "classes.basic",
-      "status": "unsupported",
+      "status": "supported",
       "arm": "classes_basic.py",
+      "exit_code": 0,
+      "notes": "Class definition with an empty body; supported since the #118 class/member slice."
+    },
+    {
+      "id": "functions.unannotated_return",
+      "status": "unsupported",
+      "arm": "functions_unannotated_return.py",
       "exit_code": 2,
-      "reject_marker": "statement `ClassDef` is outside the skeleton subset",
-      "notes": "No class semantics exist; rejected at parse lowering."
+      "reject_marker": "function must declare a return annotation",
+      "notes": "mypy accepts a bare def; the subset requires return annotations."
+    },
+    {
+      "id": "assignments.declaration_only",
+      "status": "unsupported",
+      "arm": "assignments_declaration_only.py",
+      "exit_code": 2,
+      "reject_marker": "annotated assignment must have a value",
+      "notes": "mypy accepts a bare x: int declaration; the subset requires a value."
+    },
+    {
+      "id": "functions.unannotated_parameter",
+      "status": "unsupported",
+      "arm": "functions_unannotated_parameter.py",
+      "exit_code": 2,
+      "reject_marker": "parameters must be annotated",
+      "notes": "mypy accepts unannotated parameters; the subset requires annotations."
     },
     {
       "id": "functions.async",
@@ -59,8 +82,8 @@
       "status": "unsupported",
       "arm": "generics_legacy_syntax.py",
       "exit_code": 2,
-      "reject_marker": "function parameters are unsupported",
-      "notes": "Legacy TypeVar generics need parameters; the parameter gate fires first."
+      "reject_marker": "`T` is not defined",
+      "notes": "Legacy TypeVar reference without a declaration; the checker rejects the unresolvable annotation."
     },
     {
       "id": "generics.pep695",

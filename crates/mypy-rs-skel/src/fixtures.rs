@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Deserialize;
-use type_kernel::skeleton_api::{ModuleSnapshot, TypeInfoSnapshot, TypeResolver};
+use type_kernel::skeleton_api::{TypeInfoSnapshot, TypeResolver};
 
 /// The committed fixture file, embedded so the binary is self-contained.
 const FIXTURE_JSON: &str = include_str!("../fixtures/skeleton_fixtures.json");
@@ -48,8 +48,11 @@ struct TypeInfoRecord {
     member_definers: BTreeMap<String, (i64, String)>,
 }
 
-/// Top-level fixture file: the checked-in snapshot of the measured
-/// checking-phase read-closure (Step-0, #85) plus the primitive symbols.
+/// Top-level fixture file: the stdlib slice of the measured checking-phase
+/// read-closure (Step-0, #85; the class/member corpus probe #114). The
+/// corpus classes are excluded: the skeleton builds their models and
+/// snapshots at check time, so the file only carries the records the
+/// checker cannot derive.
 #[derive(Deserialize)]
 struct FixtureFile {
     typeinfos: Vec<TypeInfoRecord>,
@@ -106,10 +109,6 @@ impl Fixtures {
             };
             resolver.insert(snapshot.fullname.clone(), snapshot);
         }
-        // No module snapshots: the corpus is one module and the semanal
-        // subset keeps its own symbol records. One empty entry documents
-        // the resolver's module surface without inventing module data.
-        resolver.insert_module("__main__".to_string(), ModuleSnapshot::default());
         Ok(Self {
             builtins_symbols: file.builtins_symbols.into_iter().collect(),
             resolver,
