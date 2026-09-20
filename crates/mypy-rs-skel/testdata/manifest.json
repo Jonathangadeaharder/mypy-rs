@@ -76,6 +76,21 @@
       "notes": "mypy accepts the inherited class-variable read; own-member lookup cannot model it (#127)."
     },
     {
+      "id": "classes.diamond",
+      "status": "supported",
+      "arm": "classes_diamond.py",
+      "exit_code": 0,
+      "notes": "Legal diamond inheritance: class D(B, A) with B(A) linearizes to D, B, A, object, exactly as mypy."
+    },
+    {
+      "id": "classes.duplicate_base",
+      "status": "unsupported",
+      "arm": "classes_duplicate_base.py",
+      "exit_code": 2,
+      "reject_marker": "duplicate base class `A`",
+      "notes": "mypy rejects class D(A, A) as Duplicate base class; the subset names the duplicate base instead of the generic linearization message (#133)."
+    },
+    {
       "id": "control_flow.conditional",
       "status": "supported",
       "arm": "control_flow.py",

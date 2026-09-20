@@ -599,6 +599,9 @@ impl Driver {
         };
         let mut bases: Vec<(String, Vec<Type>)> = Vec::new();
         let mut base_mros: Vec<Vec<String>> = Vec::new();
+        // The fullnames already taken by an earlier base. mypy rejects
+        // a repeated base class; a same-fullname rename alias counts.
+        let mut seen: HashSet<String> = HashSet::new();
         for base in &cls.bases {
             match &base.kind {
                 BaseRefKind::Plain(name) => match bindings.get(name) {
@@ -618,6 +621,7 @@ impl Driver {
                                 &format!("the generic base `{name}` must be subscripted"),
                             ));
                         }
+                        self.reject_duplicate_base(&mut seen, name, full, base.line)?;
                         base_mros.push(base_model.mro.clone());
                         bases.push((full.clone(), Vec::new()));
                     }
@@ -661,6 +665,7 @@ impl Driver {
                             }
                             resolved.push(ty);
                         }
+                        self.reject_duplicate_base(&mut seen, head, "typing.Generic", base.line)?;
                         base_mros.push(GENERIC_MRO.iter().map(|s| s.to_string()).collect());
                         bases.push(("typing.Generic".to_string(), resolved));
                     }
@@ -681,6 +686,7 @@ impl Driver {
                         for arg in args {
                             resolved.push(self.resolve_ann(&scope, arg)?);
                         }
+                        self.reject_duplicate_base(&mut seen, head, full, base.line)?;
                         base_mros.push(base_model.mro.clone());
                         bases.push((full.clone(), resolved));
                     }
@@ -699,6 +705,26 @@ impl Driver {
             base_mros.push(OBJECT_MRO.iter().map(|s| s.to_string()).collect());
         }
         Ok((bases, base_mros))
+    }
+
+    /// The duplicate-base check, run before each base push (#133):
+    /// `name` is the source spelling for the message, `full` the
+    /// resolved fullname, so a rename alias counts as a duplicate.
+    fn reject_duplicate_base(
+        &self,
+        seen: &mut HashSet<String>,
+        name: &str,
+        full: &str,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        if !seen.insert(full.to_string()) {
+            return Err(input(
+                &self.path,
+                line,
+                &format!("duplicate base class `{name}` is outside the skeleton subset"),
+            ));
+        }
+        Ok(())
     }
 
     fn base_model(
