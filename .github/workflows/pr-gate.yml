@@ -114,6 +114,15 @@ jobs:
       - name: cargo test (mypy-rs-skel gates)
         run: cargo test -p mypy-rs-skel --features skel --locked
 
+      - name: Skeleton upstream corpus gate (#119)
+        # Runs the skeleton over curated upstream corpus cases and enforces
+        # the anti-#93 partition; the seed and its baseline live in
+        # crates/mypy-rs-skel/testdata/upstream_seed.json.
+        run: |
+          cargo build -p mypy-rs-skel --features skel --locked
+          python3 misc/skeleton_upstream_gate.py --self-test
+          python3 misc/skeleton_upstream_gate.py
+
       - name: Restore native extensions (built once by build-extensions)
         # Self-check (num_workers=4) forces native_parser/native_resolver
         # on, so those extensions must be importable for the local gate to
