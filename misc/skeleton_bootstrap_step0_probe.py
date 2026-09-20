@@ -38,6 +38,7 @@ instruction baselines (the #71/#81 probe-pin discipline).
 Usage:
   .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus trivial
   .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus class-slice
+  .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus control-flow
   .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus selfcheck
   .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus empty-control
   --kernel-off disables the native type kernel (diagnostic leg only).
@@ -45,7 +46,7 @@ Usage:
 Prereq: PYTHONPATH with the type_kernel, ast_serialize and module_resolver
 scratch dirs (AGENTS.md native build order) for the kernel-on legs.
 Corpus class: /private/tmp/mypy-rs-sem.sh run 2 for the self-check leg,
-run 1 for the file-corpus legs (trivial, class-slice, empty-control).
+run 1 for the file-corpus legs (trivial, class-slice, control-flow, empty-control).
 """
 
 from __future__ import annotations
@@ -172,6 +173,48 @@ base_view: Shape = circle
 view_area: float = base_view.area()
 """
 
+# #136 conditional control-flow corpus: if/elif/else bodies over
+# comparisons, boolean operators and %, with local assignments and
+# returns. Mypy-clean, exit 0, one checked module.
+CONTROL_FLOW_MODULE_ID = "control_flow"
+
+CONTROL_FLOW_TEXT = """\
+def clamp(value: float, low: float, high: float) -> float:
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+
+def is_even(n: int) -> bool:
+    return n % 2 == 0
+
+
+def classify(count: int) -> str:
+    if count < 0:
+        return "negative"
+    elif count == 0:
+        return "zero"
+    else:
+        return "positive"
+
+
+def max_of_two(a: int, b: int) -> int:
+    if a > b:
+        return a
+    else:
+        return b
+
+
+result: float = clamp(5.0, 0.0, 3.0)
+flag: bool = is_even(4)
+label: str = classify(0)
+winner: int = max_of_two(3, 9)
+negated: bool = not flag
+both: bool = is_even(2) and is_even(4)
+"""
+
 SLOT_SURFACES = ("names", "mro", "bases")
 LOOKUP_SURFACES = ("get", "get_method", "get_containing_type_info")
 TAG = "[skel-step0]"
@@ -183,6 +226,7 @@ FAMILY_PREFIXES = {
     "trivial": (TRIVIAL_MODULE_ID,),
     "empty-control": (EMPTY_CONTROL_MODULE_ID,),
     "class-slice": (CLASS_SLICE_MODULE_ID, CLASS_SLICE_BASE_MODULE_ID),
+    "control-flow": (CONTROL_FLOW_MODULE_ID,),
     "selfcheck": ("mypy", "mypyc"),
 }
 
@@ -360,6 +404,18 @@ def setup_class_slice_corpus() -> list[str]:
     return ["--config-file", config_path, "-n0", "--no-incremental", module_path]
 
 
+def setup_control_flow_corpus() -> list[str]:
+    corpus_dir = os.path.join("/private/tmp", "skel-step0", "corpus")
+    os.makedirs(corpus_dir, exist_ok=True)
+    module_path = os.path.join(corpus_dir, CONTROL_FLOW_MODULE_ID + ".py")
+    with open(module_path, "w") as f:
+        f.write(CONTROL_FLOW_TEXT)
+    config_path = os.path.join(corpus_dir, "control_flow_mypy.ini")
+    with open(config_path, "w") as f:
+        f.write("[mypy]\n")
+    return ["--config-file", config_path, "-n0", "--no-incremental", module_path]
+
+
 def run_mypy(mypy_main, args: list[str]) -> tuple[str, str, int | None]:
     out = io.StringIO()
     run_status: str
@@ -495,7 +551,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--corpus",
-        choices=("trivial", "class-slice", "selfcheck", "empty-control"),
+        choices=("trivial", "class-slice", "control-flow", "selfcheck", "empty-control"),
         default="selfcheck",
     )
     parser.add_argument(
@@ -544,6 +600,10 @@ def main() -> int:
         args = setup_class_slice_corpus()
         corpus_module_id = CLASS_SLICE_MODULE_ID
         required_module_ids = (CLASS_SLICE_MODULE_ID, CLASS_SLICE_BASE_MODULE_ID)
+    elif opts.corpus == "control-flow":
+        args = setup_control_flow_corpus()
+        corpus_module_id = CONTROL_FLOW_MODULE_ID
+        required_module_ids = (CONTROL_FLOW_MODULE_ID,)
     else:
         args = list(SELFCHECK_ARGS)
         corpus_module_id = "mypy"
@@ -597,6 +657,14 @@ def main() -> int:
                 expectation_failures.append(f"class-slice corpus must exit 0, got {exit_code}")
             if not success:
                 expectation_failures.append("class-slice success line missing")
+    elif opts.corpus == "control-flow":
+        success = [ln for ln in output.splitlines() if ln.startswith("Success:")]
+        evidence_lines.append(f"success line: {success[0] if success else '<missing>'}")
+        if run_status.startswith("completed"):
+            if exit_code != 0:
+                expectation_failures.append(f"control-flow corpus must exit 0, got {exit_code}")
+            if not success:
+                expectation_failures.append("control-flow success line missing")
     else:
         success = [ln for ln in output.splitlines() if ln.startswith("Success:")]
         evidence_lines.append(f"success line: {success[0] if success else '<missing>'}")

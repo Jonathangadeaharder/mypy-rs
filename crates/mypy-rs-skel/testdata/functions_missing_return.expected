@@ -1,0 +1,2 @@
+functions_missing_return.py:1: error: Missing return statement  [return]
+Found 1 error in 1 file (checked 1 source file)

@@ -1,13 +1,16 @@
 //! Subset parse + lower: ruff tree in, skeleton AST out.
 //!
 //! The skeleton supports the statement shapes of the trivial corpus plus
-//! the class/member slice of #118: imports, `TypeVar` declarations, plain
-//! and annotated module assignments, class definitions (single or generic
-//! bases, class attributes, methods with `self` and `super()` calls),
-//! module functions, calls, attribute reads, subscripts on classes and
-//! the `str`/`float` binary operators the corpus uses. Anything else is a
-//! hard error: the skeleton never guesses at semantics it does not
-//! implement (#93 invariant, tracked as #115).
+//! the class/member slice of #118 and the conditional slice of #136:
+//! imports, `TypeVar` declarations, plain and annotated module
+//! assignments, class definitions (single or generic bases, class
+//! attributes, methods with `self` and `super()` calls), module
+//! functions, calls, attribute reads, subscripts on classes, the
+//! `str`/`float` binary operators the corpus uses, `%` on int,
+//! comparisons, boolean operators and `not`, `if`/`elif`/`else` bodies
+//! with local assignments and value returns. Anything else is a hard
+//! error: the skeleton never guesses at semantics it does not implement
+//! (#93 invariant, tracked as #115).
 
 use ruff_python_ast::{self as ast, PySourceType, Stmt};
 use ruff_python_parser::parse_unchecked_source;
@@ -56,6 +59,26 @@ pub struct Ann {
 pub enum BinOpKind {
     Add,
     Mult,
+    Mod,
+}
+
+/// A comparison operator; the checker tabulates the supported pairs and
+/// the result is `builtins.bool`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CmpOpKind {
+    Eq,
+    NotEq,
+    Lt,
+    LtE,
+    Gt,
+    GtE,
+}
+
+/// A boolean operator over `builtins.bool` operands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BoolOpKind {
+    And,
+    Or,
 }
 
 /// An expression in the supported subset, with its source line.
@@ -89,6 +112,19 @@ pub enum ExprKind {
         op: BinOpKind,
         left: Box<Expr>,
         right: Box<Expr>,
+    },
+    Compare {
+        op: CmpOpKind,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    BoolOp {
+        op: BoolOpKind,
+        operands: Vec<Expr>,
+    },
+    /// `not <operand>`; the operand may have any type, like mypy.
+    Not {
+        operand: Box<Expr>,
     },
 }
 
@@ -125,6 +161,26 @@ pub enum BodyStmt {
     Call(Expr),
     Return {
         value: Option<Expr>,
+        line: usize,
+    },
+    /// `if`/`elif`/`else`: the branch conditions with their bodies plus
+    /// the optional trailing else body. Only the last statement of a
+    /// sequence may return, and locals may not be assigned inside.
+    If {
+        branches: Vec<(Expr, Vec<BodyStmt>)>,
+        else_body: Option<Vec<BodyStmt>>,
+    },
+    /// `<name> = <value>`, function bodies only, top level only.
+    LocalAssign {
+        name: String,
+        value: Expr,
+        line: usize,
+    },
+    /// `<name>: <ann> = <value>`, function bodies only, top level only.
+    LocalAnnAssign {
+        name: String,
+        ann: Ann,
+        value: Expr,
         line: usize,
     },
     Pass,
@@ -719,7 +775,14 @@ fn lower_function(
     for stmt in f.body {
         body.push(lower_body_stmt(stmt, source, path, is_method)?);
     }
-    check_body_shape(&body, &ret, path, line)?;
+    let mut locals = Vec::with_capacity(params.len() + 1);
+    if is_method {
+        locals.push("self".to_string());
+    }
+    for param in &params {
+        locals.push(param.name.clone());
+    }
+    check_body_shape(&body, &ret, path, line, &mut locals, true)?;
     Ok(FuncDefStmt {
         name: f.name.id.to_string(),
         params,
@@ -730,19 +793,24 @@ fn lower_function(
 }
 
 /// Body shape rules per return annotation: a `None` return forbids any
-/// returned value; any other return requires the body to end in a return
-/// with a value, and no earlier return at all.
+/// returned value; any other return allows a value only in the final
+/// position of its sequence (the top body or a branch body); local
+/// assignments bind only at the top level and may not rebind. A body
+/// that cannot return is not rejected here: the checker renders mypy's
+/// missing-return diagnostic, except for the single-pass pass body.
 fn check_body_shape(
     body: &[BodyStmt],
     ret: &Option<Ann>,
     path: &str,
     line: usize,
+    locals: &mut Vec<String>,
+    top: bool,
 ) -> Result<(), String> {
     let none_ret = matches!(ret, Some(ann) if ann.kind == AnnKind::NoneT);
     for (index, stmt) in body.iter().enumerate() {
         let is_last = index + 1 == body.len();
-        if let BodyStmt::Return { value, line: at } = stmt {
-            match (none_ret, value) {
+        match stmt {
+            BodyStmt::Return { value, line: at } => match (none_ret, value) {
                 (true, Some(_)) => {
                     return Err(subset_error(
                         path,
@@ -751,17 +819,7 @@ fn check_body_shape(
                          the skeleton subset",
                     ))
                 }
-                (true, None) => {
-                    if !is_last {
-                        return Err(subset_error(
-                            path,
-                            *at,
-                            "a return before the final statement of a None-annotated \
-                             function is outside the skeleton subset",
-                        ));
-                    }
-                }
-                (false, Some(_)) => {
+                (true, None) | (false, Some(_)) => {
                     if !is_last {
                         return Err(subset_error(
                             path,
@@ -779,30 +837,71 @@ fn check_body_shape(
                          annotation requires a returned value",
                     ))
                 }
+            },
+            BodyStmt::LocalAssign { name, line: at, .. }
+            | BodyStmt::LocalAnnAssign { name, line: at, .. } => {
+                if !top {
+                    return Err(subset_error(
+                        path,
+                        *at,
+                        "local assignments inside conditionals are outside the skeleton subset",
+                    ));
+                }
+                if locals.contains(name) {
+                    return Err(subset_error(
+                        path,
+                        *at,
+                        "rebinding a local variable is outside the skeleton subset",
+                    ));
+                }
+                locals.push(name.clone());
             }
+            BodyStmt::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for (_, branch) in branches {
+                    check_body_shape(branch, ret, path, line, &mut Vec::new(), false)?;
+                }
+                if let Some(else_body) = else_body {
+                    check_body_shape(else_body, ret, path, line, &mut Vec::new(), false)?;
+                }
+            }
+            BodyStmt::SelfAssign { .. } | BodyStmt::Call(_) | BodyStmt::Pass => {}
         }
     }
-    if !none_ret {
-        match body.last() {
-            Some(BodyStmt::Return { value: Some(_), .. }) => {}
-            Some(BodyStmt::Pass) | Some(BodyStmt::Return { value: None, .. }) => {
-                return Err(subset_error(
-                    path,
-                    line,
-                    "pass body is outside the skeleton subset: a non-None \
-                     annotation requires a returned value",
-                ))
-            }
-            _ => {
-                return Err(subset_error(
-                    path,
-                    line,
-                    "function body must end in a returned value",
-                ))
-            }
+    if top && !none_ret {
+        if let [BodyStmt::Pass] = body {
+            return Err(subset_error(
+                path,
+                line,
+                "pass body is outside the skeleton subset: a non-None \
+                 annotation requires a returned value",
+            ));
         }
     }
     Ok(())
+}
+
+/// Whether a body sequence returns a value on every path: a value return
+/// ends the sequence, and an if/elif/else returns when every branch body
+/// (including the else) does.
+pub fn always_returns(body: &[BodyStmt]) -> bool {
+    body.iter().any(|stmt| match stmt {
+        BodyStmt::Return { value: Some(_), .. } => true,
+        BodyStmt::If {
+            branches,
+            else_body,
+            ..
+        } => {
+            else_body
+                .as_ref()
+                .is_some_and(|else_body| always_returns(else_body))
+                && branches.iter().all(|(_, branch)| always_returns(branch))
+        }
+        _ => false,
+    })
 }
 
 fn lower_body_stmt(
@@ -846,11 +945,72 @@ fn lower_body_stmt(
                     }
                 }
             }
+            if assign.targets.len() == 1 {
+                if let ast::Expr::Name(n) = &assign.targets[0] {
+                    let value = lower_expr(&assign.value, path, line)?;
+                    return Ok(BodyStmt::LocalAssign {
+                        name: n.id.to_string(),
+                        value,
+                        line,
+                    });
+                }
+            }
             Err(subset_error(
                 path,
                 line,
                 "local assignments in a body are outside the skeleton subset",
             ))
+        }
+        Stmt::AnnAssign(ann) => {
+            let ast::Expr::Name(n) = &*ann.target else {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "local annotated assignment target must be a single plain name",
+                ));
+            };
+            let ann_out = lower_ann(&ann.annotation, path, line)?;
+            let Some(value) = ann.value else {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "annotated assignment must have a value",
+                ));
+            };
+            let value = lower_expr(&value, path, line)?;
+            Ok(BodyStmt::LocalAnnAssign {
+                name: n.id.to_string(),
+                ann: ann_out,
+                value,
+                line,
+            })
+        }
+        Stmt::If(ifs) => {
+            let mut branches = Vec::with_capacity(ifs.elif_else_clauses.len() + 1);
+            let test = lower_expr(&ifs.test, path, line)?;
+            let mut body = Vec::with_capacity(ifs.body.len());
+            for stmt in ifs.body {
+                body.push(lower_body_stmt(stmt, source, path, is_method)?);
+            }
+            branches.push((test, body));
+            let mut else_body = None;
+            for clause in ifs.elif_else_clauses {
+                let clause_line = line_of(source, clause.range.start().to_usize());
+                let mut clause_body = Vec::with_capacity(clause.body.len());
+                for stmt in clause.body {
+                    clause_body.push(lower_body_stmt(stmt, source, path, is_method)?);
+                }
+                match clause.test {
+                    Some(test) => {
+                        branches.push((lower_expr(&test, path, clause_line)?, clause_body))
+                    }
+                    None => else_body = Some(clause_body),
+                }
+            }
+            Ok(BodyStmt::If {
+                branches,
+                else_body,
+            })
         }
         Stmt::Pass(_) => Ok(BodyStmt::Pass),
         other => Err(subset_error(
@@ -983,6 +1143,7 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
             let op = match binop.op {
                 ast::Operator::Add => BinOpKind::Add,
                 ast::Operator::Mult => BinOpKind::Mult,
+                ast::Operator::Mod => BinOpKind::Mod,
                 other => {
                     return Err(subset_error(
                         path,
@@ -998,6 +1159,61 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
                 op,
                 left: Box::new(lower_expr(&binop.left, path, line)?),
                 right: Box::new(lower_expr(&binop.right, path, line)?),
+            }
+        }
+        ast::Expr::Compare(cmp) => {
+            if cmp.ops.len() != 1 {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "chained comparisons are outside the skeleton subset",
+                ));
+            }
+            let op = match cmp.ops[0] {
+                ast::CmpOp::Eq => CmpOpKind::Eq,
+                ast::CmpOp::NotEq => CmpOpKind::NotEq,
+                ast::CmpOp::Lt => CmpOpKind::Lt,
+                ast::CmpOp::LtE => CmpOpKind::LtE,
+                ast::CmpOp::Gt => CmpOpKind::Gt,
+                ast::CmpOp::GtE => CmpOpKind::GtE,
+                other => {
+                    return Err(subset_error(
+                        path,
+                        line,
+                        &format!(
+                            "comparison operator `{}` is outside the skeleton subset",
+                            other.as_str()
+                        ),
+                    ))
+                }
+            };
+            ExprKind::Compare {
+                op,
+                left: Box::new(lower_expr(&cmp.left, path, line)?),
+                right: Box::new(lower_expr(&cmp.comparators[0], path, line)?),
+            }
+        }
+        ast::Expr::BoolOp(boolop) => {
+            let op = match boolop.op {
+                ast::BoolOp::And => BoolOpKind::And,
+                ast::BoolOp::Or => BoolOpKind::Or,
+            };
+            let mut operands = Vec::with_capacity(boolop.values.len());
+            for value in &boolop.values {
+                operands.push(lower_expr(value, path, line)?);
+            }
+            ExprKind::BoolOp { op, operands }
+        }
+        ast::Expr::UnaryOp(unary) => {
+            if !matches!(unary.op, ast::UnaryOp::Not) {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "unary operators other than `not` are outside the skeleton subset",
+                ));
+            }
+            ExprKind::Not {
+                operand: Box::new(lower_expr(&unary.operand, path, line)?),
             }
         }
         other => {
@@ -1063,6 +1279,7 @@ fn stmt_kind_name(stmt: &Stmt) -> &'static str {
         Stmt::Try(_) => "Try",
         Stmt::Raise(_) => "Raise",
         Stmt::Assert(_) => "Assert",
+        Stmt::Match(_) => "Match",
         _ => "unsupported",
     }
 }
@@ -1072,6 +1289,9 @@ fn expr_kind_name(expr: &ast::Expr) -> &'static str {
         ast::Expr::Name(_) => "Name",
         ast::Expr::Call(_) => "Call",
         ast::Expr::BinOp(_) => "BinOp",
+        ast::Expr::Compare(_) => "Compare",
+        ast::Expr::BoolOp(_) => "BoolOp",
+        ast::Expr::UnaryOp(_) => "UnaryOp",
         ast::Expr::Attribute(_) => "Attribute",
         ast::Expr::Subscript(_) => "Subscript",
         ast::Expr::Lambda(_) => "Lambda",
