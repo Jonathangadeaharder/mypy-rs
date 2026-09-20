@@ -1341,6 +1341,293 @@ fn sibling_error_survives_main_diagnostic_collision() {
     );
 }
 
+/// Signatures and bases resolve after the module binds, like mypy: a
+/// signature may name a class defined later (#138) and a base class may
+/// be defined after its subclass (#142). A mutually cyclic hierarchy is
+/// not resolvable in any order, mypy rejects it as an unresolvable name,
+/// and the subset loud-rejects instead.
+#[test]
+fn deferred_class_resolution() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-deferred-class");
+    fs::create_dir_all(&dir).expect("temp dir");
+
+    fs::write(
+        dir.join("sig_later.py"),
+        concat!(
+            "def use(d: D) -> int:\n",
+            "    return d.v\n",
+            "\n",
+            "\n",
+            "class A:\n",
+            "    def m(self, d: D) -> int:\n",
+            "        return d.v\n",
+            "\n",
+            "\n",
+            "class D:\n",
+            "    def __init__(self) -> None:\n",
+            "        self.v = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "sig_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a signature naming a later class must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("base_later.py"),
+        concat!(
+            "class Sub(Base):\n",
+            "    def read(self) -> int:\n",
+            "        return self.v\n",
+            "\n",
+            "\n",
+            "class Base:\n",
+            "    def __init__(self) -> None:\n",
+            "        self.v = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "base_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a forward base class must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("cycle.py"),
+        concat!(
+            "class A(B):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class B(A):\n",
+            "    pass\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "cycle.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a cyclic hierarchy must loud-reject: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "no stdout for the cycle case");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("a class hierarchy cycle is outside the skeleton subset"),
+        "the cycle case must name its class: {stderr}"
+    );
+}
+
+/// A subscript base resolves its type arguments, so those arguments are
+/// readiness dependencies like the base head (#157 OCR review): with the
+/// head alone, `class C(Box[D])` built while `D` still had no model and
+/// resolving `D` hit the internal `class model is missing` error on input
+/// mypy accepts. The fixpoint must defer on the arguments too, and a
+/// self-referential argument must stall into the cycle rejection rather
+/// than an internal error.
+#[test]
+fn generic_base_argument_waits_for_later_class() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-base-arg-ready");
+    fs::create_dir_all(&dir).expect("temp dir");
+
+    fs::write(
+        dir.join("arg_later.py"),
+        concat!(
+            "from typing import Generic, TypeVar\n",
+            "\n",
+            "T = TypeVar(\"T\")\n",
+            "\n",
+            "\n",
+            "class Box(Generic[T]):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class C(Box[D]):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class D(Q):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class Q:\n",
+            "    pass\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "arg_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a later class as a generic base argument must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("arg_self.py"),
+        concat!(
+            "from typing import Generic, TypeVar\n",
+            "\n",
+            "T = TypeVar(\"T\")\n",
+            "\n",
+            "\n",
+            "class Box(Generic[T]):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class C(Box[C]):\n",
+            "    pass\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "arg_self.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a self-referential base argument must loud-reject, not crash: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "no stdout for the self-arg case");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("class model"),
+        "no internal model error may surface: {stderr}"
+    );
+    assert!(
+        stderr.contains("a class hierarchy cycle is outside the skeleton subset"),
+        "the self-referential argument must stall into the cycle rejection: {stderr}"
+    );
+}
+
+/// An inherited attribute keeps its base's type even when the base is
+/// defined after the subclass (#157 OCR review): with statement-ordered
+/// collection the subclass collected first and registered the attribute
+/// as its own, so `self.v = \"str\"` silently type-checked against the
+/// subclass's own type where mypy rejects it against the base's.
+#[test]
+fn forward_base_owns_inherited_attribute() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-fwd-attr-owner");
+    fs::create_dir_all(&dir).expect("temp dir");
+
+    let cases: [(&str, &str, i32, &str); 4] = [
+        (
+            "fwd_conflict.py",
+            concat!(
+                "class Sub(Base):\n",
+                "    def f(self) -> None:\n",
+                "        self.v = \"str\"\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.v = 1\n",
+            ),
+            2,
+            "instance attribute assignment incompatibility",
+        ),
+        (
+            "fwd_ok.py",
+            concat!(
+                "class Sub(Base):\n",
+                "    def f(self) -> None:\n",
+                "        self.v = 2\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.v = 1\n",
+            ),
+            0,
+            "",
+        ),
+        // The base's attribute value names a module variable typed after
+        // the class body, so the base's candidate only lands in pass 3b;
+        // the subclass must not steal ownership in between.
+        (
+            "fwd_module_value.py",
+            concat!(
+                "modvar = 1\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = \"s\"\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = modvar\n",
+            ),
+            2,
+            "instance attribute assignment incompatibility",
+        ),
+        // A module value that reads the attribute must still see it: the
+        // attribute's value names a plain module assignment, which pass 3a
+        // collects at the class's statement position (OCR review of #157).
+        (
+            "module_value_reads_attr.py",
+            concat!(
+                "modvar = 7\n",
+                "\n",
+                "\n",
+                "class C:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = modvar\n",
+                "\n",
+                "\n",
+                "c = C()\n",
+                "n: int = c.x\n",
+            ),
+            0,
+            "",
+        ),
+    ];
+    for (name, source, code, marker) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if code == 0 {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(marker),
+                "{name} must name the incompatibility: {stderr}"
+            );
+        }
+    }
+}
+
 /// Duplicate bases are named, diamonds are not falsely rejected
 /// (#133): mypy rejects `class D(A, A)` as `Duplicate base class`, so
 /// the subset points at the repeated base instead of the generic

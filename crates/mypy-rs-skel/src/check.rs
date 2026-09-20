@@ -72,6 +72,34 @@ fn input(path: &str, line: usize, detail: &str) -> CheckError {
     CheckError::Input(format!("{path}:{line}: skeleton subset error: {detail}"))
 }
 
+/// The module's ClassDefs in the dependency order pass A built their
+/// models in (a base before its subclass), so member collection always
+/// sees a base's attributes first; classes missing from the order keep
+/// body order at the end.
+fn ordered_classes<'a>(
+    module: &str,
+    body: &'a [crate::subset::TopStmt],
+    class_order: &[String],
+) -> Vec<&'a crate::subset::ClassDefStmt> {
+    let rank: HashMap<&str, usize> = class_order
+        .iter()
+        .enumerate()
+        .map(|(i, full)| (full.as_str(), i))
+        .collect();
+    let mut classes: Vec<&crate::subset::ClassDefStmt> = body
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::ClassDef(cls) => Some(cls),
+            _ => None,
+        })
+        .collect();
+    classes.sort_by_cached_key(|cls| {
+        let fullname = format!("{module}.{}", cls.name);
+        rank.get(fullname.as_str()).copied().unwrap_or(usize::MAX)
+    });
+    classes
+}
+
 /// One module-level binding of the micro semanal pass.
 #[derive(Clone)]
 enum Binding {
@@ -222,33 +250,25 @@ impl Driver {
     ) -> Result<HashMap<String, Binding>, CheckError> {
         let ast = crate::subset::parse_module(source, path).map_err(CheckError::Input)?;
         let mut bindings: HashMap<String, Binding> = HashMap::new();
-        // Pass 1: bind every top-level name. A class body gets its frame,
-        // bases, MRO, class variables and method signatures; a module
-        // value statement binds a placeholder whose type lands in pass 3.
+        // Pass 1: bind every top-level name. A class or function binds
+        // its name only; a module value statement binds a placeholder
+        // whose type lands in pass 3.
         for stmt in &ast.body {
             self.bind_top_stmt(&mut bindings, module, dir, &stmt.kind, stmt.line)?;
         }
-        // Pass 1b: resolve the module annotations now that every name is
-        // bound. mypy resolves annotations after semantic analysis, so a
-        // forward reference in an annotation must not reject.
-        for stmt in &ast.body {
-            if let StmtKind::AnnAssign { name, ann, .. } = &stmt.kind {
-                let declared = {
-                    let scope = Scope {
-                        module: &bindings,
-                        locals: None,
-                        frame: None,
-                    };
-                    self.resolve_ann(&scope, ann)?
-                };
-                bindings.insert(name.clone(), Binding::Var(declared));
-            }
-        }
-        // Pass 3 is two passes: 3a types module values in statement order
-        // (used-before-def) and collects class members; 3b checks every
-        // body against the completed bindings, like mypy (#126).
+        // Pass A: build every class model in dependency order. mypy binds
+        // names module-wide before resolving bases, so a base defined
+        // after its subclass is legal (#142).
+        let class_order = self.build_class_models(&bindings, module, &ast.body)?;
+        // Pass 2: resolve module annotations and every signature against
+        // the completed bindings. mypy resolves annotations after
+        // semantic analysis, so a forward reference must not reject.
+        self.bind_module_declarations(&mut bindings, module, &ast.body)?;
+        // Pass 3: 3a types module values in statement order and
+        // collects class members; 3b re-derives instance attributes in
+        // dependency order and checks the bodies (#126).
         self.check_module_values(&mut bindings, module, &ast.body)?;
-        self.check_module_bodies(&bindings, module, &ast.body)?;
+        self.check_module_bodies(&bindings, &class_order, module, &ast.body)?;
         Ok(bindings)
     }
 
@@ -297,8 +317,8 @@ impl Driver {
         Ok(())
     }
 
-    /// Pass 1: bind one top-level statement's names. Function and
-    /// class bodies are deferred to `check_top_bodies`.
+    /// Pass 1: bind one top-level statement's names. Signatures,
+    /// annotations and bodies resolve in the later passes.
     fn bind_top_stmt(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
@@ -397,7 +417,20 @@ impl Driver {
                 // bound; pass 3 checks the value.
                 bindings.insert(name.clone(), Binding::Pending);
             }
-            StmtKind::ClassDef(cls) => self.process_class(bindings, module, cls)?,
+            StmtKind::ClassDef(cls) => {
+                self.reject_module_rebind(bindings, &cls.name, cls.line)?;
+                let fullname = format!("{module}.{}", cls.name);
+                if self.classes.contains_key(&fullname) {
+                    return Err(input(
+                        &self.path,
+                        cls.line,
+                        "rebinding the class name is outside the skeleton subset",
+                    ));
+                }
+                // The name binds now; the model builds in pass A once its
+                // bases have models, so a forward base is legal (#142).
+                bindings.insert(cls.name.clone(), Binding::Class(fullname));
+            }
             StmtKind::FuncDef(func) => self.bind_function(bindings, func)?,
             StmtKind::Pass => {}
         }
@@ -469,20 +502,119 @@ impl Driver {
         Ok(())
     }
 
-    fn process_class(
+    /// Pass A: build every class's model in dependency order, returning
+    /// the order the models built in (base before subclass). mypy binds
+    /// all names before resolving bases, so a base defined after its
+    /// subclass is legal (#142); a model builds once every base it names
+    /// has one, and a stall is a hierarchy cycle. Pass 3b reuses this
+    /// order so instance-attribute collection sees a base's members
+    /// before its subclass collects.
+    fn build_class_models(
         &mut self,
-        bindings: &mut HashMap<String, Binding>,
+        bindings: &HashMap<String, Binding>,
+        module: &str,
+        body: &[crate::subset::TopStmt],
+    ) -> Result<Vec<String>, CheckError> {
+        let mut order: Vec<String> = Vec::new();
+        let mut pending: Vec<&crate::subset::ClassDefStmt> = body
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                StmtKind::ClassDef(cls) => Some(cls),
+                _ => None,
+            })
+            .collect();
+        loop {
+            let mut remaining: Vec<&crate::subset::ClassDefStmt> = Vec::new();
+            let mut progressed = false;
+            for cls in pending {
+                if self.class_bases_ready(bindings, cls) {
+                    self.build_class_model(bindings, module, cls)?;
+                    order.push(format!("{module}.{}", cls.name));
+                    progressed = true;
+                } else {
+                    remaining.push(cls);
+                }
+            }
+            if remaining.is_empty() {
+                return Ok(order);
+            }
+            if !progressed {
+                return Err(input(
+                    &self.path,
+                    remaining[0].line,
+                    "a class hierarchy cycle is outside the skeleton subset",
+                ));
+            }
+            pending = remaining;
+        }
+    }
+
+    /// Whether every base naming a class binding already has its model;
+    /// a base that is not a class binding at all is `resolve_bases`'s
+    /// error to report, not a reason to defer.
+    ///
+    /// A `Subscript` base resolves its type arguments through
+    /// `resolve_ann`, so those arguments are readiness dependencies too:
+    /// deferring on the base head alone lets `class C(Box[D])` build while
+    /// `D` has no model yet, which turns valid input into the internal
+    /// "class model is missing" error instead of a clean defer.
+    fn class_bases_ready(
+        &self,
+        bindings: &HashMap<String, Binding>,
+        cls: &crate::subset::ClassDefStmt,
+    ) -> bool {
+        cls.bases.iter().all(|base| {
+            let head = match &base.kind {
+                BaseRefKind::Plain(name) => name,
+                BaseRefKind::Subscript { base, args } => {
+                    if !args
+                        .iter()
+                        .all(|arg| self.ann_class_names_ready(bindings, arg))
+                    {
+                        return false;
+                    }
+                    base
+                }
+            };
+            self.class_name_ready(bindings, head)
+        })
+    }
+
+    /// Whether resolving an annotation cannot hit the internal-error path,
+    /// i.e. every class binding it names already has a model.
+    fn ann_class_names_ready(&self, bindings: &HashMap<String, Binding>, ann: &Ann) -> bool {
+        match &ann.kind {
+            AnnKind::NoneT => true,
+            AnnKind::Name(name) => self.class_name_ready(bindings, name),
+            AnnKind::Subscript { base, args } => {
+                self.class_name_ready(bindings, base)
+                    && args
+                        .iter()
+                        .all(|arg| self.ann_class_names_ready(bindings, arg))
+            }
+        }
+    }
+
+    /// A name is ready unless it is a class binding whose model is not
+    /// built yet. Frame type variables shadow module bindings, so a name
+    /// bound to a `TypeVar` (never a `Class`) is always ready.
+    fn class_name_ready(&self, bindings: &HashMap<String, Binding>, name: &str) -> bool {
+        match bindings.get(name) {
+            Some(Binding::Class(full)) => self.classes.contains_key(full),
+            _ => true,
+        }
+    }
+
+    /// Pass A for one class: build its model, with the frame, bases and
+    /// MRO, and register the empty member map. The name is already bound
+    /// (pass 1), so methods may construct their own class.
+    fn build_class_model(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
         module: &str,
         cls: &crate::subset::ClassDefStmt,
     ) -> Result<(), CheckError> {
         let fullname = format!("{module}.{}", cls.name);
-        if self.classes.contains_key(&fullname) || bindings.contains_key(&cls.name) {
-            return Err(input(
-                &self.path,
-                cls.line,
-                "rebinding the class name is outside the skeleton subset",
-            ));
-        }
         let frame = self.bind_class_frame(bindings, module, cls)?;
         let (bases, base_mros) = self.resolve_bases(bindings, &frame, cls)?;
         let mro =
@@ -495,9 +627,28 @@ impl Driver {
             members: std::collections::BTreeMap::new(),
         };
         self.classes.insert(fullname.clone(), model_ref);
-        self.refresh(&fullname)?;
-        // Bind before the body: methods construct their own class.
-        bindings.insert(cls.name.clone(), Binding::Class(fullname.clone()));
+        self.refresh(&fullname)
+    }
+
+    /// Pass 2 for one class: resolve its class-variable annotations and
+    /// method signatures against the completed bindings, then refresh the
+    /// resolver snapshot so member lookups resolve them.
+    fn bind_class_members(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        module: &str,
+        cls: &crate::subset::ClassDefStmt,
+    ) -> Result<(), CheckError> {
+        let fullname = format!("{module}.{}", cls.name);
+        let frame = {
+            let model_ref = self.classes.get(&fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {fullname} is missing"))
+            })?;
+            ClassFrame {
+                fullname: fullname.clone(),
+                tvars: model_ref.tvars.clone(),
+            }
+        };
         for stmt in &cls.body {
             match stmt {
                 ClassStmt::VarDecl {
@@ -536,10 +687,7 @@ impl Driver {
                 ClassStmt::Pass => {}
             }
         }
-        // Splice the class variables and method signatures into the
-        // resolver snapshot, so a later member lookup resolves them.
-        self.refresh(&fullname)?;
-        Ok(())
+        self.refresh(&fullname)
     }
 
     /// Bind the class frame's type variables: every base-subscript name
@@ -744,7 +892,7 @@ impl Driver {
         Ok(model_ref)
     }
 
-    /// Pass 1 for a method: resolve and register its signature. The
+    /// Pass 2 for a method: resolve and register its signature. The
     /// body checks later, in `check_method_body`.
     fn bind_method(
         &mut self,
@@ -764,23 +912,56 @@ impl Driver {
         self.register_member(class_fullname, &func.name, Member::Method(sig), func.line)
     }
 
-    /// Pass 1 for a module function: bind its signature only. The
-    /// body checks later, in `check_function_body`.
+    /// Pass 1 for a module function: reserve its name. The signature
+    /// resolves in pass 2 and the body checks in `check_function_body`.
     fn bind_function(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         func: &FuncDefStmt,
     ) -> Result<(), CheckError> {
         self.reject_module_rebind(bindings, &func.name, func.line)?;
-        let sig = {
-            let scope = Scope {
-                module: bindings,
-                locals: None,
-                frame: None,
-            };
-            self.resolve_sig(&scope, func)?
-        };
-        bindings.insert(func.name.clone(), Binding::Function(sig));
+        bindings.insert(func.name.clone(), Binding::Pending);
+        Ok(())
+    }
+
+    /// Pass 2: resolve module annotations, function signatures and
+    /// class members against the completed bindings, in statement
+    /// order. mypy resolves every annotation after the module binds,
+    /// so a signature may name a class defined later (#138).
+    fn bind_module_declarations(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        module: &str,
+        body: &[crate::subset::TopStmt],
+    ) -> Result<(), CheckError> {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::AnnAssign { name, ann, .. } => {
+                    let declared = {
+                        let scope = Scope {
+                            module: bindings,
+                            locals: None,
+                            frame: None,
+                        };
+                        self.resolve_ann(&scope, ann)?
+                    };
+                    bindings.insert(name.clone(), Binding::Var(declared));
+                }
+                StmtKind::FuncDef(func) => {
+                    let sig = {
+                        let scope = Scope {
+                            module: bindings,
+                            locals: None,
+                            frame: None,
+                        };
+                        self.resolve_sig(&scope, func)?
+                    };
+                    bindings.insert(func.name.clone(), Binding::Function(sig));
+                }
+                StmtKind::ClassDef(cls) => self.bind_class_members(bindings, module, cls)?,
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -856,13 +1037,13 @@ impl Driver {
         self.check_override(class_fullname, &func.name, &sig, func.line)
     }
 
-    /// Pass 3a: type every module-level value in statement order and
-    /// collect each class's members as its definition is reached. A
-    /// module value that reads a later name rejects the way mypy's
-    /// used-before-def does; function, class, import and TypeVar names
-    /// enter `visible` at their position, so a module value that calls a
-    /// later function rejects too. Function and method bodies defer to
-    /// pass 3b.
+    /// Pass 3a: type every module-level value in statement order, and
+    /// collect each class's members at its position so a later module
+    /// value sees them. A module value that reads a later name rejects
+    /// the way mypy's used-before-def does; function, class, import and
+    /// TypeVar names enter `visible` at their position, so a module value
+    /// that calls a later function rejects too. Function and method
+    /// bodies defer to pass 3b.
     fn check_module_values(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
@@ -936,10 +1117,9 @@ impl Driver {
                 }
                 StmtKind::ClassDef(cls) => {
                     let fullname = format!("{module}.{}", cls.name);
-                    // Class members collect here, in statement order, so
-                    // a base precedes its subclasses and a later module
-                    // value sees the members. Bodies and the class-variable
-                    // override checks defer to pass 3b.
+                    // Collect here in statement order so a later module
+                    // value sees the members; pass 3b re-derives in
+                    // dependency order for inheritance correctness.
                     self.collect_class_instance_vars(bindings, cls, &fullname)?;
                     if let Some(binding) = bindings.get(&cls.name).cloned() {
                         visible.insert(cls.name.clone(), binding);
@@ -952,29 +1132,30 @@ impl Driver {
     }
 
     /// Pass 3b: check every body against the completed bindings, after
-    /// the ordered pass registered all module values and class members.
-    /// mypy resolves bodies after semantic analysis, so a body may read
-    /// any module name regardless of statement position (#126); only
-    /// module-level *values* and class members keep ordered semantics.
-    /// The class walk runs in three sweeps: re-collect every class's
-    /// instance attributes against the completed bindings (pass 3a ran
-    /// at each class's position, so an attribute whose value named a
-    /// later module variable was skipped there), validate the
-    /// class-variable overrides now that every base attribute exists,
-    /// then check the bodies.
+    /// the ordered pass registered all module values. mypy resolves
+    /// bodies after semantic analysis, so a body may read any module name
+    /// regardless of statement position (#126); only module-level
+    /// *values* keep ordered semantics. The class walk runs three sweeps:
+    /// drop every class's own instance attributes and re-collect them in
+    /// dependency order (a base before its subclass, so a subclass never
+    /// steals an inherited attribute and no member keeps a type derived
+    /// from one that moved to a base), validate the class-variable
+    /// overrides now that every base attribute exists, then check bodies.
     fn check_module_bodies(
         &mut self,
         bindings: &HashMap<String, Binding>,
+        class_order: &[String],
         module: &str,
         body: &[crate::subset::TopStmt],
     ) -> Result<(), CheckError> {
-        let classes: Vec<&crate::subset::ClassDefStmt> = body
-            .iter()
-            .filter_map(|stmt| match &stmt.kind {
-                StmtKind::ClassDef(cls) => Some(cls),
-                _ => None,
-            })
-            .collect();
+        let classes = ordered_classes(module, body, class_order);
+        // Pass 3a collected in statement order; drop instance attributes
+        // and re-derive them base-first so a base owns an inherited
+        // attribute and no member keeps a stale derived type.
+        for cls in &classes {
+            let fullname = format!("{module}.{}", cls.name);
+            self.clear_instance_vars(&fullname)?;
+        }
         for cls in &classes {
             let fullname = format!("{module}.{}", cls.name);
             self.collect_class_instance_vars(bindings, cls, &fullname)?;
@@ -1074,6 +1255,29 @@ impl Driver {
             self.refresh(fullname)?;
         }
         Ok(applied)
+    }
+
+    /// Drop every own instance attribute, keeping methods and class
+    /// variables. Pass 3a collected in statement order, so a subclass may
+    /// hold an attribute a base owns and a member may hold a type derived
+    /// from one; pass 3b re-derives instance attributes base-first after
+    /// the drop. Refreshes the snapshot so the re-collection's member
+    /// lookups stop seeing the removed attributes.
+    fn clear_instance_vars(&mut self, fullname: &str) -> Result<(), CheckError> {
+        let Some(model_ref) = self.classes.get_mut(fullname) else {
+            return Err(CheckError::Internal(format!(
+                "the class model for {fullname} is missing"
+            )));
+        };
+        let before = model_ref.members.len();
+        model_ref
+            .members
+            .retain(|_, member| !matches!(member, Member::InstanceVar(_)));
+        let cleared = model_ref.members.len() != before;
+        if cleared {
+            self.refresh(fullname)?;
+        }
+        Ok(())
     }
 
     /// Pass 3b: reject a class variable that overrides a base member
