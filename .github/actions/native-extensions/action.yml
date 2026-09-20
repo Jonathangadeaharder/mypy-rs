@@ -26,7 +26,10 @@ runs:
       shell: bash
       run: |
         RUSTC="$(rustc --version | tr -d ' ()')"
-        echo "key=native-ext-v1-${{ runner.os }}-${RUSTC}-${{ hashFiles('Cargo.lock', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}" >> "$GITHUB_OUTPUT"
+        EXT_SUFFIX="$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")"
+        # v2: arch + EXT_SUFFIX pin the restored ABI; the root manifest
+        # closes the crates/**-only hashing gap.
+        echo "key=native-ext-v2-${{ runner.os }}-${{ runner.arch }}-${RUSTC}-${EXT_SUFFIX}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}" >> "$GITHUB_OUTPUT"
 
     - name: Restore shared extension cache
       id: extcache

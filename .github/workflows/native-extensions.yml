@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+# No `concurrency:` here on purpose: this is a reusable workflow, and any
+# ref-keyed group would be evaluated against the caller's run, overriding
+# callers like nightly that deliberately allow overlapping runs.
+
 jobs:
   build-extensions:
     runs-on: ubuntu-latest
@@ -35,17 +39,30 @@ jobs:
 
       - name: Record Rust toolchain version
         id: rustc
-        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/rustc-version
 
       - name: Cache cargo registry
+        # Registry sources are toolchain-independent: keyed on Cargo.lock
+        # alone, so source edits stop re-saving the multi-GB registry.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target dir (release extension build)
+        # The consumer jobs (parity x5, merge-battery, full-battery) restore
+        # this exact entry instead of caching target/ themselves.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: target
+          # Keyed on crate sources + toolchain (#3). Prefix fallback may
+          # restore an older target/ (cargo rebuilds the delta); it stays
+          # rustc-scoped, so a toolchain bump never reuses stale objects.
           key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-ext-${{ runner.os }}-
+          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
