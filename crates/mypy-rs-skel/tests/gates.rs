@@ -260,7 +260,7 @@ fn manifest_three_way_partition() {
                     ));
                     continue;
                 };
-                if marker.is_empty() {
+                if marker.trim().is_empty() {
                     failures.push(format!(
                         "{}: unsupported entry declares an empty reject_marker; an empty \
                          substring matches any stderr",

@@ -710,7 +710,7 @@ fn subset_rejection_messages_name_the_construct() {
             "statement `Global` is outside the skeleton subset",
         ),
         (
-            "nonlocal_stmt.py",
+            "global_in_body.py",
             "def f() -> None:\n    global g\n    return\n",
             "statement `Global` is outside the skeleton subset in a body",
         ),
@@ -791,9 +791,11 @@ fn int_bool_literal_promote_closure() {
 
 /// mypy exempts `__init__`, `__new__`, `__init_subclass__` and
 /// `__post_init__` from the override check unconditionally
-/// (checker.py:3547). All four shapes below are mypy-clean, so the
-/// skeleton must accept them too; a non-exempt override with a
-/// different parameter count still rejects.
+/// (checker.py:3547). The `__init_subclass__` and `__post_init__`
+/// exemption shapes below are mypy-clean, so the skeleton must accept
+/// them; the `__init__`/`__new__` exemptions are exercised by the
+/// corpus, and a non-exempt override with a different parameter
+/// count still rejects.
 #[test]
 fn override_exemptions_match_mypy() {
     let dir = std::env::temp_dir().join("mypy-rs-skel-override-exemptions");
@@ -986,6 +988,30 @@ fn forward_references_differential() {
         String::from_utf8_lossy(&output.stderr)
     );
     let expected = fs::read(testdata_dir().join("forward_references.expected"))
+        .expect("missing .expected fixture");
+    assert_eq!(output.stdout, expected, "stdout bytes");
+    assert!(
+        output.stderr.is_empty(),
+        "stderr must be empty: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A `self.<attr> = self.<method>()` in the collection sweep must
+/// infer the override's return type: the sweep runs after the pass-1
+/// members are spliced, so `self.val()` resolves `Derived.val`, not
+/// the same-named base method (stale-snapshot regression from the
+/// #139 review; mypy infers `Derived.val`'s return and is clean).
+#[test]
+fn override_selfattr_inference_differential() {
+    let output = run_bin_in(&testdata_dir(), "classes_override_selfattr_inference.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "exit code: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected = fs::read(testdata_dir().join("classes_override_selfattr_inference.expected"))
         .expect("missing .expected fixture");
     assert_eq!(output.stdout, expected, "stdout bytes");
     assert!(

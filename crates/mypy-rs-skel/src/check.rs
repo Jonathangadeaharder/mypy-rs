@@ -441,9 +441,6 @@ impl Driver {
     /// Insert or replace a class's snapshot in the resolver so member
     /// consults through the kernel see the current model.
     fn refresh(&mut self, fullname: &str) -> Result<(), CheckError> {
-        if std::env::var_os("SKEL_REFRESH_TRACE").is_some() {
-            eprintln!("refresh {fullname}");
-        }
         let model_ref = self.classes.get(fullname).ok_or_else(|| {
             CheckError::Internal(format!("the class model for {fullname} is missing"))
         })?;
@@ -553,21 +550,17 @@ impl Driver {
                 ClassStmt::Pass => {}
             }
         }
+        // Splice the pass-1 members (class variables, method
+        // signatures) before the sweep: its body reads must resolve
+        // the class's own override, not a same-named base member.
+        self.refresh(&fullname)?;
         // Statement-order collection (#126): module statements after
         // this class may read its instance attributes, so they must be
         // registered before the next statement types.
-        let mut collected = false;
         loop {
             if !self.collect_class_sweep_once(bindings, cls, &fullname)? {
                 break;
             }
-            collected = true;
-        }
-        if !collected {
-            // No instance attribute applied: the one splice that makes
-            // the pass-1 members (class variables, method signatures)
-            // visible through the kernel.
-            self.refresh(&fullname)?;
         }
         Ok(())
     }

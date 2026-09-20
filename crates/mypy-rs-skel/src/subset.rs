@@ -1125,11 +1125,13 @@ fn lower_expr(expr: &ast::Expr, path: &str, line: usize) -> Result<Expr, String>
                     "subscript base must be a bare class name",
                 ));
             };
-            let args = subscript_args(&sub.slice, path, line).map_err(|_| {
+            let args = subscript_args(&sub.slice, path, line).map_err(|err| {
                 subset_error(
                     path,
                     line,
-                    "subscript arguments in value position must be type expressions",
+                    &format!(
+                        "subscript arguments in value position must be type expressions: {err}"
+                    ),
                 )
             })?;
             ExprKind::Subscript { base, args }
