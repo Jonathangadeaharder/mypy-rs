@@ -266,6 +266,14 @@
       "exit_code": 2,
       "reject_marker": "unary operators other than `not` are outside the skeleton subset",
       "notes": "mypy resolves -1 via __neg__; the subset only models `not`."
+    },
+    {
+      "id": "module.value_used_before_definition",
+      "status": "unsupported",
+      "arm": "module_value_used_before_def.py",
+      "exit_code": 2,
+      "reject_marker": "`y` is not defined",
+      "notes": "mypy reports `Name \"y\" is used before definition [used-before-def]` once a later module binding exists; the subset resolves every name against the already-bound scope, so this hard-rejects (#149). Higher-fidelity follow-up: emit the real used-before-def error after a name-binding pass lands."
     }
   ]
 }
