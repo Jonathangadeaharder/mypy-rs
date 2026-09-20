@@ -1,5 +1,5 @@
-//! Class/member slice tests for issue #118 (brief §5, gates.rs is
-//! frozen; these extend the battery without touching it).
+//! Class/member slice tests for issue #118 (brief §5; gates.rs took
+//! the sanctioned #121 hardening pass, these extend the battery).
 //!
 //! Differential: the grown corpus (`class_slice.py` +
 //! `class_slice_base.py`, generic inheritance, methods, super() calls,
