@@ -15388,6 +15388,17 @@ class StaleKernelRemedySuite(Suite):
                 {"rust_is_subtype_coded": lambda *a, **k: -1},
                 lambda: is_subtype(call, self.fx.callable(self.fx.o, self.fx.nonet)),
             ),
+            (
+                # Same prerequisite: with the coded entry deferring, the
+                # Parameters-vs-Parameters pair reaches the visitor's
+                # parameters seam fetch (Stage 3c/M8c), missing in #101.
+                "rust_are_parameters_compatible",
+                {"rust_is_subtype_coded": lambda *a, **k: -1},
+                lambda: is_subtype(
+                    Parameters([self.fx.a], [ARG_POS], [None]),
+                    Parameters([self.fx.o], [ARG_POS], [None]),
+                ),
+            ),
         ]
         for attr, prereqs, probe in probes:
             with self.subTest(attr):
@@ -15410,6 +15421,7 @@ class StaleKernelRemedySuite(Suite):
         import types as types_module
 
         from mypy.subtypes import (
+            _serialize_type,
             erase_return_self_types,
             has_underscore_prefix,
             is_descriptor,
@@ -15417,7 +15429,8 @@ class StaleKernelRemedySuite(Suite):
             is_erased_instance,
             try_restrict_literal_union,
         )
-        from mypy.types import AnyType, UnionType, get_proper_type
+        from mypy.types import UnionType, get_proper_type
+        from mypy.wirefixup import set_wire_typeinfo_map
 
         fresh = types_module.ModuleType("type_kernel")
         fresh.rust_is_subtype_coded = lambda *a, **k: 1  # type: ignore[attr-defined]
@@ -15429,7 +15442,11 @@ class StaleKernelRemedySuite(Suite):
         fresh.rust_has_underscore_prefix = lambda *a, **k: False  # type: ignore[attr-defined]
         fresh.rust_get_member_flags = lambda *a, **k: {IS_VAR}  # type: ignore[attr-defined]
         fresh.rust_try_restrict_literal_union = lambda *a, **k: []  # type: ignore[attr-defined]
-        fresh.rust_erase_return_self_types = lambda *a, **k: None  # type: ignore[attr-defined]
+        # Wire bytes decoding to Instance A: distinguishable from the Python
+        # fallback, so the assertion below fails if the seam is bypassed.
+        fresh.rust_erase_return_self_types = (  # type: ignore[attr-defined]
+            lambda *a, **k: _serialize_type(self.fx.a)
+        )
         fresh.rust_callables_compatible = lambda *a, **k: True  # type: ignore[attr-defined]
         self.activate_stale_kernel(fresh)
         self.assertTrue(is_same_type(self.fx.a, self.fx.b))
@@ -15437,15 +15454,24 @@ class StaleKernelRemedySuite(Suite):
         self.assertTrue(is_more_precise(self.fx.a, self.fx.b))
         self.assertTrue(is_erased_instance(self.fx.a))
         self.assertTrue(is_descriptor(self.fx.a))
-        self.assertFalse(has_underscore_prefix("x"))
+        # "_x" differs from the stubbed kernel answer (False): the pure-Python
+        # fallback says True, so a bypassed seam fails this assertion (#101).
+        self.assertFalse(has_underscore_prefix("_x"))
         self.assertEqual(get_member_flags("x", self.fx.a), {IS_VAR})
         union = UnionType([self.fx.a, self.fx.b])
         self.assertEqual(try_restrict_literal_union(union, self.fx.a), [])
         call = self.fx.callable(self.fx.o, self.fx.o)
+        # The stub's bytes decode to Instance A, unlike the Python fallback
+        # (a CallableType with ret_type Any), so the assertion below fails
+        # if the seam is bypassed (#101). Decoding needs a live wire map.
+        set_wire_typeinfo_map({self.fx.ai.fullname: self.fx.ai, self.fx.oi.fullname: self.fx.oi})
+        self.addCleanup(set_wire_typeinfo_map, None)
         erased = erase_return_self_types(call, self.fx.o)
         proper_erased = get_proper_type(erased)
-        assert isinstance(proper_erased, CallableType)
-        assert isinstance(get_proper_type(proper_erased.ret_type), AnyType)
+        assert not isinstance(
+            proper_erased, CallableType
+        ), f"erase seam bypassed, Python fallback answered: {proper_erased!r}"
+        assert_equal(str(proper_erased), "A")
         # The visitor seam: with the coded entry deferring, the callable
         # pair is decided by `rust_callables_compatible` itself.
         fresh.rust_is_subtype_coded = lambda *a, **k: -1  # type: ignore[attr-defined]
