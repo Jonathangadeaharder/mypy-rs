@@ -21,6 +21,9 @@ jobs:
   pr-gate:
     needs: build-extensions
     runs-on: ubuntu-latest
+    # Heaviest PR job (cargo build + clippy + cargo tests + self-check +
+    # parity suites): ~3 min fully warm, far longer on a cold cargo cache.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -43,19 +46,30 @@ jobs:
 
       - name: Record Rust toolchain version
         id: rustc
-        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/rustc-version
 
       - name: Cache cargo registry
+        # Registry sources are toolchain-independent: keyed on Cargo.lock
+        # alone, so source edits stop re-saving the multi-GB registry.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          # Keyed on crate sources + toolchain too (#3): a source-only
-          # change must not silently reuse a stale target/.
-          key: cargo-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-${{ runner.os }}-
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target dir (debug workspace build)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: target
+          # Keyed on crate sources + toolchain (#3). Prefix fallback may
+          # restore an older target/ (cargo rebuilds the delta); it stays
+          # rustc-scoped, so a toolchain bump never reuses stale objects.
+          key: cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+            cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test

@@ -1,0 +1,16 @@
+name: rustc-version
+description: >-
+  Record the rustc version (spaces and parens stripped) as a step output
+  for cache-key scoping, so a toolchain bump cannot restore a target/ or
+  extension cache entry built by the previous toolchain.
+outputs:
+  version:
+    description: Output of `rustc --version` with spaces and parens stripped.
+    value: ${{ steps.rustc.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - name: Record Rust toolchain version
+      id: rustc
+      shell: bash
+      run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"

@@ -46,19 +46,31 @@ jobs:
 
       - name: Record Rust toolchain version
         id: rustc
-        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/rustc-version
 
       - name: Cache cargo registry
+        # Registry sources are toolchain-independent: keyed on Cargo.lock
+        # alone, so source edits stop re-saving the multi-GB registry.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          # Keyed on crate sources + toolchain too (#3): a source-only
-          # change must not silently reuse a stale target/.
-          key: cargo-nightly-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-nightly-${{ runner.os }}-
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target dir (build-extensions entry)
+        # This job builds no Rust; target/ only matters when the extension
+        # cache misses and the composite action rebuilds, so it restores
+        # the exact entry build-extensions saved in this run.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: target
+          # Keyed on crate sources + toolchain (#3). Prefix fallback may
+          # restore an older target/ (cargo rebuilds the delta); it stays
+          # rustc-scoped, so a toolchain bump never reuses stale objects.
+          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
+          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
@@ -111,19 +123,30 @@ jobs:
 
       - name: Record Rust toolchain version
         id: rustc
-        run: echo "version=$(rustc --version | tr -d ' ()')" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/rustc-version
 
       - name: Cache cargo registry
+        # Registry sources are toolchain-independent: keyed on Cargo.lock
+        # alone, so source edits stop re-saving the multi-GB registry.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          # Keyed on crate sources + toolchain too (#3): a source-only
-          # change must not silently reuse a stale target/.
-          key: cargo-nightly-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-nightly-${{ runner.os }}-
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-registry-${{ runner.os }}-
+
+      - name: Cache cargo target dir (debug workspace build)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: target
+          # Keyed on crate sources + toolchain (#3). Prefix fallback may
+          # restore an older target/ (cargo rebuilds the delta); it stays
+          # rustc-scoped, so a toolchain bump never reuses stale objects.
+          key: cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
+          restore-keys: |
+            cargo-target-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+            cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
 
       - name: Install uv
         uses: astral-sh/setup-uv@8d55fbecc275b1c35dbe060458839f8d30439ccf # v3
