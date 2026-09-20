@@ -157,3 +157,17 @@ arrangement ADR-0007's Decision 2 contract always assumed.
   hybrid. The strangler-fig rule survives with a corrected grafting
   point: new ownership grafts onto the Python-free path; the hybrid only
   receives deletions of things the standalone path has absorbed.
+
+## Status note (2026-09-20)
+
+Traversal ownership within this ADR's meaning is already satisfied at module
+granularity: the `mypy-rs` executable schedules every checking pass over a
+source module in Rust (`Driver::check_main`,
+`crates/mypy-rs-skel/src/main.rs`), with semantic facts still arriving from
+fixtures, which the milestone allows. The reader verdicts of 2026-09-20
+(recorded in `docs/remaining-migration-plan.md`) therefore treat the hybrid
+as frozen reference implementation and differential oracle only, and order
+the next work as: language slices, then the stdlib-stubs producer on the
+first duplicated stdlib fact (#151), then the first standalone performance
+gate at the first no-handwritten-record module (#152), with full semantic
+analysis deferred until a producer demonstrably needs transformations.

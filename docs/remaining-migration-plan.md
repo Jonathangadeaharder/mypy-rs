@@ -34,6 +34,53 @@ behavioral parity; diagnostics identical or differences documented; Python
 plugins run through an optional compatibility bridge; no Python fallback
 participates in a normal check.
 
+## Reader verdicts 2026-09-20: architecture roles and roadmap order
+
+Reader review of the fourth follow-up report
+(`docs/reports/research-report-mypy-rs-rust-parity-followup-4-2026-09-20.md`),
+after the class/member probe returned GO (R = 0.0085, closure 15):
+
+- **The hybrid is frozen as the reference implementation and differential
+  oracle.** No new production architecture is developed inside it; it only
+  receives deletions of things the standalone path has absorbed.
+- **Traversal ownership is already satisfied at module granularity.**
+  `mypy-rs` parses the module and `Driver::check_main`
+  (`crates/mypy-rs-skel/src/main.rs`) schedules every pass (name binding,
+  class-model fixpoint, declaration binding, ordered module values, body
+  sweep) in Rust; semantic facts arriving from fixtures is explicitly allowed
+  by the milestone. The remaining traversal work is growing the pass surface,
+  not flipping ownership. Full semantic analysis stays minimal until a real
+  producer exposes exactly which facts are necessary, so the Rust checker can
+  derive a smaller architecture from first principles instead of porting
+  `semanal.py` structurally.
+- **`semantic-diff = 0` is a permanent project invariant**, not a test metric:
+  supported matches mypy byte for byte, unsupported rejects explicitly naming
+  the construct, wrong answers are never allowlisted (#115/#120, #119/#122).
+- **Roadmap order** (the slice growth questions are now ordered, not open):
+
+  ```
+  current skeleton
+    -> operators / more normal language slices (#150)
+    -> first duplicated stdlib fact
+    -> stdlib-stubs producer, bulk at module granularity, sparse retention (#151)
+    -> first no-handwritten-record module
+    -> FIRST STANDALONE PERFORMANCE GATE (#152)
+    -> Rust traversal owns the whole module
+    -> grow support surface
+    -> producer starts requiring transformations (MRO across modules,
+       state-dependent aliases, decorators, plugin hooks, multi-pass
+       deferred resolution)
+    -> Rust semantic-analysis pass
+  ```
+
+  The producer trigger is semantic duplication, not a corpus-size threshold:
+  the first point where hand-built stdlib facts are duplicated across two
+  independent slices. The `R >= 0.10` / closure `> 200` safety thresholds
+  still force escalation regardless. The performance gate at #152 fires at
+  the first module checked end to end from a real producer with no
+  hand-written records, with a deliberately loose preregistration
+  (`I_Rust < 2 * I_Python`, RSS under 2x, byte-identical diagnostics).
+
 ## Current State
 
 ### Primary metric: native work share (representative)
