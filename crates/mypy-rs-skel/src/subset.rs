@@ -775,7 +775,10 @@ fn lower_function(
     for stmt in f.body {
         body.push(lower_body_stmt(stmt, source, path, is_method)?);
     }
-    let mut locals = Vec::with_capacity(params.len());
+    let mut locals = Vec::with_capacity(params.len() + 1);
+    if is_method {
+        locals.push("self".to_string());
+    }
     for param in &params {
         locals.push(param.name.clone());
     }

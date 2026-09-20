@@ -206,6 +206,11 @@ fn subset_rejects_control_flow_constructs() {
             "def f(x: int) -> int:\n    return 1\n    pass\n",
             "a return before the final statement is outside the skeleton subset",
         ),
+        (
+            "self_rebind.py",
+            "class C:\n    def m(self) -> None:\n        self = 5\n",
+            "rebinding a local variable is outside the skeleton subset",
+        ),
     ];
     for (name, source, needle) in cases {
         let path = dir.join(name);
@@ -262,4 +267,33 @@ fn sibling_return_errors_reject_rather_than_render() {
         );
         assert!(stderr.contains(needle), "stderr for {label}: {stderr}");
     }
+}
+
+/// A body that both renders a value-return error on a later line and
+/// falls off the end must print mypy's line-sorted order (the def-line
+/// missing-return first), not the checker's push order. Real mypy on
+/// this input emits exactly these bytes.
+#[test]
+fn diagnostic_line_order_matches_mypy() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-control-flow-order");
+    fs::create_dir_all(&dir).expect("temp dir");
+    fs::write(
+        dir.join(CONTROL_FLOW),
+        "def f(x: int) -> int:\n    if x > 0:\n        return \"s\"\n",
+    )
+    .expect("write order case");
+    let output = run_bin_in(&dir, CONTROL_FLOW);
+    assert_eq!(output.status.code(), Some(1), "exit code");
+    assert_eq!(
+        output.stdout,
+        concat!(
+            "control_flow.py:1: error: Missing return statement  [return]\n",
+            "control_flow.py:3: error: Incompatible return value type ",
+            "(got \"str\", expected \"int\")  [return-value]\n",
+            "Found 2 errors in 1 file (checked 1 source file)\n",
+        )
+        .as_bytes(),
+        "line order must match mypy"
+    );
+    assert!(output.stderr.is_empty(), "stderr must be empty");
 }
