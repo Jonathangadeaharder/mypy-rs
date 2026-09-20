@@ -69,10 +69,14 @@ CLOSURE = [
 ]
 
 # Modules the skeleton checks itself; their records stay out of the dump.
-CORPUS_MODULES = frozenset({"class_slice", "class_slice_base"})
+CORPUS_MODULES = frozenset({"class_slice", "class_slice_base", "control_flow"})
 
 # Corpus classes each checked module must define (sanity guard).
-CORPUS_CLASSES = {"class_slice": ("Circle", "NamedBox"), "class_slice_base": ("Shape", "Sized")}
+CORPUS_CLASSES = {
+    "class_slice": ("Circle", "NamedBox"),
+    "class_slice_base": ("Shape", "Sized"),
+    "control_flow": (),
+}
 
 # Primitive names the semanal subset resolves annotations through.
 PRIMITIVE_NAMES = ["bool", "float", "int", "str"]
@@ -208,9 +212,9 @@ def snapshot_type_info(info: object, buf_cls: object) -> dict:
 
 
 def build_corpus() -> tuple[object, list[str]]:
-    """One in-process mypy build of the grown corpus (trivial + the
-    class/member slice); returns the BuildManager holding the live
-    graph the snapshots read."""
+    """One in-process mypy build of the grown corpus (trivial, the
+    class/member slice and the conditional control-flow slice); returns
+    the BuildManager holding the live graph the snapshots read."""
     import mypy.build
     from mypy.options import Options
 
@@ -223,6 +227,9 @@ def build_corpus() -> tuple[object, list[str]]:
             os.path.join(TESTDATA_DIR, "class_slice_base.py"), "class_slice_base", None
         ),
         mypy.build.BuildSource(os.path.join(TESTDATA_DIR, "class_slice.py"), "class_slice", None),
+        mypy.build.BuildSource(
+            os.path.join(TESTDATA_DIR, "control_flow.py"), "control_flow", None
+        ),
     ]
     collected: list[str] = []
     result = mypy.build.build(
@@ -388,11 +395,11 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    class_errors = [e for e in collected if "class_slice" in e]
-    if class_errors:
+    corpus_errors = [e for e in collected if "class_slice" in e or "control_flow" in e]
+    if corpus_errors:
         print(
-            f"{TAG} real build reported errors in the class corpus; refusing to emit: "
-            f"{class_errors!r}",
+            f"{TAG} real build reported errors in the checked corpus; refusing to emit: "
+            f"{corpus_errors!r}",
             file=sys.stderr,
         )
         return 1

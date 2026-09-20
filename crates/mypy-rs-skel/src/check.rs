@@ -15,8 +15,8 @@ use crate::model::{
     OBJECT_MRO,
 };
 use crate::subset::{
-    Ann, AnnKind, BaseRefKind, BinOpKind, BodyStmt, ClassStmt, Expr, ExprKind, FuncDefStmt,
-    StmtKind,
+    always_returns, Ann, AnnKind, BaseRefKind, BinOpKind, BodyStmt, BoolOpKind, ClassStmt,
+    CmpOpKind, Expr, ExprKind, FuncDefStmt, StmtKind,
 };
 
 /// A rendered diagnostic: line number plus the text after `path:line: `.
@@ -57,6 +57,15 @@ fn require_decidable(
 /// `builtins.` prefix; other fullnames display verbatim.
 fn display_type(fullname: &str) -> &str {
     fullname.strip_prefix("builtins.").unwrap_or(fullname)
+}
+
+/// The comparison operand table: the numeric primitives mypy compares
+/// with a bool result.
+fn is_comparison_operand(fullname: &str) -> bool {
+    matches!(
+        fullname,
+        "builtins.int" | "builtins.float" | "builtins.bool"
+    )
 }
 
 fn input(path: &str, line: usize, detail: &str) -> CheckError {
@@ -734,12 +743,14 @@ impl Driver {
         for (pname, ptype) in &sig.params {
             locals.insert(pname.clone(), ptype.clone());
         }
-        let scope = Scope {
-            module: bindings,
-            locals: Some(&locals),
-            frame: Some(frame),
-        };
-        self.check_body(&scope, &sig.ret, &locals, &func.body)?;
+        self.check_body(
+            bindings,
+            Some(frame),
+            &sig.ret,
+            &mut locals,
+            &func.body,
+            func.line,
+        )?;
         self.check_override(class_fullname, &func.name, &sig, func.line)
     }
 
@@ -762,12 +773,7 @@ impl Driver {
         for (pname, ptype) in &sig.params {
             locals.insert(pname.clone(), ptype.clone());
         }
-        let scope = Scope {
-            module: bindings,
-            locals: Some(&locals),
-            frame: None,
-        };
-        self.check_body(&scope, &sig.ret, &locals, &func.body)
+        self.check_body(bindings, None, &sig.ret, &mut locals, &func.body, func.line)
     }
 
     fn resolve_sig(&self, scope: &Scope, func: &FuncDefStmt) -> Result<Sig, CheckError> {
@@ -782,17 +788,60 @@ impl Driver {
         Ok(Sig { params, ret })
     }
 
+    /// Check a function body: every statement against the locals and the
+    /// return annotation, then the all-paths-return analysis. A body of a
+    /// non-None function that can fall off the end is mypy's
+    /// "Missing return statement" error: rendered for the main file, a
+    /// hard reject for an imported sibling (the renderer owns one path).
     fn check_body(
         &mut self,
-        scope: &Scope,
+        bindings: &HashMap<String, Binding>,
+        frame: Option<&ClassFrame>,
         ret: &Type,
-        locals: &HashMap<String, Type>,
+        locals: &mut HashMap<String, Type>,
         body: &[BodyStmt],
+        def_line: usize,
     ) -> Result<(), CheckError> {
-        for stmt in body {
+        self.check_seq(bindings, frame, ret, locals, body)?;
+        if matches!(ret, Type::NoneType) || always_returns(body) {
+            return Ok(());
+        }
+        if self.is_main {
+            self.diagnostics.push(Diagnostic {
+                line: def_line,
+                message: "error: Missing return statement  [return]".to_string(),
+            });
+            Ok(())
+        } else {
+            Err(input(
+                &self.path,
+                def_line,
+                "a missing return statement is outside the supported error classes",
+            ))
+        }
+    }
+
+    /// Walk one body sequence. `locals` is mutated only by top-level
+    /// assignments; branch bodies never assign locals (a lowering rule),
+    /// so the branch recursion shares the same map. Each statement gets
+    /// a fresh scope so a name assigned earlier in the sequence resolves.
+    fn check_seq(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        frame: Option<&ClassFrame>,
+        ret: &Type,
+        locals: &mut HashMap<String, Type>,
+        seq: &[BodyStmt],
+    ) -> Result<(), CheckError> {
+        for stmt in seq {
+            let scope = Scope {
+                module: bindings,
+                locals: Some(&*locals),
+                frame,
+            };
             match stmt {
                 BodyStmt::SelfAssign { attr, value, line } => {
-                    let vt = self.type_expr(scope, value)?;
+                    let vt = self.type_expr(&scope, value)?;
                     let self_ty = locals.get("self").ok_or_else(|| {
                         CheckError::Internal("a self assignment outside a method".to_string())
                     })?;
@@ -837,27 +886,99 @@ impl Driver {
                     }
                 }
                 BodyStmt::Call(expr) => {
-                    self.type_expr(scope, expr)?;
+                    self.type_expr(&scope, expr)?;
                 }
                 BodyStmt::Return {
                     value: Some(v),
                     line,
                 } => {
-                    let vt = self.type_expr(scope, v)?;
+                    let vt = self.type_expr(&scope, v)?;
                     let verdict =
                         require_decidable(self.sub(&vt, ret), "return-value", &self.path, *line)?;
                     if !verdict {
-                        return Err(input(
-                            &self.path,
-                            *line,
-                            "return-value incompatibility is outside the supported error classes",
-                        ));
+                        self.incompatible_return_value(&vt, ret, *line)?;
                     }
                 }
                 BodyStmt::Return { value: None, .. } | BodyStmt::Pass => {}
+                BodyStmt::LocalAnnAssign {
+                    name,
+                    ann,
+                    value,
+                    line,
+                } => {
+                    let declared = self.resolve_ann(&scope, ann)?;
+                    let expr_t = self.type_expr(&scope, value)?;
+                    let verdict = require_decidable(
+                        self.sub(&expr_t, &declared),
+                        "local assignment",
+                        &self.path,
+                        *line,
+                    )?;
+                    if !verdict {
+                        self.incompatible_assignment(&expr_t, &declared, *line)?;
+                    }
+                    locals.insert(name.clone(), declared);
+                }
+                BodyStmt::LocalAssign { name, value, .. } => {
+                    let t = self.type_expr(&scope, value)?;
+                    locals.insert(name.clone(), t);
+                }
+                BodyStmt::If {
+                    branches,
+                    else_body,
+                    ..
+                } => {
+                    // mypy only type-checks the condition (no bool
+                    // requirement; `truthy-bool` is not a default error
+                    // code), so the result is discarded.
+                    for (cond, _) in branches {
+                        self.type_expr(&scope, cond)?;
+                    }
+                    for (_, body) in branches {
+                        self.check_seq(bindings, frame, ret, locals, body)?;
+                    }
+                    if let Some(else_body) = else_body {
+                        self.check_seq(bindings, frame, ret, locals, else_body)?;
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// A returned value that is not a subtype of the annotation: the
+    /// rendered return-value error, and only when both sides are
+    /// builtins instances (the fixture-covered primitives); every other
+    /// incompatibility is out of subset.
+    fn incompatible_return_value(
+        &mut self,
+        expr_t: &Type,
+        declared: &Type,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        if self.is_main {
+            if let (Type::Instance { type_ref: e, .. }, Type::Instance { type_ref: v, .. }) =
+                (expr_t, declared)
+            {
+                if e.starts_with("builtins.") && v.starts_with("builtins.") {
+                    self.diagnostics.push(Diagnostic {
+                        line,
+                        message: format!(
+                            "error: Incompatible return value type (got \"{expr}\", \
+                             expected \"{var}\")  [return-value]",
+                            expr = display_type(e),
+                            var = display_type(v),
+                        ),
+                    });
+                    return Ok(());
+                }
+            }
+        }
+        Err(input(
+            &self.path,
+            line,
+            "return-value incompatibility is outside the supported error classes",
+        ))
     }
 
     /// The method-override check: every base definer in the MRO (mypy
@@ -1038,6 +1159,16 @@ impl Driver {
             ExprKind::Call { func, args } => self.type_call(scope, func, args, expr.line),
             ExprKind::BinOp { op, left, right } => {
                 self.type_binop(scope, op, left, right, expr.line)
+            }
+            ExprKind::Compare { op, left, right } => {
+                self.type_compare(scope, op, left, right, expr.line)
+            }
+            ExprKind::BoolOp { op, operands } => self.type_boolop(scope, op, operands),
+            ExprKind::Not { operand } => {
+                // mypy accepts any operand type for `not` (the result is
+                // always bool); only the operand must type-check.
+                self.type_expr(scope, operand)?;
+                Ok(instance("builtins.bool", Vec::new()))
             }
         }
     }
@@ -1404,7 +1535,7 @@ impl Driver {
         Ok(())
     }
 
-    /// Binary `+`/`*`: the operand-pair result table decides which
+    /// Binary `+`/`*`/`%`: the operand-pair result table decides which
     /// pairs the slice supports first (unsupported pairs are out of
     /// subset, whatever the closure holds), then the operator member
     /// must exist in the left operand's snapshot closure (a kernel
@@ -1436,6 +1567,9 @@ impl Driver {
                     ("builtins.float", "builtins.float", _) => {
                         instance("builtins.float", Vec::new())
                     }
+                    ("builtins.int", "builtins.int", BinOpKind::Mod) => {
+                        instance("builtins.int", Vec::new())
+                    }
                     _ => {
                         return Err(input(
                             &self.path,
@@ -1456,10 +1590,94 @@ impl Driver {
         let member = match op {
             BinOpKind::Add => "__add__",
             BinOpKind::Mult => "__mul__",
+            BinOpKind::Mod => "__mod__",
         };
-        let snap = self.resolver.get(lref).ok_or_else(|| {
+        self.require_snapshot_member(lref, member, line)?;
+        Ok(result)
+    }
+
+    /// A comparison: both operands must be builtins int/float/bool
+    /// instances (the pairs the corpus uses, result `builtins.bool` as
+    /// in mypy), and the operator member must exist in the left
+    /// operand's snapshot closure (a kernel consult, never a table).
+    fn type_compare(
+        &self,
+        scope: &Scope,
+        op: &CmpOpKind,
+        left: &Expr,
+        right: &Expr,
+        line: usize,
+    ) -> Result<Type, CheckError> {
+        let lt = self.type_expr(scope, left)?;
+        let rt = self.type_expr(scope, right)?;
+        let (Type::Instance { type_ref: lref, .. }, Type::Instance { type_ref: rref, .. }) =
+            (&lt, &rt)
+        else {
+            return Err(input(
+                &self.path,
+                line,
+                "comparison operations on non-instance operands are outside \
+                 the skeleton subset",
+            ));
+        };
+        if !is_comparison_operand(lref) || !is_comparison_operand(rref) {
+            return Err(input(
+                &self.path,
+                line,
+                "comparison operations on these types are outside the supported subset",
+            ));
+        }
+        let member = match op {
+            CmpOpKind::Eq => "__eq__",
+            CmpOpKind::NotEq => "__ne__",
+            CmpOpKind::Lt => "__lt__",
+            CmpOpKind::LtE => "__le__",
+            CmpOpKind::Gt => "__gt__",
+            CmpOpKind::GtE => "__ge__",
+        };
+        self.require_snapshot_member(lref, member, line)?;
+        Ok(instance("builtins.bool", Vec::new()))
+    }
+
+    /// `and`/`or` over `builtins.bool` operands: mypy's join semantics
+    /// are unmodeled, so any non-bool operand is out of subset; the
+    /// result is bool.
+    fn type_boolop(
+        &self,
+        scope: &Scope,
+        op: &BoolOpKind,
+        operands: &[Expr],
+    ) -> Result<Type, CheckError> {
+        let op_name = match op {
+            BoolOpKind::And => "and",
+            BoolOpKind::Or => "or",
+        };
+        for operand in operands {
+            let t = self.type_expr(scope, operand)?;
+            if !matches!(&t, Type::Instance { type_ref, .. } if type_ref == "builtins.bool") {
+                return Err(input(
+                    &self.path,
+                    operand.line,
+                    &format!("boolean `{op_name}` is only supported over builtins.bool operands"),
+                ));
+            }
+        }
+        Ok(instance("builtins.bool", Vec::new()))
+    }
+
+    /// The operator-member kernel consult shared by binops and
+    /// comparisons: the dunder must be defined somewhere in the operand's
+    /// snapshot MRO walk. A missing snapshot or member is an internal
+    /// error (the closure broke), never a subset rejection.
+    fn require_snapshot_member(
+        &self,
+        type_ref: &str,
+        member: &str,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        let snap = self.resolver.get(type_ref).ok_or_else(|| {
             CheckError::Internal(format!(
-                "{}:{line}: the snapshot for {lref} is missing; the fixture closure \
+                "{}:{line}: the snapshot for {type_ref} is missing; the fixture closure \
                  no longer covers the corpus",
                 self.path
             ))
@@ -1485,12 +1703,12 @@ impl Driver {
         }
         if !found {
             return Err(CheckError::Internal(format!(
-                "{}:{line}: the operator member `{member}` of {lref} fell outside \
+                "{}:{line}: the operator member `{member}` of {type_ref} fell outside \
                  the snapshot closure",
                 self.path
             )));
         }
-        Ok(result)
+        Ok(())
     }
 
     /// Resolve a member to its substituted shape plus the fullname of

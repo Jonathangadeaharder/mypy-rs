@@ -30,6 +30,34 @@
       "notes": "Class definition with an empty body; supported since the #118 class/member slice."
     },
     {
+      "id": "control_flow.conditional",
+      "status": "supported",
+      "arm": "control_flow.py",
+      "exit_code": 0,
+      "notes": "if/elif/else bodies over comparisons, boolean operators and %, with local assignments and returns."
+    },
+    {
+      "id": "expressions.boolean_comparison",
+      "status": "supported",
+      "arm": "expressions_boolean.py",
+      "exit_code": 0,
+      "notes": "Comparison operators, and/or/not over bool, and % on int."
+    },
+    {
+      "id": "functions.missing_return",
+      "status": "supported",
+      "arm": "functions_missing_return.py",
+      "exit_code": 1,
+      "notes": "Non-None annotation with a body that never returns; mypy's Missing return statement error."
+    },
+    {
+      "id": "functions.wrong_return_value",
+      "status": "supported",
+      "arm": "functions_wrong_return_value.py",
+      "exit_code": 1,
+      "notes": "Return value type incompatible with the annotation; mypy's Incompatible return value type error."
+    },
+    {
       "id": "functions.unannotated_return",
       "status": "unsupported",
       "arm": "functions_unannotated_return.py",
@@ -92,6 +120,62 @@
       "exit_code": 2,
       "reject_marker": "PEP 695 type parameters are outside the skeleton subset",
       "notes": "Generic semantics the skeleton does not model."
+    },
+    {
+      "id": "control_flow.loop",
+      "status": "unsupported",
+      "arm": "control_flow_loop.py",
+      "exit_code": 2,
+      "reject_marker": "statement `While` is outside the skeleton subset in a body",
+      "notes": "Loop semantics are outside the skeleton subset."
+    },
+    {
+      "id": "control_flow.match",
+      "status": "unsupported",
+      "arm": "control_flow_match.py",
+      "exit_code": 2,
+      "reject_marker": "statement `Match` is outside the skeleton subset in a body",
+      "notes": "Pattern matching is outside the skeleton subset."
+    },
+    {
+      "id": "control_flow.branch_local_assignment",
+      "status": "unsupported",
+      "arm": "control_flow_branch_local.py",
+      "exit_code": 2,
+      "reject_marker": "local assignments inside conditionals are outside the skeleton subset",
+      "notes": "Branch-local bindings would need flow-sensitive join semantics."
+    },
+    {
+      "id": "expressions.chained_comparison",
+      "status": "unsupported",
+      "arm": "expressions_chained_comparison.py",
+      "exit_code": 2,
+      "reject_marker": "chained comparisons are outside the skeleton subset",
+      "notes": "mypy desugars 1 < 2 < 3 into and-ed comparisons; the subset does not model them."
+    },
+    {
+      "id": "expressions.membership_comparison",
+      "status": "unsupported",
+      "arm": "expressions_membership_comparison.py",
+      "exit_code": 2,
+      "reject_marker": "comparison operator `in` is outside the skeleton subset",
+      "notes": "in/is comparisons need protocol member resolution the subset lacks."
+    },
+    {
+      "id": "expressions.non_boolean_logic",
+      "status": "unsupported",
+      "arm": "expressions_non_boolean_logic.py",
+      "exit_code": 2,
+      "reject_marker": "boolean `and` is only supported over builtins.bool operands",
+      "notes": "and over int follows short-circuit typing rules the subset does not model."
+    },
+    {
+      "id": "expressions.unary_operator",
+      "status": "unsupported",
+      "arm": "expressions_unary_operator.py",
+      "exit_code": 2,
+      "reject_marker": "unary operators other than `not` are outside the skeleton subset",
+      "notes": "mypy resolves -1 via __neg__; the subset only models `not`."
     }
   ]
 }
