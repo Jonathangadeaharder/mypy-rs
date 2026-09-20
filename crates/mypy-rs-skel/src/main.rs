@@ -7,6 +7,7 @@
 
 mod check;
 mod fixtures;
+mod model;
 mod python_stubs;
 mod render;
 mod subset;
@@ -59,9 +60,30 @@ fn run() -> Result<ExitCode, Failure> {
         .map_err(|_| Failure::Input("file paths must be valid UTF-8".to_string()))?;
     let source = std::fs::read_to_string(&path)
         .map_err(|e| Failure::Input(format!("cannot read {path}: {e}")))?;
-    let ast = subset::parse_module(&source, &path).map_err(Failure::Input)?;
+    let path_ref = std::path::Path::new(&path);
+    let module = path_ref
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| Failure::Input("the file must have a module name".to_string()))?;
+    if !module.bytes().enumerate().all(|(i, b)| {
+        b == b'_'
+            || if i == 0 {
+                b.is_ascii_alphabetic()
+            } else {
+                b.is_ascii_alphanumeric()
+            }
+    }) {
+        return Err(Failure::Input(format!(
+            "the file name `{module}` is not a valid module name"
+        )));
+    }
+    let dir = match path_ref.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().into_owned(),
+        _ => ".".to_string(),
+    };
     let fixtures = fixtures::Fixtures::load().map_err(Failure::Internal)?;
-    let diagnostics = check::check_module(&ast, &fixtures, &path)?;
+    let mut driver = check::Driver::new(fixtures);
+    let diagnostics = driver.check_main(&path, module, &dir, &source)?;
     let code = render::render(&diagnostics, &path);
     Ok(ExitCode::from(code as u8))
 }

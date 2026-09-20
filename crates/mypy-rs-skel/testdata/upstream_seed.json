@@ -33,12 +33,14 @@
     {
       "file": "test-data/unit/check-basic.test",
       "case": "testConstructionAndAssignment",
-      "capability": "classes.basic"
+      "capability": "functions.unannotated_return",
+      "note": "classes now lower; the first unsupported construct is `def __init__(self):` with no return annotation"
     },
     {
       "file": "test-data/unit/check-basic.test",
       "case": "testInheritInitFromObject",
-      "capability": "classes.basic"
+      "capability": "assignments.declaration_only",
+      "note": "classes now lower; `x: A` with no value is the first unsupported construct"
     },
     {
       "file": "test-data/unit/check-async-await.test",
@@ -77,8 +79,8 @@
     {
       "file": "test-data/unit/check-basic.test",
       "case": "testFunctionSignatureAsComment",
-      "capability": "generics.legacy_syntax",
-      "note": "parameterized function; resolves to the parameter gate the manifest files under generics.legacy_syntax"
+      "capability": "functions.unannotated_parameter",
+      "note": "parameterized function; the annotation gate fires before the comment-type signature is read"
     },
     {
       "file": "test-data/unit/check-python312.test",

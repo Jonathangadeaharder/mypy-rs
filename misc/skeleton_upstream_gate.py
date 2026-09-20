@@ -356,9 +356,13 @@ x: int = 1
 [out]
 main:1: error: no such error
 
-[case testSynthClassReject]
+[case testSynthClassSupported]
 class C:
     pass
+
+[case testSynthAsyncReject]
+async def f() -> int:
+    return 1
 
 [case testSynthIfReject]
 if True:
@@ -395,8 +399,14 @@ def run_self_test(binary: Path, manifest_path: Path) -> int:
                 [PASS],
             ),
             (
+                "control-pass-class",
+                synthetic_seed(corpus, "testSynthClassSupported", "classes.basic", zero),
+                0,
+                [PASS],
+            ),
+            (
                 "control-unsupported",
-                synthetic_seed(corpus, "testSynthClassReject", "classes.basic", one_unsupported),
+                synthetic_seed(corpus, "testSynthAsyncReject", "functions.async", one_unsupported),
                 0,
                 [UNSUPPORTED],
             ),
@@ -410,7 +420,7 @@ def run_self_test(binary: Path, manifest_path: Path) -> int:
             ),
             (
                 "unclassified",
-                synthetic_seed(corpus, "testSynthIfReject", "classes.basic", zero),
+                synthetic_seed(corpus, "testSynthIfReject", "functions.async", zero),
                 1,
                 [UNCLASSIFIED],
             ),

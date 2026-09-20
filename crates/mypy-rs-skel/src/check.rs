@@ -1,17 +1,23 @@
-//! The checking phase of the skeleton: a micro semanal pass (annotation
-//! resolution through the fixture symbol map) plus the two corpus checks
-//! — assignment compatibility and function return compatibility; both
-//! decided by the kernel's `is_subtype` over fixture-backed snapshots.
-//!
-//! The `None` verdict means the kernel itself declined to decide (a
-//! missing snapshot or a live-Python consult the skeleton cannot answer).
-//! For this corpus that is an internal error, not a "not a subtype"
-//! verdict: fail early, never render a guess.
+//! The checking phase: a micro semanal pass over the skeleton AST that
+//! builds class models, resolves annotations and members through kernel
+//! snapshots, and decides every compatibility question with the
+//! kernel's `is_subtype`. Supported results are the rendered assignment
+//! diagnostic and Success; anything the slice does not model is a hard
+//! out-of-subset error, never a silent divergence (#93, tracked #115).
 
-use type_kernel::skeleton_api::{is_subtype, SubtypeContext, Type};
+use std::collections::{HashMap, HashSet};
+
+use type_kernel::skeleton_api::{is_subtype, SubtypeContext, Type, TypeResolver};
 
 use crate::fixtures::Fixtures;
-use crate::subset::{ModuleAst, TopStmt};
+use crate::model::{
+    self, frame_env, instance, object_type, subst, subst_sig, ClassModel, Member, Sig, GENERIC_MRO,
+    OBJECT_MRO,
+};
+use crate::subset::{
+    Ann, AnnKind, BaseRefKind, BinOpKind, BodyStmt, ClassStmt, Expr, ExprKind, FuncDefStmt,
+    StmtKind,
+};
 
 /// A rendered diagnostic: line number plus the text after `path:line: `.
 #[derive(Debug)]
@@ -29,73 +35,9 @@ pub enum CheckError {
     Internal(String),
 }
 
-/// Bind module-level symbols and check every statement, in file order.
-pub fn check_module(
-    ast: &ModuleAst,
-    fixtures: &Fixtures,
-    path: &str,
-) -> Result<Vec<Diagnostic>, CheckError> {
-    let ctx = SubtypeContext {
-        strict_optional: true,
-        ..SubtypeContext::default()
-    };
-    let resolver = &fixtures.resolver;
-    let mut diagnostics = Vec::new();
-    for stmt in &ast.body {
-        match stmt {
-            TopStmt::AnnAssign(assign) => {
-                let declared_name =
-                    resolve_annotation(&assign.annotation, fixtures, path, assign.line)?;
-                let declared = instance(&declared_name);
-                let expression = instance(assign.value.type_fullname());
-                let verdict = require_decidable(
-                    is_subtype(&expression, &declared, &ctx, resolver),
-                    "assignment",
-                    path,
-                    assign.line,
-                )?;
-                if !verdict {
-                    diagnostics.push(Diagnostic {
-                        line: assign.line,
-                        message: format!(
-                            "error: Incompatible types in assignment (expression has type \
-                             \"{expr}\", variable has type \"{var}\")  [assignment]",
-                            expr = display_type(assign.value.type_fullname()),
-                            var = display_type(&declared_name),
-                        ),
-                    });
-                }
-            }
-            TopStmt::FuncDef(func) => {
-                let declared_name =
-                    resolve_annotation(&func.ret_annotation, fixtures, path, func.line)?;
-                let returned = instance(func.ret_value.type_fullname());
-                let declared_ret = instance(&declared_name);
-                let verdict = require_decidable(
-                    is_subtype(&returned, &declared_ret, &ctx, resolver),
-                    "return",
-                    path,
-                    func.line,
-                )?;
-                if !verdict {
-                    return Err(CheckError::Input(format!(
-                        "{path}:{}: skeleton subset error: return-value incompatibility is \
-                         outside the supported error classes",
-                        func.line
-                    )));
-                }
-            }
-            TopStmt::Pass => {}
-        }
-    }
-    Ok(diagnostics)
-}
-
 /// `is_subtype` returns `Option<bool>`: `None` is the kernel declining
 /// to decide. Every pair in the supported corpus must land a verdict; a
-/// `None` here means the fixtures no longer cover the closure. The
-/// returned bool is plain: the caller only distinguishes "subtype" from
-/// "not a subtype", and the `None` case has already become an error.
+/// `None` here means the fixtures no longer cover the closure.
 fn require_decidable(
     verdict: Option<bool>,
     check: &str,
@@ -111,33 +53,1578 @@ fn require_decidable(
     }
 }
 
-fn resolve_annotation(
-    name: &str,
-    fixtures: &Fixtures,
-    path: &str,
-    line: usize,
-) -> Result<String, CheckError> {
-    match fixtures.builtins_symbols.get(name) {
-        Some(fullname) => Ok(fullname.clone()),
-        None => Err(CheckError::Input(format!(
-            "{path}:{line}: skeleton subset error: annotation `{name}` is not one of the \
-             primitive names the fixture symbols cover"
-        ))),
-    }
-}
-
-/// A plain `mypy.types.Instance` of `fullname` with no arguments.
-fn instance(fullname: &str) -> Type {
-    Type::Instance {
-        type_ref: fullname.to_string(),
-        args: Vec::new(),
-        last_known_value: None,
-        extra_attrs: None,
-    }
-}
-
 /// mypy's `TypeStrVisitor` displays builtins types without the
 /// `builtins.` prefix; other fullnames display verbatim.
 fn display_type(fullname: &str) -> &str {
     fullname.strip_prefix("builtins.").unwrap_or(fullname)
+}
+
+fn input(path: &str, line: usize, detail: &str) -> CheckError {
+    CheckError::Input(format!("{path}:{line}: skeleton subset error: {detail}"))
+}
+
+/// One module-level binding of the micro semanal pass.
+#[derive(Clone)]
+enum Binding {
+    Var(Type),
+    Class(String),
+    Function(Sig),
+    /// `<binding> = TypeVar(...)`: `name` is the string passed to
+    /// `TypeVar`, `fullname` the module-level binding's fullname.
+    TypeVar {
+        name: String,
+        fullname: String,
+    },
+    /// An `import <name>` binding: the name itself is the module marker.
+    Module,
+    /// A `from typing import ...` name: only `Generic[...]` in class
+    /// bases reads it; every other use is out of subset.
+    Marker,
+}
+
+/// The class frame a method is checked in: the class fullname plus the
+/// type variables bound by its generic bases (mypy's
+/// `TypeVarLikeScope.class_frame`).
+struct ClassFrame {
+    fullname: String,
+    tvars: Vec<model::TvarInfo>,
+}
+
+/// `resolve_bases` output: the resolved (base fullname, base args)
+/// pairs plus each base's MRO, used by the linearizer.
+type ResolvedBases = (Vec<(String, Vec<Type>)>, Vec<Vec<String>>);
+
+/// The name-resolution environment of one checked position.
+struct Scope<'a> {
+    module: &'a HashMap<String, Binding>,
+    /// Function/method locals; `None` at module level.
+    locals: Option<&'a HashMap<String, Type>>,
+    frame: Option<&'a ClassFrame>,
+}
+
+/// A member lookup result, already substituted for the receiver's type
+/// arguments.
+enum Found {
+    Method(Sig),
+    Var(Type),
+}
+
+/// The checking driver: owns the resolver, the class registry and the
+/// cross-module state, and walks every file top to bottom.
+pub struct Driver {
+    ctx: SubtypeContext,
+    resolver: TypeResolver,
+    builtins: HashMap<String, String>,
+    classes: HashMap<String, ClassModel>,
+    modules: HashMap<String, HashMap<String, Binding>>,
+    /// Modules currently being checked: the import-cycle guard.
+    checking: HashSet<String>,
+    diagnostics: Vec<Diagnostic>,
+    is_main: bool,
+    path: String,
+}
+
+impl Driver {
+    pub fn new(fixtures: Fixtures) -> Self {
+        let Fixtures {
+            resolver,
+            builtins_symbols,
+        } = fixtures;
+        Driver {
+            ctx: SubtypeContext {
+                strict_optional: true,
+                ..SubtypeContext::default()
+            },
+            resolver,
+            builtins: builtins_symbols,
+            classes: HashMap::new(),
+            modules: HashMap::new(),
+            checking: HashSet::new(),
+            diagnostics: Vec::new(),
+            is_main: false,
+            path: String::new(),
+        }
+    }
+
+    /// Check `path` as the driver's main file and return its diagnostics.
+    /// Imported siblings are checked first; only the main file renders.
+    pub fn check_main(
+        &mut self,
+        path: &str,
+        module: &str,
+        dir: &str,
+        source: &str,
+    ) -> Result<Vec<Diagnostic>, CheckError> {
+        self.check_module_file(path, module, dir, source, true)?;
+        Ok(std::mem::take(&mut self.diagnostics))
+    }
+
+    fn check_module_file(
+        &mut self,
+        path: &str,
+        module: &str,
+        dir: &str,
+        source: &str,
+        is_main: bool,
+    ) -> Result<(), CheckError> {
+        if self.modules.contains_key(module) {
+            return Ok(());
+        }
+        if !self.checking.insert(module.to_string()) {
+            return Err(CheckError::Internal(format!(
+                "the cycle guard for `{module}` fired outside a checked import"
+            )));
+        }
+        let saved_path = std::mem::replace(&mut self.path, path.to_string());
+        let saved_main = std::mem::replace(&mut self.is_main, is_main);
+        let result = self.check_module_inner(path, module, dir, source);
+        self.path = saved_path;
+        self.is_main = saved_main;
+        self.checking.remove(module);
+        match result {
+            Ok(bindings) => {
+                self.modules.insert(module.to_string(), bindings);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn check_module_inner(
+        &mut self,
+        path: &str,
+        module: &str,
+        dir: &str,
+        source: &str,
+    ) -> Result<HashMap<String, Binding>, CheckError> {
+        let ast = crate::subset::parse_module(source, path).map_err(CheckError::Input)?;
+        let mut bindings: HashMap<String, Binding> = HashMap::new();
+        for stmt in &ast.body {
+            self.check_top_stmt(&mut bindings, module, dir, &stmt.kind, stmt.line)?;
+        }
+        Ok(bindings)
+    }
+
+    /// Load and check a sibling module of the importing file.
+    fn load_sibling(&mut self, dir: &str, dep: &str, line: usize) -> Result<(), CheckError> {
+        if self.modules.contains_key(dep) {
+            return Ok(());
+        }
+        if self.checking.contains(dep) {
+            return Err(input(
+                &self.path,
+                line,
+                &format!("an import cycle through `{dep}` is outside the skeleton subset"),
+            ));
+        }
+        let dep_path = if dir.is_empty() {
+            format!("{dep}.py")
+        } else {
+            format!("{dir}/{dep}.py")
+        };
+        let source = std::fs::read_to_string(&dep_path).map_err(|e| {
+            input(
+                &self.path,
+                line,
+                &format!("cannot read the imported module `{dep}`: {e}"),
+            )
+        })?;
+        self.check_module_file(&dep_path, dep, dir, &source, false)
+    }
+
+    /// mypy reports a name-redefinition error; the subset rejects the
+    /// rebind instead of modeling the rebinding rules.
+    fn reject_module_rebind(
+        &self,
+        bindings: &HashMap<String, Binding>,
+        name: &str,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        if bindings.contains_key(name) {
+            return Err(input(
+                &self.path,
+                line,
+                "rebinding a module-level name is outside the skeleton subset",
+            ));
+        }
+        Ok(())
+    }
+
+    fn check_top_stmt(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        module: &str,
+        dir: &str,
+        kind: &StmtKind,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        match kind {
+            StmtKind::Import { names } => {
+                for name in names {
+                    self.reject_module_rebind(bindings, name, line)?;
+                }
+                for name in names {
+                    self.load_sibling(dir, name, line)?;
+                    bindings.insert(name.clone(), Binding::Module);
+                }
+            }
+            StmtKind::ImportFrom { module: dep, names } => {
+                for name in names {
+                    self.reject_module_rebind(bindings, name, line)?;
+                }
+                if dep == "typing" {
+                    for name in names {
+                        bindings.insert(name.clone(), Binding::Marker);
+                    }
+                    return Ok(());
+                }
+                self.load_sibling(dir, dep, line)?;
+                let dep_bindings = self.modules.get(dep).ok_or_else(|| {
+                    CheckError::Internal(format!("module {dep} vanished after checking"))
+                })?;
+                for name in names {
+                    let binding = dep_bindings.get(name).ok_or_else(|| {
+                        input(
+                            &self.path,
+                            line,
+                            &format!("`{name}` is not defined in module {dep}"),
+                        )
+                    })?;
+                    let rebound = match binding {
+                        Binding::Class(full) => Binding::Class(full.clone()),
+                        Binding::Function(sig) => Binding::Function(sig.clone()),
+                        Binding::Var(t) => Binding::Var(t.clone()),
+                        Binding::TypeVar { .. } | Binding::Module | Binding::Marker => {
+                            return Err(input(
+                                &self.path,
+                                line,
+                                &format!(
+                                    "importing `{name}` from {dep} is outside the skeleton subset"
+                                ),
+                            ))
+                        }
+                    };
+                    bindings.insert(name.clone(), rebound);
+                }
+            }
+            StmtKind::TypeVarDecl { binding, tv_name } => {
+                if !matches!(bindings.get("TypeVar"), Some(Binding::Marker)) {
+                    return Err(input(
+                        &self.path,
+                        line,
+                        "TypeVar must be imported from typing before it can be called",
+                    ));
+                }
+                if binding != tv_name {
+                    return Err(input(
+                        &self.path,
+                        line,
+                        "a TypeVar string that differs from its variable name is \
+                         outside the skeleton subset",
+                    ));
+                }
+                self.reject_module_rebind(bindings, binding, line)?;
+                bindings.insert(
+                    binding.clone(),
+                    Binding::TypeVar {
+                        name: tv_name.clone(),
+                        fullname: format!("{module}.{binding}"),
+                    },
+                );
+            }
+            StmtKind::Assign { name, value, line } => {
+                self.reject_module_rebind(bindings, name, *line)?;
+                let scope = Scope {
+                    module: bindings,
+                    locals: None,
+                    frame: None,
+                };
+                let t = self.type_expr(&scope, value)?;
+                bindings.insert(name.clone(), Binding::Var(t));
+            }
+            StmtKind::AnnAssign {
+                name,
+                ann,
+                value,
+                line,
+            } => {
+                self.reject_module_rebind(bindings, name, *line)?;
+                let scope = Scope {
+                    module: bindings,
+                    locals: None,
+                    frame: None,
+                };
+                let declared = self.resolve_ann(&scope, ann)?;
+                let expr_t = self.type_expr(&scope, value)?;
+                let verdict = require_decidable(
+                    self.sub(&expr_t, &declared),
+                    "assignment",
+                    &self.path,
+                    *line,
+                )?;
+                if !verdict {
+                    self.incompatible_assignment(&expr_t, &declared, *line)?;
+                }
+                bindings.insert(name.clone(), Binding::Var(declared));
+            }
+            StmtKind::ClassDef(cls) => self.process_class(bindings, module, cls)?,
+            StmtKind::FuncDef(func) => self.process_function(bindings, func)?,
+            StmtKind::Pass => {}
+        }
+        Ok(())
+    }
+
+    /// An AnnAssign whose expression is not a subtype of the declared
+    /// variable: the one rendered error class, and only when both sides
+    /// are builtins instances (the fixture-covered primitives); every
+    /// other incompatibility is out of subset.
+    fn incompatible_assignment(
+        &mut self,
+        expr_t: &Type,
+        declared: &Type,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        if self.is_main {
+            if let (Type::Instance { type_ref: e, .. }, Type::Instance { type_ref: v, .. }) =
+                (expr_t, declared)
+            {
+                if e.starts_with("builtins.") && v.starts_with("builtins.") {
+                    self.diagnostics.push(Diagnostic {
+                        line,
+                        message: format!(
+                            "error: Incompatible types in assignment (expression has type \
+                             \"{expr}\", variable has type \"{var}\")  [assignment]",
+                            expr = display_type(e),
+                            var = display_type(v),
+                        ),
+                    });
+                    return Ok(());
+                }
+            }
+        }
+        Err(input(
+            &self.path,
+            line,
+            "assignment incompatibility is outside the supported error classes",
+        ))
+    }
+
+    /// Insert or replace a class's snapshot in the resolver so member
+    /// consults through the kernel see the current model.
+    fn refresh(&mut self, fullname: &str) -> Result<(), CheckError> {
+        let model_ref = self.classes.get(fullname).ok_or_else(|| {
+            CheckError::Internal(format!("the class model for {fullname} is missing"))
+        })?;
+        model::refresh_snapshot(model_ref, &mut self.resolver).map_err(CheckError::Internal)
+    }
+
+    fn register_member(
+        &mut self,
+        class_fullname: &str,
+        name: &str,
+        member: Member,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        let model_ref = self.classes.get_mut(class_fullname).ok_or_else(|| {
+            CheckError::Internal(format!("the class model for {class_fullname} is missing"))
+        })?;
+        if model_ref.members.contains_key(name) {
+            return Err(input(
+                &self.path,
+                line,
+                "rebinding a class member is outside the skeleton subset",
+            ));
+        }
+        model_ref.members.insert(name.to_string(), member);
+        self.refresh(class_fullname)
+    }
+
+    fn process_class(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        module: &str,
+        cls: &crate::subset::ClassDefStmt,
+    ) -> Result<(), CheckError> {
+        let fullname = format!("{module}.{}", cls.name);
+        if self.classes.contains_key(&fullname) || bindings.contains_key(&cls.name) {
+            return Err(input(
+                &self.path,
+                cls.line,
+                "rebinding the class name is outside the skeleton subset",
+            ));
+        }
+        let frame = self.bind_class_frame(bindings, module, cls)?;
+        let (bases, base_mros) = self.resolve_bases(bindings, &frame, cls)?;
+        let mro =
+            model::linearize(&fullname, &base_mros).map_err(|e| input(&self.path, cls.line, &e))?;
+        let model_ref = ClassModel {
+            fullname: fullname.clone(),
+            tvars: frame.tvars.clone(),
+            bases,
+            mro,
+            members: std::collections::BTreeMap::new(),
+        };
+        self.classes.insert(fullname.clone(), model_ref);
+        self.refresh(&fullname)?;
+        // Bind before the body: methods construct their own class.
+        bindings.insert(cls.name.clone(), Binding::Class(fullname.clone()));
+        for stmt in &cls.body {
+            match stmt {
+                ClassStmt::VarDecl {
+                    name,
+                    ann,
+                    value,
+                    line,
+                } => {
+                    let scope = Scope {
+                        module: bindings,
+                        locals: None,
+                        frame: Some(&frame),
+                    };
+                    let declared = self.resolve_ann(&scope, ann)?;
+                    let vt = instance(value.type_fullname(), Vec::new());
+                    let verdict = require_decidable(
+                        self.sub(&vt, &declared),
+                        "class-level assignment",
+                        &self.path,
+                        *line,
+                    )?;
+                    if !verdict {
+                        return Err(input(
+                            &self.path,
+                            *line,
+                            "class-level assignment incompatibility is outside \
+                             the supported error classes",
+                        ));
+                    }
+                    let receiver = {
+                        let model_ref = self.classes.get(&fullname).ok_or_else(|| {
+                            CheckError::Internal(format!(
+                                "the class model for {fullname} is missing"
+                            ))
+                        })?;
+                        instance(&fullname, model::class_frame_tvars(model_ref))
+                    };
+                    if self
+                        .find_member(&receiver, name, Some(&fullname))?
+                        .is_some()
+                    {
+                        return Err(input(
+                            &self.path,
+                            *line,
+                            "overriding a base class member is outside the skeleton subset",
+                        ));
+                    }
+                    self.register_member(&fullname, name, Member::ClassVar(declared), *line)?;
+                }
+                ClassStmt::Method(func) => {
+                    self.process_method(bindings, &frame, &fullname, func)?
+                }
+                ClassStmt::Pass => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Bind the class frame's type variables: every base-subscript name
+    /// that resolves to a module TypeVar binding, in base order.
+    fn bind_class_frame(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        module: &str,
+        cls: &crate::subset::ClassDefStmt,
+    ) -> Result<ClassFrame, CheckError> {
+        let mut frame = ClassFrame {
+            fullname: format!("{module}.{}", cls.name),
+            tvars: Vec::new(),
+        };
+        for base in &cls.bases {
+            if let BaseRefKind::Subscript { args, .. } = &base.kind {
+                for arg in args {
+                    let AnnKind::Name(name) = &arg.kind else {
+                        continue;
+                    };
+                    let Some(Binding::TypeVar {
+                        name: tv_name,
+                        fullname: tv_full,
+                    }) = bindings.get(name)
+                    else {
+                        continue;
+                    };
+                    if frame.tvars.iter().any(|t| t.name == *tv_name) {
+                        return Err(input(
+                            &self.path,
+                            cls.line,
+                            "a type variable appearing twice in class bases is outside \
+                             the skeleton subset",
+                        ));
+                    }
+                    frame.tvars.push(model::TvarInfo {
+                        name: tv_name.clone(),
+                        binding: name.clone(),
+                        fullname: tv_full.clone(),
+                        raw_id: frame.tvars.len() as i64 + 1,
+                    });
+                }
+            }
+        }
+        Ok(frame)
+    }
+
+    fn resolve_bases(
+        &self,
+        bindings: &HashMap<String, Binding>,
+        frame: &ClassFrame,
+        cls: &crate::subset::ClassDefStmt,
+    ) -> Result<ResolvedBases, CheckError> {
+        let scope = Scope {
+            module: bindings,
+            locals: None,
+            frame: Some(frame),
+        };
+        let mut bases: Vec<(String, Vec<Type>)> = Vec::new();
+        let mut base_mros: Vec<Vec<String>> = Vec::new();
+        for base in &cls.bases {
+            match &base.kind {
+                BaseRefKind::Plain(name) => match bindings.get(name) {
+                    Some(Binding::Marker) => {
+                        return Err(input(
+                            &self.path,
+                            base.line,
+                            &format!("a bare `{name}` base is outside the skeleton subset"),
+                        ))
+                    }
+                    Some(Binding::Class(full)) => {
+                        let base_model = self.base_model(name, full, base.line)?;
+                        if !base_model.tvars.is_empty() {
+                            return Err(input(
+                                &self.path,
+                                base.line,
+                                &format!("the generic base `{name}` must be subscripted"),
+                            ));
+                        }
+                        base_mros.push(base_model.mro.clone());
+                        bases.push((full.clone(), Vec::new()));
+                    }
+                    _ => {
+                        return Err(input(
+                            &self.path,
+                            base.line,
+                            &format!("the base `{name}` is not a class in the subset"),
+                        ))
+                    }
+                },
+                BaseRefKind::Subscript { base: head, args } => match bindings.get(head) {
+                    Some(Binding::Marker) => {
+                        if head != "Generic" {
+                            return Err(input(
+                                &self.path,
+                                base.line,
+                                &format!(
+                                    "`{head}[...]` as a base class is outside the skeleton subset"
+                                ),
+                            ));
+                        }
+                        let mut resolved = Vec::with_capacity(args.len());
+                        for arg in args {
+                            let ty = self.resolve_ann(&scope, arg)?;
+                            let is_frame_tvar = match &ty {
+                                Type::TypeVarType {
+                                    raw_id, namespace, ..
+                                } => {
+                                    *namespace == frame.fullname
+                                        && frame.tvars.iter().any(|t| t.raw_id == *raw_id)
+                                }
+                                _ => false,
+                            };
+                            if !is_frame_tvar {
+                                return Err(input(
+                                    &self.path,
+                                    base.line,
+                                    "a `Generic[...]` argument must be a class type variable",
+                                ));
+                            }
+                            resolved.push(ty);
+                        }
+                        base_mros.push(GENERIC_MRO.iter().map(|s| s.to_string()).collect());
+                        bases.push(("typing.Generic".to_string(), resolved));
+                    }
+                    Some(Binding::Class(full)) => {
+                        let base_model = self.base_model(head, full, base.line)?;
+                        if args.len() != base_model.tvars.len() {
+                            return Err(input(
+                                &self.path,
+                                base.line,
+                                &format!(
+                                    "the base `{head}` expects {} type arguments, got {}",
+                                    base_model.tvars.len(),
+                                    args.len()
+                                ),
+                            ));
+                        }
+                        let mut resolved = Vec::with_capacity(args.len());
+                        for arg in args {
+                            resolved.push(self.resolve_ann(&scope, arg)?);
+                        }
+                        base_mros.push(base_model.mro.clone());
+                        bases.push((full.clone(), resolved));
+                    }
+                    _ => {
+                        return Err(input(
+                            &self.path,
+                            base.line,
+                            &format!("the base `{head}` is not a generic class in the subset"),
+                        ))
+                    }
+                },
+            }
+        }
+        if !bases.iter().any(|(r, _)| r == "builtins.object") {
+            bases.push(("builtins.object".to_string(), Vec::new()));
+            base_mros.push(OBJECT_MRO.iter().map(|s| s.to_string()).collect());
+        }
+        Ok((bases, base_mros))
+    }
+
+    fn base_model(
+        &self,
+        name: &str,
+        fullname: &str,
+        line: usize,
+    ) -> Result<&ClassModel, CheckError> {
+        let model_ref = self.classes.get(fullname).ok_or_else(|| {
+            input(
+                &self.path,
+                line,
+                &format!("the base `{name}` resolves outside the corpus"),
+            )
+        })?;
+        Ok(model_ref)
+    }
+
+    fn process_method(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        frame: &ClassFrame,
+        class_fullname: &str,
+        func: &FuncDefStmt,
+    ) -> Result<(), CheckError> {
+        let sig = {
+            let scope = Scope {
+                module: bindings,
+                locals: None,
+                frame: Some(frame),
+            };
+            self.resolve_sig(&scope, func)?
+        };
+        self.register_member(
+            class_fullname,
+            &func.name,
+            Member::Method(sig.clone()),
+            func.line,
+        )?;
+        let self_ty = {
+            let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {class_fullname} is missing"))
+            })?;
+            instance(class_fullname, model::class_frame_tvars(model_ref))
+        };
+        let mut locals: HashMap<String, Type> = HashMap::new();
+        locals.insert("self".to_string(), self_ty);
+        for (pname, ptype) in &sig.params {
+            locals.insert(pname.clone(), ptype.clone());
+        }
+        let scope = Scope {
+            module: bindings,
+            locals: Some(&locals),
+            frame: Some(frame),
+        };
+        self.check_body(&scope, &sig.ret, &locals, &func.body)?;
+        self.check_override(class_fullname, &func.name, &sig, func.line)
+    }
+
+    fn process_function(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        func: &FuncDefStmt,
+    ) -> Result<(), CheckError> {
+        self.reject_module_rebind(bindings, &func.name, func.line)?;
+        let sig = {
+            let scope = Scope {
+                module: bindings,
+                locals: None,
+                frame: None,
+            };
+            self.resolve_sig(&scope, func)?
+        };
+        bindings.insert(func.name.clone(), Binding::Function(sig.clone()));
+        let mut locals: HashMap<String, Type> = HashMap::new();
+        for (pname, ptype) in &sig.params {
+            locals.insert(pname.clone(), ptype.clone());
+        }
+        let scope = Scope {
+            module: bindings,
+            locals: Some(&locals),
+            frame: None,
+        };
+        self.check_body(&scope, &sig.ret, &locals, &func.body)
+    }
+
+    fn resolve_sig(&self, scope: &Scope, func: &FuncDefStmt) -> Result<Sig, CheckError> {
+        let mut params = Vec::with_capacity(func.params.len());
+        for p in &func.params {
+            params.push((p.name.clone(), self.resolve_ann(scope, &p.ann)?));
+        }
+        let ret = match &func.ret {
+            Some(ann) => self.resolve_ann(scope, ann)?,
+            None => Type::NoneType,
+        };
+        Ok(Sig { params, ret })
+    }
+
+    fn check_body(
+        &mut self,
+        scope: &Scope,
+        ret: &Type,
+        locals: &HashMap<String, Type>,
+        body: &[BodyStmt],
+    ) -> Result<(), CheckError> {
+        for stmt in body {
+            match stmt {
+                BodyStmt::SelfAssign { attr, value, line } => {
+                    let vt = self.type_expr(scope, value)?;
+                    let self_ty = locals.get("self").ok_or_else(|| {
+                        CheckError::Internal("a self assignment outside a method".to_string())
+                    })?;
+                    match self.find_member(self_ty, attr, None)? {
+                        Some(Found::Var(t)) => {
+                            let verdict = require_decidable(
+                                self.sub(&vt, &t),
+                                "instance attribute assignment",
+                                &self.path,
+                                *line,
+                            )?;
+                            if !verdict {
+                                return Err(input(
+                                    &self.path,
+                                    *line,
+                                    "instance attribute assignment incompatibility is \
+                                     outside the supported error classes",
+                                ));
+                            }
+                        }
+                        Some(Found::Method(_)) => {
+                            return Err(input(
+                                &self.path,
+                                *line,
+                                "assigning to a method is outside the skeleton subset",
+                            ))
+                        }
+                        None => {
+                            let class_fullname =
+                                scope.frame.map(|f| f.fullname.clone()).ok_or_else(|| {
+                                    CheckError::Internal(
+                                        "a self assignment outside a class frame".to_string(),
+                                    )
+                                })?;
+                            self.register_member(
+                                &class_fullname,
+                                attr,
+                                Member::InstanceVar(vt),
+                                *line,
+                            )?;
+                        }
+                    }
+                }
+                BodyStmt::Call(expr) => {
+                    self.type_expr(scope, expr)?;
+                }
+                BodyStmt::Return {
+                    value: Some(v),
+                    line,
+                } => {
+                    let vt = self.type_expr(scope, v)?;
+                    let verdict =
+                        require_decidable(self.sub(&vt, ret), "return-value", &self.path, *line)?;
+                    if !verdict {
+                        return Err(input(
+                            &self.path,
+                            *line,
+                            "return-value incompatibility is outside the supported error classes",
+                        ));
+                    }
+                }
+                BodyStmt::Return { value: None, .. } | BodyStmt::Pass => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// The method-override check: every base definer in the MRO (mypy
+    /// checks each, not just the nearest) must accept the override's
+    /// parameters and return a supertype. `__init__`/`__new__` are
+    /// exempt, as in mypy.
+    fn check_override(
+        &self,
+        class_fullname: &str,
+        name: &str,
+        sig: &Sig,
+        line: usize,
+    ) -> Result<(), CheckError> {
+        if name == "__init__" || name == "__new__" {
+            return Ok(());
+        }
+        let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
+            CheckError::Internal(format!("the class model for {class_fullname} is missing"))
+        })?;
+        let receiver = instance(class_fullname, model::class_frame_tvars(model_ref));
+        let mut skip = Some(class_fullname.to_string());
+        while let Some((found, definer)) =
+            self.find_member_entry(&receiver, name, skip.as_deref())?
+        {
+            match found {
+                Found::Method(base_sig) => {
+                    if base_sig.params.len() != sig.params.len() {
+                        return Err(input(
+                            &self.path,
+                            line,
+                            "a method override with a different parameter count is outside \
+                             the supported error classes",
+                        ));
+                    }
+                    for ((_, sub_p), (_, super_p)) in sig.params.iter().zip(&base_sig.params) {
+                        let verdict = require_decidable(
+                            self.sub(super_p, sub_p),
+                            "override parameter",
+                            &self.path,
+                            line,
+                        )?;
+                        if !verdict {
+                            return Err(input(
+                                &self.path,
+                                line,
+                                "method override incompatibility is outside \
+                                 the supported error classes",
+                            ));
+                        }
+                    }
+                    let verdict = require_decidable(
+                        self.sub(&sig.ret, &base_sig.ret),
+                        "override return",
+                        &self.path,
+                        line,
+                    )?;
+                    if !verdict {
+                        return Err(input(
+                            &self.path,
+                            line,
+                            "method override incompatibility is outside \
+                             the supported error classes",
+                        ));
+                    }
+                    skip = Some(definer);
+                }
+                Found::Var(_) => {
+                    return Err(input(
+                        &self.path,
+                        line,
+                        "overriding a non-method member with a method is outside \
+                         the supported error classes",
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve one annotation to a type.
+    fn resolve_ann(&self, scope: &Scope, ann: &Ann) -> Result<Type, CheckError> {
+        match &ann.kind {
+            AnnKind::NoneT => Ok(Type::NoneType),
+            AnnKind::Name(name) => self.resolve_name_ann(scope, name, ann.line),
+            AnnKind::Subscript { base, args } => {
+                self.resolve_class_subscript(scope, base, args, ann.line)
+            }
+        }
+    }
+
+    fn resolve_name_ann(&self, scope: &Scope, name: &str, line: usize) -> Result<Type, CheckError> {
+        if let Some(frame) = scope.frame {
+            if let Some(info) = frame.tvars.iter().find(|t| t.binding == name) {
+                return Ok(model::tvar_type(info, &frame.fullname));
+            }
+        }
+        match scope.module.get(name) {
+            Some(Binding::TypeVar { .. }) => Err(input(
+                &self.path,
+                line,
+                "type variables are only supported as class type parameters",
+            )),
+            Some(Binding::Class(full)) => {
+                let model_ref = self.classes.get(full).ok_or_else(|| {
+                    CheckError::Internal(format!("the class model for {full} is missing"))
+                })?;
+                if model_ref.tvars.is_empty() {
+                    Ok(instance(full, Vec::new()))
+                } else {
+                    Err(input(
+                        &self.path,
+                        line,
+                        &format!("the generic class `{name}` must be subscripted in an annotation"),
+                    ))
+                }
+            }
+            Some(_) => Err(input(&self.path, line, &format!("`{name}` is not a type"))),
+            None => match self.builtins.get(name) {
+                Some(full) => Ok(instance(full, Vec::new())),
+                None => Err(input(&self.path, line, &format!("`{name}` is not defined"))),
+            },
+        }
+    }
+
+    fn resolve_class_subscript(
+        &self,
+        scope: &Scope,
+        base: &str,
+        args: &[Ann],
+        line: usize,
+    ) -> Result<Type, CheckError> {
+        let Some(Binding::Class(full)) = scope.module.get(base) else {
+            return Err(input(
+                &self.path,
+                line,
+                &format!("`{base}` is not a generic class in the subset"),
+            ));
+        };
+        let model_ref = self.classes.get(full).ok_or_else(|| {
+            CheckError::Internal(format!("the class model for {full} is missing"))
+        })?;
+        if args.len() != model_ref.tvars.len() {
+            return Err(input(
+                &self.path,
+                line,
+                &format!(
+                    "`{base}` expects {} type arguments, got {}",
+                    model_ref.tvars.len(),
+                    args.len()
+                ),
+            ));
+        }
+        let mut resolved = Vec::with_capacity(args.len());
+        for arg in args {
+            resolved.push(self.resolve_ann(scope, arg)?);
+        }
+        Ok(instance(full, resolved))
+    }
+
+    /// Type one expression of the supported subset.
+    fn type_expr(&self, scope: &Scope, expr: &Expr) -> Result<Type, CheckError> {
+        match &expr.kind {
+            ExprKind::Lit(lit) => Ok(instance(lit.type_fullname(), Vec::new())),
+            ExprKind::Name(name) => self.type_name(scope, name, expr.line),
+            ExprKind::Super => Err(input(
+                &self.path,
+                expr.line,
+                "super() is only supported as a call target",
+            )),
+            ExprKind::Attr { obj, name } => self.type_attr(scope, obj, name, expr.line),
+            ExprKind::Subscript { base, args } => {
+                let item = self.resolve_class_subscript(scope, base, args, expr.line)?;
+                Ok(Type::TypeType {
+                    item: Box::new(item),
+                    is_type_form: false,
+                })
+            }
+            ExprKind::Call { func, args } => self.type_call(scope, func, args, expr.line),
+            ExprKind::BinOp { op, left, right } => {
+                self.type_binop(scope, op, left, right, expr.line)
+            }
+        }
+    }
+
+    fn type_name(&self, scope: &Scope, name: &str, line: usize) -> Result<Type, CheckError> {
+        if let Some(t) = scope.locals.and_then(|l| l.get(name)) {
+            return Ok(t.clone());
+        }
+        match scope.module.get(name) {
+            Some(Binding::Var(t)) => Ok(t.clone()),
+            Some(Binding::Class(full)) => {
+                let model_ref = self.classes.get(full).ok_or_else(|| {
+                    CheckError::Internal(format!("the class model for {full} is missing"))
+                })?;
+                Ok(Type::TypeType {
+                    item: Box::new(instance(full, model::class_frame_tvars(model_ref))),
+                    is_type_form: false,
+                })
+            }
+            Some(Binding::Function(_)) => Err(input(
+                &self.path,
+                line,
+                "a function reference is only supported as a direct call target",
+            )),
+            Some(Binding::TypeVar { .. }) => Err(input(
+                &self.path,
+                line,
+                "a type variable in value position is outside the skeleton subset",
+            )),
+            Some(Binding::Module) => Err(input(
+                &self.path,
+                line,
+                "module references are outside the skeleton subset",
+            )),
+            Some(Binding::Marker) => Err(input(
+                &self.path,
+                line,
+                "typing names are only supported in type positions",
+            )),
+            None => match self.builtins.get(name) {
+                Some(full) => Ok(Type::TypeType {
+                    item: Box::new(instance(full, Vec::new())),
+                    is_type_form: false,
+                }),
+                None => Err(input(&self.path, line, &format!("`{name}` is not defined"))),
+            },
+        }
+    }
+
+    /// Attribute read: instance members resolve through the kernel
+    /// snapshots; class objects read class variables of corpus classes.
+    fn type_attr(
+        &self,
+        scope: &Scope,
+        obj: &Expr,
+        name: &str,
+        line: usize,
+    ) -> Result<Type, CheckError> {
+        if matches!(obj.kind, ExprKind::Super) {
+            return Err(input(
+                &self.path,
+                line,
+                "super() is only supported as a call target",
+            ));
+        }
+        let obj_ty = self.type_expr(scope, obj)?;
+        match obj_ty {
+            Type::Instance { ref type_ref, .. } => match self.find_member(&obj_ty, name, None)? {
+                Some(Found::Var(t)) => Ok(t),
+                Some(Found::Method(_)) => Err(input(
+                    &self.path,
+                    line,
+                    &format!("the method `{name}` is only supported as a call target"),
+                )),
+                None => Err(input(
+                    &self.path,
+                    line,
+                    &format!("{type_ref} has no attribute `{name}` in the subset"),
+                )),
+            },
+            Type::TypeType { item, .. } => match *item {
+                Type::Instance { type_ref, .. } => {
+                    let model_ref = self.classes.get(&type_ref).ok_or_else(|| {
+                        input(
+                            &self.path,
+                            line,
+                            &format!(
+                                "class attribute access on `{type_ref}` is outside the subset"
+                            ),
+                        )
+                    })?;
+                    match model_ref.members.get(name) {
+                        Some(Member::ClassVar(t)) => Ok(t.clone()),
+                        _ => Err(input(
+                            &self.path,
+                            line,
+                            "reading a non-class-variable through a class object \
+                             is outside the skeleton subset",
+                        )),
+                    }
+                }
+                _ => Err(input(
+                    &self.path,
+                    line,
+                    "class attribute access on this expression is outside the skeleton subset",
+                )),
+            },
+            _ => Err(input(
+                &self.path,
+                line,
+                "attribute access on this expression is outside the skeleton subset",
+            )),
+        }
+    }
+
+    fn type_call(
+        &self,
+        scope: &Scope,
+        func: &Expr,
+        args: &[Expr],
+        line: usize,
+    ) -> Result<Type, CheckError> {
+        let mut arg_types = Vec::with_capacity(args.len());
+        for arg in args {
+            arg_types.push(self.type_expr(scope, arg)?);
+        }
+        match &func.kind {
+            ExprKind::Name(name) => {
+                if scope.locals.and_then(|l| l.get(name)).is_some() {
+                    return Err(input(
+                        &self.path,
+                        line,
+                        "calling a local variable is outside the skeleton subset",
+                    ));
+                }
+                match scope.module.get(name) {
+                    Some(Binding::Class(full)) => self.construct(full, None, &arg_types, line),
+                    Some(Binding::Function(sig)) => {
+                        self.check_call_sig(sig, &arg_types, line)?;
+                        Ok(sig.ret.clone())
+                    }
+                    Some(_) => Err(input(
+                        &self.path,
+                        line,
+                        &format!("calling `{name}` is outside the skeleton subset"),
+                    )),
+                    None => {
+                        if name == "str" && self.builtins.contains_key("str") {
+                            return self.construct_str(&arg_types, line);
+                        }
+                        Err(input(
+                            &self.path,
+                            line,
+                            &format!("calling `{name}` is outside the skeleton subset"),
+                        ))
+                    }
+                }
+            }
+            ExprKind::Attr { obj, name } if matches!(obj.kind, ExprKind::Super) => {
+                let self_ty = scope.locals.and_then(|l| l.get("self")).ok_or_else(|| {
+                    input(
+                        &self.path,
+                        line,
+                        "super() outside a method is outside the supported subset",
+                    )
+                })?;
+                let frame_full = scope.frame.map(|f| f.fullname.clone()).ok_or_else(|| {
+                    input(
+                        &self.path,
+                        line,
+                        "super() outside a method is outside the supported subset",
+                    )
+                })?;
+                match self.find_member(self_ty, name, Some(&frame_full))? {
+                    Some(Found::Method(sig)) => {
+                        self.check_call_sig(&sig, &arg_types, line)?;
+                        Ok(sig.ret.clone())
+                    }
+                    Some(Found::Var(_)) => Err(input(
+                        &self.path,
+                        line,
+                        "attribute reads through super() are outside the skeleton subset",
+                    )),
+                    None => Err(input(
+                        &self.path,
+                        line,
+                        &format!("super() has no attribute `{name}` in the subset"),
+                    )),
+                }
+            }
+            ExprKind::Attr { obj, name } => {
+                let obj_ty = self.type_expr(scope, obj)?;
+                match obj_ty {
+                    Type::Instance { .. } => match self.find_member(&obj_ty, name, None)? {
+                        Some(Found::Method(sig)) => {
+                            self.check_call_sig(&sig, &arg_types, line)?;
+                            Ok(sig.ret.clone())
+                        }
+                        Some(Found::Var(_)) => Err(input(
+                            &self.path,
+                            line,
+                            &format!(
+                                "calling the attribute `{name}` is outside the skeleton subset"
+                            ),
+                        )),
+                        None => Err(input(
+                            &self.path,
+                            line,
+                            &format!("no callable attribute `{name}` in the subset"),
+                        )),
+                    },
+                    Type::TypeType { .. } => Err(input(
+                        &self.path,
+                        line,
+                        "unbound method calls on a class object are outside \
+                         the skeleton subset",
+                    )),
+                    _ => Err(input(
+                        &self.path,
+                        line,
+                        "calling a member on this expression is outside the skeleton subset",
+                    )),
+                }
+            }
+            ExprKind::Subscript { base, args: targs } => {
+                let item = self.resolve_class_subscript(scope, base, targs, line)?;
+                let Type::Instance {
+                    type_ref,
+                    args: resolved,
+                    ..
+                } = &item
+                else {
+                    return Err(CheckError::Internal(
+                        "a class subscript resolved to a non-instance".to_string(),
+                    ));
+                };
+                self.construct(type_ref, Some(resolved.clone()), &arg_types, line)
+            }
+            _ => Err(input(
+                &self.path,
+                line,
+                "this call target is outside the skeleton subset",
+            )),
+        }
+    }
+
+    /// `str(x)`: one argument, any instance, always `builtins.str`. The
+    /// argument check is an `is_subtype` consult against object so the
+    /// constructor stays inside the kernel's closure.
+    fn construct_str(&self, arg_types: &[Type], line: usize) -> Result<Type, CheckError> {
+        if arg_types.len() != 1 {
+            return Err(input(
+                &self.path,
+                line,
+                "the str constructor takes exactly one argument in the subset",
+            ));
+        }
+        let verdict = require_decidable(
+            self.sub(&arg_types[0], &object_type()),
+            "str constructor argument",
+            &self.path,
+            line,
+        )?;
+        if !verdict {
+            return Err(input(
+                &self.path,
+                line,
+                "argument incompatibility in the str constructor is outside \
+                 the supported error classes",
+            ));
+        }
+        Ok(instance("builtins.str", Vec::new()))
+    }
+
+    /// Construct a corpus class: resolve or infer the class type
+    /// arguments, then check `__init__`'s substituted signature.
+    fn construct(
+        &self,
+        fullname: &str,
+        explicit: Option<Vec<Type>>,
+        arg_types: &[Type],
+        line: usize,
+    ) -> Result<Type, CheckError> {
+        let model_ref = self.classes.get(fullname).ok_or_else(|| {
+            input(
+                &self.path,
+                line,
+                &format!("constructing `{fullname}` is outside the skeleton subset"),
+            )
+        })?;
+        let receiver = instance(fullname, model::class_frame_tvars(model_ref));
+        let init = match self.find_member(&receiver, "__init__", None)? {
+            Some(Found::Method(sig)) => sig,
+            _ => {
+                return Err(input(
+                    &self.path,
+                    line,
+                    "constructing a class without an __init__ is outside \
+                     the skeleton subset",
+                ))
+            }
+        };
+        let class_args = match explicit {
+            Some(args) => {
+                if args.len() != model_ref.tvars.len() {
+                    return Err(input(
+                        &self.path,
+                        line,
+                        &format!(
+                            "the generic class `{fullname}` expects {} type arguments, got {}",
+                            model_ref.tvars.len(),
+                            args.len()
+                        ),
+                    ));
+                }
+                args
+            }
+            None => {
+                let mut inferred = Vec::with_capacity(model_ref.tvars.len());
+                for tvar in &model_ref.tvars {
+                    let needle = model::tvar_type(tvar, fullname);
+                    let mut bound: Option<Type> = None;
+                    for ((_, p), a) in init.params.iter().zip(arg_types.iter()) {
+                        if bound.is_none() && *p == needle {
+                            bound = Some(a.clone());
+                        }
+                    }
+                    let Some(arg) = bound else {
+                        return Err(input(
+                            &self.path,
+                            line,
+                            "generic constructor inference is outside the skeleton subset",
+                        ));
+                    };
+                    inferred.push(arg);
+                }
+                inferred
+            }
+        };
+        let env = frame_env(model_ref, &class_args);
+        let sig = subst_sig(&init, &env);
+        self.check_call_sig(&sig, arg_types, line)?;
+        Ok(instance(fullname, class_args))
+    }
+
+    fn check_call_sig(&self, sig: &Sig, arg_types: &[Type], line: usize) -> Result<(), CheckError> {
+        if sig.params.len() != arg_types.len() {
+            return Err(input(
+                &self.path,
+                line,
+                "an argument count mismatch is outside the skeleton subset",
+            ));
+        }
+        for ((_, p), a) in sig.params.iter().zip(arg_types) {
+            let verdict = require_decidable(self.sub(a, p), "argument", &self.path, line)?;
+            if !verdict {
+                return Err(input(
+                    &self.path,
+                    line,
+                    "argument incompatibility is outside the supported error classes",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Binary `+`/`*`: the operand-pair result table decides which
+    /// pairs the slice supports first (unsupported pairs are out of
+    /// subset, whatever the closure holds), then the operator member
+    /// must exist in the left operand's snapshot closure (a kernel
+    /// consult, never a pure table).
+    fn type_binop(
+        &self,
+        scope: &Scope,
+        op: &BinOpKind,
+        left: &Expr,
+        right: &Expr,
+        line: usize,
+    ) -> Result<Type, CheckError> {
+        let lt = self.type_expr(scope, left)?;
+        let rt = self.type_expr(scope, right)?;
+        let Type::Instance { type_ref: lref, .. } = &lt else {
+            return Err(input(
+                &self.path,
+                line,
+                "binary operations on non-instance operands are outside \
+                 the skeleton subset",
+            ));
+        };
+        let result = match (&lt, &rt) {
+            (Type::Instance { type_ref: a, .. }, Type::Instance { type_ref: b, .. }) => {
+                match (a.as_str(), b.as_str(), op) {
+                    ("builtins.str", "builtins.str", BinOpKind::Add) => {
+                        instance("builtins.str", Vec::new())
+                    }
+                    ("builtins.float", "builtins.float", _) => {
+                        instance("builtins.float", Vec::new())
+                    }
+                    _ => {
+                        return Err(input(
+                            &self.path,
+                            line,
+                            "binary operations on these types are outside the supported subset",
+                        ))
+                    }
+                }
+            }
+            _ => {
+                return Err(input(
+                    &self.path,
+                    line,
+                    "binary operations on these types are outside the supported subset",
+                ))
+            }
+        };
+        let member = match op {
+            BinOpKind::Add => "__add__",
+            BinOpKind::Mult => "__mul__",
+        };
+        let snap = self.resolver.get(lref).ok_or_else(|| {
+            CheckError::Internal(format!(
+                "{}:{line}: the snapshot for {lref} is missing; the fixture closure \
+                 no longer covers the corpus",
+                self.path
+            ))
+        })?;
+        let mut found = false;
+        for entry in &snap.mro {
+            let Some(entry_snap) = self.resolver.get(entry) else {
+                if entry == "typing.Generic" {
+                    // Outside the fixtures on purpose: no corpus member
+                    // resolves there.
+                    continue;
+                }
+                return Err(CheckError::Internal(format!(
+                    "{}:{line}: the snapshot for {entry} is missing; the fixture \
+                     closure no longer covers the corpus",
+                    self.path
+                )));
+            };
+            if entry_snap.member_definers.contains_key(member) {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(CheckError::Internal(format!(
+                "{}:{line}: the operator member `{member}` of {lref} fell outside \
+                 the snapshot closure",
+                self.path
+            )));
+        }
+        Ok(result)
+    }
+
+    /// Resolve a member to its substituted shape plus the fullname of
+    /// the defining class, through the kernel snapshots: walk the
+    /// receiver's MRO, consult `member_definers`, and substitute the
+    /// definer's member with the receiver's type arguments. `skip_class`
+    /// starts the walk after that MRO entry (the `super()` lookup, and
+    /// the override check's walk past the previous definer).
+    fn find_member_entry(
+        &self,
+        receiver: &Type,
+        name: &str,
+        skip_class: Option<&str>,
+    ) -> Result<Option<(Found, String)>, CheckError> {
+        let Type::Instance {
+            type_ref: recv_ref,
+            args: recv_args,
+            ..
+        } = receiver
+        else {
+            return Err(CheckError::Internal(
+                "a member lookup on a non-instance receiver".to_string(),
+            ));
+        };
+        let snap = self.resolver.get(recv_ref).ok_or_else(|| {
+            CheckError::Internal(format!(
+                "{}: the snapshot for {recv_ref} is missing; the fixture closure \
+                 no longer covers the corpus",
+                self.path
+            ))
+        })?;
+        let mut skipping = skip_class.map(|s| s.to_string());
+        for entry in &snap.mro {
+            if let Some(skip) = &skipping {
+                if entry == skip {
+                    skipping = None;
+                }
+                continue;
+            }
+            let Some(entry_snap) = self.resolver.get(entry) else {
+                if entry == "typing.Generic" {
+                    // Outside the fixtures on purpose: no corpus member
+                    // resolves there.
+                    continue;
+                }
+                return Err(CheckError::Internal(format!(
+                    "{}: the snapshot for {entry} is missing; the fixture closure \
+                     no longer covers the corpus",
+                    self.path
+                )));
+            };
+            let Some((_, definer)) = entry_snap.member_definers.get(name) else {
+                continue;
+            };
+            if definer != entry {
+                return Err(CheckError::Internal(format!(
+                    "{}: the snapshot of {entry} names {definer} as the definer of `{name}`",
+                    self.path
+                )));
+            }
+            let model_ref = self.classes.get(definer).ok_or_else(|| {
+                CheckError::Input(format!(
+                    "{}: skeleton subset error: the member `{name}` resolves to a class \
+                     outside the subset ({definer})",
+                    self.path
+                ))
+            })?;
+            let Some(member) = model_ref.members.get(name) else {
+                return Err(CheckError::Internal(format!(
+                    "{}: the snapshot of {entry} and the model of {definer} disagree \
+                     about `{name}`",
+                    self.path
+                )));
+            };
+            let args_at = self
+                .map_args(recv_ref, recv_args, definer)?
+                .ok_or_else(|| {
+                    CheckError::Internal(format!(
+                        "{}: no inheritance path from {recv_ref} to {definer}",
+                        self.path
+                    ))
+                })?;
+            let env = frame_env(model_ref, &args_at);
+            let found = match member {
+                Member::Method(sig) => Found::Method(subst_sig(sig, &env)),
+                Member::ClassVar(t) | Member::InstanceVar(t) => Found::Var(subst(t, &env)),
+            };
+            return Ok(Some((found, definer.to_string())));
+        }
+        Ok(None)
+    }
+
+    /// Resolve a member: the entry lookup's substituted shape alone.
+    fn find_member(
+        &self,
+        receiver: &Type,
+        name: &str,
+        skip_class: Option<&str>,
+    ) -> Result<Option<Found>, CheckError> {
+        Ok(self
+            .find_member_entry(receiver, name, skip_class)?
+            .map(|(found, _)| found))
+    }
+
+    /// Map the receiver's type arguments to the definer's frame: follow
+    /// the model's bases, substituting outward, until `target` is
+    /// reached. Non-corpus bases (typing.Generic, builtins.object) end
+    /// the walk with `None`.
+    fn map_args(
+        &self,
+        from_ref: &str,
+        from_args: &[Type],
+        target: &str,
+    ) -> Result<Option<Vec<Type>>, CheckError> {
+        if from_ref == target {
+            return Ok(Some(from_args.to_vec()));
+        }
+        let Some(model_ref) = self.classes.get(from_ref) else {
+            return Ok(None);
+        };
+        let env = frame_env(model_ref, from_args);
+        for (b_ref, b_args) in &model_ref.bases {
+            let concrete: Vec<Type> = b_args.iter().map(|a| subst(a, &env)).collect();
+            if b_ref == target {
+                return Ok(Some(concrete));
+            }
+            if let Some(mapped) = self.map_args(b_ref, &concrete, target)? {
+                return Ok(Some(mapped));
+            }
+        }
+        Ok(None)
+    }
+
+    fn sub(&self, left: &Type, right: &Type) -> Option<bool> {
+        is_subtype(left, right, &self.ctx, &self.resolver)
+    }
 }

@@ -5,12 +5,15 @@ The only Python anywhere in the standalone-skeleton slice, and it runs at
 fixture-creation time, never at check time. Two outputs:
 
 1. ``crates/mypy-rs-skel/fixtures/skeleton_fixtures.json``: the
-   checking-phase typeinfo read-closure the Step-0 probe measured for the
-   trivial corpus (#85: 8 TypeInfos), snapshotted with exactly the read
+   checking-phase typeinfo read-closure of the grown corpus (8 records
+   for the trivial corpus, #85; 13 stdlib records for the class/member
+   slice, #118 probe #114), snapshotted with exactly the read
    vocabulary the kernel's ``snapshot_type_info`` uses
    (crates/type_kernel/src/typeinfo.rs). Wire-format Type blobs are
    emitted as lowercase hex; the skeleton decodes them into
-   ``TypeInfoSnapshot`` records consumed by ``is_subtype``.
+   ``TypeInfoSnapshot`` records consumed by ``is_subtype``. The four
+   corpus classes are asserted present but never dumped: the skeleton
+   builds their models and snapshots itself at check time.
 
 2. ``crates/mypy-rs-skel/testdata/*.expected``: byte-exact expected
    stdout of real mypy on the corpus (the gate 1 arms plus every
@@ -42,17 +45,34 @@ import tempfile
 
 TAG = "[skeleton-codegen]"
 
-# The Step-0 measured closure (#85): exactly these fullnames.
+# The #118 probe closure (#114) plus builtins.int / builtins.bool,
+# closing the int/bool literal promote path (review H5) so
+# `f: float = 1` decides; corpus records stay out (skeleton-owned).
 CLOSURE = [
+    "abc.ABCMeta",
+    "builtins.bool",
+    "builtins.float",
+    "builtins.function",
+    "builtins.int",
     "builtins.object",
     "builtins.str",
-    "typing.Awaitable",
+    "builtins.type",
+    "class_slice.Circle",
+    "class_slice.NamedBox",
+    "class_slice_base.Shape",
+    "class_slice_base.Sized",
     "typing.Collection",
     "typing.Container",
     "typing.Iterable",
     "typing.Reversible",
     "typing.Sequence",
 ]
+
+# Modules the skeleton checks itself; their records stay out of the dump.
+CORPUS_MODULES = frozenset({"class_slice", "class_slice_base"})
+
+# Corpus classes each checked module must define (sanity guard).
+CORPUS_CLASSES = {"class_slice": ("Circle", "NamedBox"), "class_slice_base": ("Shape", "Sized")}
 
 # Primitive names the semanal subset resolves annotations through.
 PRIMITIVE_NAMES = ["bool", "float", "int", "str"]
@@ -137,6 +157,11 @@ def snapshot_type_info(info: object, buf_cls: object) -> dict:
     upper_bounds = []
     raw_ids = []
     for tvar in defn_tvars:
+        # Positional, one entry per tvar: the kernel's
+        # read_type_var_raw_ids never skips, even when the name is
+        # unreadable (nameless tvars skip only the variance triples).
+        tv_id = getattr(tvar, "id", None)
+        raw_ids.append(int(getattr(tv_id, "raw_id", -1)) if tv_id is not None else -1)
         name = getattr(tvar, "name", None)
         if name is None:
             continue
@@ -158,8 +183,6 @@ def snapshot_type_info(info: object, buf_cls: object) -> dict:
             upper_bounds.append(blob_hex(bound, buf_cls) if bound is not None else "")
         else:
             upper_bounds.append("")
-        tv_id = getattr(tvar, "id", None)
-        raw_ids.append(int(getattr(tv_id, "raw_id", -1)) if tv_id is not None else -1)
     d["type_vars_with_variance"] = triples
     d["type_var_upper_bounds"] = upper_bounds
     d["type_var_raw_ids"] = raw_ids
@@ -185,18 +208,25 @@ def snapshot_type_info(info: object, buf_cls: object) -> dict:
 
 
 def build_corpus() -> tuple[object, list[str]]:
-    """One in-process mypy build of the trivial corpus; returns the
-    BuildManager holding the live graph the snapshots read."""
+    """One in-process mypy build of the grown corpus (trivial + the
+    class/member slice); returns the BuildManager holding the live
+    graph the snapshots read."""
     import mypy.build
     from mypy.options import Options
 
     options = Options()
     options.no_incremental = True
     options.cache_dir = os.path.join(tempfile.mkdtemp(prefix="mypy-rs-skel-codegen-"), "cache")
-    source = mypy.build.BuildSource(os.path.join(TESTDATA_DIR, "trivial.py"), "__main__", None)
+    sources = [
+        mypy.build.BuildSource(os.path.join(TESTDATA_DIR, "trivial.py"), "__main__", None),
+        mypy.build.BuildSource(
+            os.path.join(TESTDATA_DIR, "class_slice_base.py"), "class_slice_base", None
+        ),
+        mypy.build.BuildSource(os.path.join(TESTDATA_DIR, "class_slice.py"), "class_slice", None),
+    ]
     collected: list[str] = []
     result = mypy.build.build(
-        [source], options, flush_errors=lambda path, errors, serious: collected.extend(errors)
+        sources, options, flush_errors=lambda path, errors, serious: collected.extend(errors)
     )
     return result.manager, collected
 
@@ -208,6 +238,8 @@ def dump_fixtures(manager: object, buf_cls: object) -> dict:
         symbol = manager.modules[module_name].names[name]
         info = symbol.node
         assert info.fullname == fullname, (info.fullname, fullname)
+        if module_name in CORPUS_MODULES:
+            continue
         records.append(snapshot_type_info(info, buf_cls))
     builtins_file = manager.modules["builtins"]
     primitives = {}
@@ -286,7 +318,9 @@ def regen_expected(scratch: str) -> dict[str, bytes]:
         )
     outputs = {}
     exit_codes = {}
-    arms = {"trivial", "empty_control"} | {os.path.splitext(e["arm"])[0] for e in supported_arms()}
+    arms = {"trivial", "empty_control", "class_slice"} | {
+        os.path.splitext(e["arm"])[0] for e in supported_arms()
+    }
     cache = os.path.join(scratch, "cache")
     for stem in sorted(arms):
         proc = subprocess.run(
@@ -297,6 +331,11 @@ def regen_expected(scratch: str) -> dict[str, bytes]:
         )
         if proc.stderr:
             raise RuntimeError(f"mypy wrote to stderr for {stem}.py: {proc.stderr!r}")
+        if stem == "class_slice" and (proc.returncode != 0 or b"Success" not in proc.stdout):
+            raise RuntimeError(
+                f"real mypy rejects the class corpus; refusing to record it as golden: "
+                f"returncode {proc.returncode}, stdout {proc.stdout!r}"
+            )
         outputs[f"{stem}.expected"] = proc.stdout
         exit_codes[stem] = proc.returncode
     for entry in supported_arms():
@@ -349,6 +388,39 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    class_errors = [e for e in collected if "class_slice" in e]
+    if class_errors:
+        print(
+            f"{TAG} real build reported errors in the class corpus; refusing to emit: "
+            f"{class_errors!r}",
+            file=sys.stderr,
+        )
+        return 1
+    for module_name, class_names in sorted(CORPUS_CLASSES.items()):
+        module = manager.modules.get(module_name)
+        if module is None:
+            print(
+                f"{TAG} corpus module {module_name} missing from the build; refusing to emit",
+                file=sys.stderr,
+            )
+            return 1
+        for name in class_names:
+            symbol = module.names.get(name)
+            node = symbol.node if symbol is not None else None
+            if node is None:
+                print(
+                    f"{TAG} corpus class {module_name}.{name} missing from the build; "
+                    "refusing to emit",
+                    file=sys.stderr,
+                )
+                return 1
+            if node.fullname != f"{module_name}.{name}":
+                print(
+                    f"{TAG} corpus class {module_name}.{name} did not resolve as expected "
+                    f"(got {node.fullname!r}); refusing to emit",
+                    file=sys.stderr,
+                )
+                return 1
 
     fixtures = dump_fixtures(manager, WriteBuffer)
     fixture_bytes = (json.dumps(fixtures, indent=2, sort_keys=True) + "\n").encode()
