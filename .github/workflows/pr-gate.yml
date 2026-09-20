@@ -172,6 +172,9 @@ jobs:
         # Fail when committed fixtures/expected outputs are stale;
         # MYPY_RS_EXT_DIRS points the generator (in-process build and
         # regen subprocess) at the restored extension cache.
+        # Step-level bound (job cap is 90 min): a hung regeneration
+        # must not hold the runner for the whole job window.
+        timeout-minutes: 15
         env:
           MYPY_RS_EXT_DIRS: ${{ env.SCRATCH }}
         run: uv run python misc/skeleton_codegen.py --check
