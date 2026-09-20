@@ -4797,11 +4797,12 @@ class State:
     def type_check_first_pass(self, recurse_into_functions: bool = True) -> None:
         if self.options.semantic_analysis_only:
             return
-        import os as _os
 
         from mypy.types import _set_type_wire_cache_enabled
 
-        _set_type_wire_cache_enabled(not _os.environ.get("MYPY_NO_WIRE_CACHE"))
+        # MYPY_NO_WIRE_CACHE is a NO-gate: only a truthy spelling disables
+        # the cache; unset or a falsy spelling leaves it enabled (#88).
+        _set_type_wire_cache_enabled(not env_flag("MYPY_NO_WIRE_CACHE"))
         t0 = time_ref()
         with self.wrap_context():
             self.type_checker().check_first_pass(recurse_into_functions=recurse_into_functions)

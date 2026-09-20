@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Sequence
 from types import SimpleNamespace
@@ -1836,7 +1835,7 @@ except ImportError:
     _HAS_TYPE_KERNEL_STRFORMAT_TEST = False
 
 _NATIVE_STRFORMAT_ENABLED = (
-    bool(os.environ.get("TEST_NATIVE_TYPE_KERNEL")) and _HAS_TYPE_KERNEL_STRFORMAT_TEST
+    _env_gate("TEST_NATIVE_TYPE_KERNEL") and _HAS_TYPE_KERNEL_STRFORMAT_TEST
 )
 
 

@@ -251,19 +251,20 @@ class TestEnvFlag(TestCase):
                 env_flag("MYPY_ENV_FLAG_TEST")
 
     def test_production_gates_decode_through_env_flag(self) -> None:
-        # Pins the #60/#67 fixes at the wiring sites: every env gate in the
-        # shipped modules must decode through env_flag, never a bare
-        # bool(environ.get(...)), which would read "0" as enabled.
+        # Pins the #60/#67/#88 fixes at the wiring sites: every env gate in
+        # the shipped modules must decode through env_flag, never a bare
+        # bool/not environ.get(...) read, which reads "0" as enabled/set.
         import re
 
         here = Path(__file__).resolve().parent.parent
         gates = {
             "types.py": ["MYPY_SERIALIZE_STATS", "MYPY_SERIALIZE_CLOCK"],
             "subtypes.py": ["MYPY_SUBTYPE_IDENTITY_PROBE"],
-            "build.py": ["MYPY_ENABLE_NATIVE_SEMANAL"],
+            "build.py": ["MYPY_ENABLE_NATIVE_SEMANAL", "MYPY_NO_WIRE_CACHE"],
             "stubtest.py": ["TEST_NATIVE_PARSER"],
         }
         bare = re.compile(r"bool\(\w*\.environ\.get\(")
+        inverted = re.compile(r"not\s+\w*\.environ\.get\(")
         for fname, names in gates.items():
             src = (here / fname).read_text()
             for name in names:
@@ -271,3 +272,43 @@ class TestEnvFlag(TestCase):
                     rf'\b_?env_flag\("{name}"\)', src
                 ), f"{fname} must gate {name} via env_flag"
             assert not bare.search(src), f"{fname} still has a bool(environ.get(...)) gate"
+            assert not inverted.search(src), f"{fname} still has a not environ.get(...) gate"
+
+    def test_suite_gates_decode_through_env_gate(self) -> None:
+        # Pins the #88 fixes: every TEST_NATIVE_* gate read by a test module
+        # must decode through helpers._env_gate, so "=0" turns the seam off
+        # and unknown spellings fail loudly instead of decoding as "on".
+        import re
+
+        test_dir = Path(__file__).resolve().parent
+        gates = {
+            "testerrorstream.py": [
+                "TEST_NATIVE_PARSER",
+                "TEST_NATIVE_RESOLVER",
+                "TEST_NATIVE_TYPE_KERNEL",
+            ],
+            "testparse.py": ["TEST_NATIVE_PARSER"],
+            "testinfer.py": ["TEST_NATIVE_TYPE_KERNEL"],
+            "testtypes.py": ["TEST_NATIVE_TYPE_KERNEL"],
+            "testtypegen.py": [
+                "TEST_NATIVE_PARSER",
+                "TEST_NATIVE_RESOLVER",
+                "TEST_NATIVE_TYPE_KERNEL",
+            ],
+            "test_ref_info.py": [
+                "TEST_NATIVE_PARSER",
+                "TEST_NATIVE_RESOLVER",
+                "TEST_NATIVE_TYPE_KERNEL",
+            ],
+            "conftest.py": ["TEST_NATIVE_TYPE_KERNEL"],
+        }
+        bare = re.compile(r"bool\(\w*\.environ\.get\(")
+        inverted = re.compile(r"not\s+\w*\.environ\.get\(")
+        for fname, names in gates.items():
+            src = (test_dir / fname).read_text()
+            for name in names:
+                assert re.search(
+                    rf'\b_env_gate\("{name}"\)', src
+                ), f"{fname} must gate {name} via _env_gate"
+            assert not bare.search(src), f"{fname} still has a bool(environ.get(...)) gate"
+            assert not inverted.search(src), f"{fname} still has a not environ.get(...) gate"

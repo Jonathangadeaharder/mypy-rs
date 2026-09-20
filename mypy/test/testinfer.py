@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from unittest import skipUnless
 
 from librt.internal import ReadBuffer, WriteBuffer
@@ -28,7 +27,7 @@ from mypy.constraints import SUBTYPE_OF, SUPERTYPE_OF
 from mypy.literals import Key
 from mypy.nodes import ARG_NAMED, ARG_OPT, ARG_POS, ARG_STAR, ARG_STAR2, ArgKind, NameExpr
 from mypy.solve import solve_one
-from mypy.test.helpers import Suite, assert_equal
+from mypy.test.helpers import Suite, _env_gate, assert_equal
 from mypy.test.typefixture import TypeFixture
 from mypy.types import (
     AnyType,
@@ -48,13 +47,13 @@ from mypy.types import (
 # Stage 4 parity: flip the argmap gate from the env var so the unit tests
 # exercise the Rust path when TEST_NATIVE_TYPE_KERNEL is set. Mirrors the
 # testtypes.py gate for the Stage 3a/3b/3c parity suites.
-_set_native_argmap_active(bool(os.environ.get("TEST_NATIVE_TYPE_KERNEL")))
+_set_native_argmap_active(_env_gate("TEST_NATIVE_TYPE_KERNEL"))
 
-_NATIVE_ARGMAP_ENABLED = bool(os.environ.get("TEST_NATIVE_TYPE_KERNEL"))
+_NATIVE_ARGMAP_ENABLED = _env_gate("TEST_NATIVE_TYPE_KERNEL")
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class SolveOneParitySuite(Suite):
@@ -136,7 +135,7 @@ class SolveOneParitySuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class CacheMetaParitySuite(Suite):
@@ -245,7 +244,7 @@ class CacheMetaParitySuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class ConstraintInferParitySuite(Suite):
@@ -292,7 +291,7 @@ class ConstraintInferParitySuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class ClassifyCallParitySuite(Suite):
@@ -365,7 +364,7 @@ class ClassifyCallParitySuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class CheckCallDispatchParitySuite(Suite):
@@ -442,7 +441,7 @@ class CheckCallDispatchParitySuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class NormalizeCallableParitySuite(Suite):
@@ -636,7 +635,7 @@ class MapActualsToFormalsStarSuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class ExpandActualTypeParitySuite(Suite):
@@ -1117,7 +1116,7 @@ class OperandComparisonGroupingSuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class InferFunctionTypeArgumentsParitySuite(Suite):
@@ -1250,7 +1249,7 @@ class InferFunctionTypeArgumentsParitySuite(Suite):
 
 
 @skipUnless(
-    os.environ.get("TEST_NATIVE_TYPE_KERNEL"),
+    _env_gate("TEST_NATIVE_TYPE_KERNEL"),
     "requires TEST_NATIVE_TYPE_KERNEL (Rust type-kernel build)",
 )
 class CheckExprScalarQueryParitySuite(Suite):

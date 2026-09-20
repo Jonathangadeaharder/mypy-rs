@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import sys
 
 from pytest import skip
@@ -13,7 +12,7 @@ from mypy.errors import CompileError, Errors
 from mypy.options import Options
 from mypy.parse import parse
 from mypy.test.data import DataDrivenTestCase, DataSuite
-from mypy.test.helpers import assert_string_arrays_equal, find_test_files, parse_options
+from mypy.test.helpers import _env_gate, assert_string_arrays_equal, find_test_files, parse_options
 from mypy.util import get_mypy_comments
 
 
@@ -42,7 +41,7 @@ def test_parser(testcase: DataDrivenTestCase) -> None:
     options.hide_error_codes = True
     # The native parser requires the ast_serialize extension built for this
     # interpreter; fall back to the Python parser unless explicitly requested.
-    options.native_parser = bool(os.environ.get("TEST_NATIVE_PARSER"))
+    options.native_parser = _env_gate("TEST_NATIVE_PARSER")
 
     if testcase.file.endswith("python310.test"):
         options.python_version = (3, 10)

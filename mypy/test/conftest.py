@@ -24,6 +24,7 @@ from typing import Any
 import pytest
 
 from mypy.build import BuildManager
+from mypy.test.helpers import _env_gate
 
 
 def _install_native_resolvers_patch() -> None:
@@ -234,7 +235,7 @@ def pytest_sessionstart(session: Any) -> None:
     No-op when the source tree is absent (e.g. installed wheel without the
     Rust source) — there is nothing to compare against.
     """
-    if not os.environ.get("TEST_NATIVE_TYPE_KERNEL"):
+    if not _env_gate("TEST_NATIVE_TYPE_KERNEL"):
         return
     try:
         import type_kernel
