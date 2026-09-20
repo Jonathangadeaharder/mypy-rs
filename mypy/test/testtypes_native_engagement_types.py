@@ -2589,7 +2589,7 @@ class NativeCheckerHelpersDeferralSuite(Suite):
         from mypy.join import _deserialize_type
         from mypy.types import UnionType
 
-        union = UnionType.make_union([self.fx.a, self.fx.b])
+        union = UnionType([self.fx.a, self.fx.b])
         self.assert_par(union, self.fx.b)
         seam = self.seam_result(union, self.fx.b)
         assert seam is not None
@@ -13600,7 +13600,7 @@ class NativeConstraintsDeferralSuite(Suite):
     def test_actual_union_operand_engages(self) -> None:
         # List[T] vs List[A | B]: the union dispatch branch is ported
         # (issue #1130), so the seam handles the union actual natively.
-        actual_union = UnionType.make_union([self.fx.a, self.fx.b])
+        actual_union = UnionType([self.fx.a, self.fx.b])
         template = self._list(self.fx.t)
         actual = self._list(actual_union)
         self._assert_par(template, actual)
@@ -13609,7 +13609,7 @@ class NativeConstraintsDeferralSuite(Suite):
     def test_template_union_operand_engages(self) -> None:
         # H[T, (A | B)] vs H[A, A]: the union template arg is dispatched
         # natively (issue #1130) before the other position constrains.
-        template_union = UnionType.make_union([self.fx.a, self.fx.b])
+        template_union = UnionType([self.fx.a, self.fx.b])
         template = Instance(self.fx.hi, [self.fx.t, template_union])
         actual = Instance(self.fx.hi, [self.fx.a, self.fx.a])
         self._assert_par(template, actual)
@@ -15252,17 +15252,17 @@ class NativeCallableUnifyPreludeSuite(Suite):
         assert len(calls) == 1, f"expected 1 seam call, got {len(calls)}"
 
 
-class StaleCodedEntryRemedySuite(Suite):
-    """#36: a stale type_kernel build fails with the pointed rebuild remedy.
+class StaleKernelRemedySuite(Suite):
+    """#36, #42: a stale type_kernel build fails with the pointed remedy.
 
-    An extension predating #33 imports fine, so the staleness surfaces only
-    as the missing `rust_is_subtype_coded` attribute on the first gated
-    subtype check. That must raise the pointed RuntimeError (the
+    An extension predating a seam imports fine, so the staleness surfaces
+    only as the missing seam attribute on the first gated call through
+    that seam. Every such fetch must raise the pointed RuntimeError (the
     `parse_to_binary_ast` pattern, mypy/nativeparse.py), not a bare
     AttributeError that reads as an INTERNAL ERROR. The gate-off path is
-    untouched: with the seam off the same stale module answers through the
-    Python engine exactly as before, so a legitimately absent kernel never
-    triggers the remedy.
+    untouched: with the seam off the same stale module answers through
+    the Python engine exactly as before, so a legitimately absent kernel
+    never triggers the remedy.
     """
 
     def setUp(self) -> None:
@@ -15344,6 +15344,112 @@ class StaleCodedEntryRemedySuite(Suite):
         fresh.rust_is_subtype_coded = lambda *a, **k: 1  # type: ignore[attr-defined]
         self.activate_stale_kernel(fresh)
         self.assertTrue(is_subtype(self.fx.a, self.fx.b))
+
+    def test_missing_seam_entries_name_the_rebuild_remedy(self) -> None:
+        """#42: every gated seam fetch names the missing symbol and remedy.
+
+        Each probe activates a kernel predating exactly one seam; the
+        public entry must raise the pointed RuntimeError, never a bare
+        AttributeError INTERNAL ERROR.
+        """
+        import types as types_module
+
+        from mypy.subtypes import (
+            erase_return_self_types,
+            has_underscore_prefix,
+            is_descriptor,
+            is_equivalent,
+            is_erased_instance,
+            try_restrict_literal_union,
+        )
+        from mypy.types import UnionType
+
+        union = UnionType([self.fx.a, self.fx.b])
+        call = self.fx.callable(self.fx.o, self.fx.o)
+        probes: list[tuple[str, dict[str, Any], Callable[[], object]]] = [
+            ("rust_is_same_type", {}, lambda: is_same_type(self.fx.a, self.fx.b)),
+            ("rust_is_equivalent", {}, lambda: is_equivalent(self.fx.a, self.fx.b)),
+            ("rust_is_more_precise", {}, lambda: is_more_precise(self.fx.a, self.fx.b)),
+            ("rust_is_erased_instance", {}, lambda: is_erased_instance(self.fx.a)),
+            ("rust_has_underscore_prefix", {}, lambda: has_underscore_prefix("x")),
+            ("rust_get_member_flags", {}, lambda: get_member_flags("x", self.fx.a)),
+            ("rust_is_descriptor", {}, lambda: is_descriptor(self.fx.a)),
+            (
+                "rust_try_restrict_literal_union",
+                {},
+                lambda: try_restrict_literal_union(union, self.fx.a),
+            ),
+            ("rust_erase_return_self_types", {}, lambda: erase_return_self_types(call, self.fx.o)),
+            (
+                # The visitor seam sits behind the coded entry, so the
+                # stale kernel must still answer the coded entry (deferring)
+                # to reach the `rust_callables_compatible` fetch.
+                "rust_callables_compatible",
+                {"rust_is_subtype_coded": lambda *a, **k: -1},
+                lambda: is_subtype(call, self.fx.callable(self.fx.o, self.fx.nonet)),
+            ),
+        ]
+        for attr, prereqs, probe in probes:
+            with self.subTest(attr):
+                stale = types_module.ModuleType("type_kernel")
+                for name, value in prereqs.items():
+                    setattr(stale, name, value)
+                self.activate_stale_kernel(stale)
+                with self.assertRaises(RuntimeError) as ctx:
+                    probe()
+                message = str(ctx.exception)
+                self.assertIn("the type_kernel on sys.path is not the in-repo extension", message)
+                self.assertIn(attr, message)
+                self.assertIn("AGENTS.md", message)
+                self.assertIn("Type kernel build order", message)
+                self.assertIsInstance(ctx.exception.__cause__, AttributeError)
+
+    def test_a_kernel_with_the_seam_entries_answers_through_the_gate(self) -> None:
+        # Positive control for the #42 seams: a kernel exposing them
+        # answers through them; only a missing symbol fires the remedy.
+        import types as types_module
+
+        from mypy.subtypes import (
+            erase_return_self_types,
+            has_underscore_prefix,
+            is_descriptor,
+            is_equivalent,
+            is_erased_instance,
+            try_restrict_literal_union,
+        )
+        from mypy.types import AnyType, UnionType, get_proper_type
+
+        fresh = types_module.ModuleType("type_kernel")
+        fresh.rust_is_subtype_coded = lambda *a, **k: 1  # type: ignore[attr-defined]
+        fresh.rust_is_same_type = lambda *a, **k: True  # type: ignore[attr-defined]
+        fresh.rust_is_equivalent = lambda *a, **k: True  # type: ignore[attr-defined]
+        fresh.rust_is_more_precise = lambda *a, **k: True  # type: ignore[attr-defined]
+        fresh.rust_is_erased_instance = lambda *a, **k: True  # type: ignore[attr-defined]
+        fresh.rust_is_descriptor = lambda *a, **k: True  # type: ignore[attr-defined]
+        fresh.rust_has_underscore_prefix = lambda *a, **k: False  # type: ignore[attr-defined]
+        fresh.rust_get_member_flags = lambda *a, **k: {IS_VAR}  # type: ignore[attr-defined]
+        fresh.rust_try_restrict_literal_union = lambda *a, **k: []  # type: ignore[attr-defined]
+        fresh.rust_erase_return_self_types = lambda *a, **k: None  # type: ignore[attr-defined]
+        fresh.rust_callables_compatible = lambda *a, **k: True  # type: ignore[attr-defined]
+        self.activate_stale_kernel(fresh)
+        self.assertTrue(is_same_type(self.fx.a, self.fx.b))
+        self.assertTrue(is_equivalent(self.fx.a, self.fx.b))
+        self.assertTrue(is_more_precise(self.fx.a, self.fx.b))
+        self.assertTrue(is_erased_instance(self.fx.a))
+        self.assertTrue(is_descriptor(self.fx.a))
+        self.assertFalse(has_underscore_prefix("x"))
+        self.assertEqual(get_member_flags("x", self.fx.a), {IS_VAR})
+        union = UnionType([self.fx.a, self.fx.b])
+        self.assertEqual(try_restrict_literal_union(union, self.fx.a), [])
+        call = self.fx.callable(self.fx.o, self.fx.o)
+        erased = erase_return_self_types(call, self.fx.o)
+        proper_erased = get_proper_type(erased)
+        assert isinstance(proper_erased, CallableType)
+        assert isinstance(get_proper_type(proper_erased.ret_type), AnyType)
+        # The visitor seam: with the coded entry deferring, the callable
+        # pair is decided by `rust_callables_compatible` itself.
+        fresh.rust_is_subtype_coded = lambda *a, **k: -1  # type: ignore[attr-defined]
+        self.assertTrue(is_subtype(call, self.fx.callable(self.fx.o, self.fx.nonet)))
 
     def test_the_gate_off_path_is_untouched_by_the_remedy(self) -> None:
         # With the seam off, the same stale module must not raise: the
