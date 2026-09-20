@@ -103,6 +103,15 @@ struct ClassFrame {
 /// pairs plus each base's MRO, used by the linearizer.
 type ResolvedBases = (Vec<(String, Vec<Type>)>, Vec<Vec<String>>);
 
+/// The per-class state one collection sweep walks with: the lookups
+/// a candidate's value typing needs, shared by every method body.
+struct CollectCtx<'a> {
+    bindings: &'a HashMap<String, Binding>,
+    frame: &'a ClassFrame,
+    self_ty: Type,
+    model: &'a ClassModel,
+}
+
 /// The name-resolution environment of one checked position.
 struct Scope<'a> {
     module: &'a HashMap<String, Binding>,
@@ -208,8 +217,17 @@ impl Driver {
     ) -> Result<HashMap<String, Binding>, CheckError> {
         let ast = crate::subset::parse_module(source, path).map_err(CheckError::Input)?;
         let mut bindings: HashMap<String, Binding> = HashMap::new();
+        // Three passes, mirroring mypy's bind-then-check split (#126):
+        // names bind in statement order, bodies check only after every
+        // name of the module is bound; module assignments stay eager.
         for stmt in &ast.body {
-            self.check_top_stmt(&mut bindings, module, dir, &stmt.kind, stmt.line)?;
+            self.bind_top_stmt(&mut bindings, module, dir, &stmt.kind, stmt.line)?;
+        }
+        // Retry the classes' pending instance attributes against the
+        // full module bindings, then check the deferred bodies.
+        self.collect_instance_vars(&bindings, module, &ast.body)?;
+        for stmt in &ast.body {
+            self.check_top_bodies(&bindings, module, &stmt.kind)?;
         }
         Ok(bindings)
     }
@@ -259,7 +277,9 @@ impl Driver {
         Ok(())
     }
 
-    fn check_top_stmt(
+    /// Pass 1: bind one top-level statement's names. Function and
+    /// class bodies are deferred to `check_top_bodies`.
+    fn bind_top_stmt(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         module: &str,
@@ -377,7 +397,7 @@ impl Driver {
                 bindings.insert(name.clone(), Binding::Var(declared));
             }
             StmtKind::ClassDef(cls) => self.process_class(bindings, module, cls)?,
-            StmtKind::FuncDef(func) => self.process_function(bindings, func)?,
+            StmtKind::FuncDef(func) => self.bind_function(bindings, func)?,
             StmtKind::Pass => {}
         }
         Ok(())
@@ -421,6 +441,9 @@ impl Driver {
     /// Insert or replace a class's snapshot in the resolver so member
     /// consults through the kernel see the current model.
     fn refresh(&mut self, fullname: &str) -> Result<(), CheckError> {
+        if std::env::var_os("SKEL_REFRESH_TRACE").is_some() {
+            eprintln!("refresh {fullname}");
+        }
         let model_ref = self.classes.get(fullname).ok_or_else(|| {
             CheckError::Internal(format!("the class model for {fullname} is missing"))
         })?;
@@ -445,7 +468,7 @@ impl Driver {
             ));
         }
         model_ref.members.insert(name.to_string(), member);
-        self.refresh(class_fullname)
+        Ok(())
     }
 
     fn process_class(
@@ -526,11 +549,25 @@ impl Driver {
                     }
                     self.register_member(&fullname, name, Member::ClassVar(declared), *line)?;
                 }
-                ClassStmt::Method(func) => {
-                    self.process_method(bindings, &frame, &fullname, func)?
-                }
+                ClassStmt::Method(func) => self.bind_method(bindings, &frame, &fullname, func)?,
                 ClassStmt::Pass => {}
             }
+        }
+        // Statement-order collection (#126): module statements after
+        // this class may read its instance attributes, so they must be
+        // registered before the next statement types.
+        let mut collected = false;
+        loop {
+            if !self.collect_class_sweep_once(bindings, cls, &fullname)? {
+                break;
+            }
+            collected = true;
+        }
+        if !collected {
+            // No instance attribute applied: the one splice that makes
+            // the pass-1 members (class variables, method signatures)
+            // visible through the kernel.
+            self.refresh(&fullname)?;
         }
         Ok(())
     }
@@ -711,7 +748,9 @@ impl Driver {
         Ok(model_ref)
     }
 
-    fn process_method(
+    /// Pass 1 for a method: resolve and register its signature. The
+    /// body checks later, in `check_method_body`.
+    fn bind_method(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         frame: &ClassFrame,
@@ -726,35 +765,12 @@ impl Driver {
             };
             self.resolve_sig(&scope, func)?
         };
-        self.register_member(
-            class_fullname,
-            &func.name,
-            Member::Method(sig.clone()),
-            func.line,
-        )?;
-        let self_ty = {
-            let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
-                CheckError::Internal(format!("the class model for {class_fullname} is missing"))
-            })?;
-            instance(class_fullname, model::class_frame_tvars(model_ref))
-        };
-        let mut locals: HashMap<String, Type> = HashMap::new();
-        locals.insert("self".to_string(), self_ty);
-        for (pname, ptype) in &sig.params {
-            locals.insert(pname.clone(), ptype.clone());
-        }
-        self.check_body(
-            bindings,
-            Some(frame),
-            &sig.ret,
-            &mut locals,
-            &func.body,
-            func.line,
-        )?;
-        self.check_override(class_fullname, &func.name, &sig, func.line)
+        self.register_member(class_fullname, &func.name, Member::Method(sig), func.line)
     }
 
-    fn process_function(
+    /// Pass 1 for a module function: bind its signature only. The
+    /// body checks later, in `check_function_body`.
+    fn bind_function(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         func: &FuncDefStmt,
@@ -768,12 +784,265 @@ impl Driver {
             };
             self.resolve_sig(&scope, func)?
         };
-        bindings.insert(func.name.clone(), Binding::Function(sig.clone()));
+        bindings.insert(func.name.clone(), Binding::Function(sig));
+        Ok(())
+    }
+
+    /// Pass 3: check a deferred module-function body against the
+    /// full module bindings.
+    fn check_function_body(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        func: &FuncDefStmt,
+    ) -> Result<(), CheckError> {
+        let sig = match bindings.get(&func.name) {
+            Some(Binding::Function(sig)) => sig.clone(),
+            _ => {
+                return Err(CheckError::Internal(format!(
+                    "the binding for the function `{}` is missing",
+                    func.name
+                )))
+            }
+        };
         let mut locals: HashMap<String, Type> = HashMap::new();
         for (pname, ptype) in &sig.params {
             locals.insert(pname.clone(), ptype.clone());
         }
         self.check_body(bindings, None, &sig.ret, &mut locals, &func.body, func.line)
+    }
+
+    /// Pass 3: check a deferred method body against the full module
+    /// bindings and the class model, then the override check (the
+    /// body-then-override order mypy uses).
+    fn check_method_body(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        class_fullname: &str,
+        func: &FuncDefStmt,
+    ) -> Result<(), CheckError> {
+        let (tvars, sig) = {
+            let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {class_fullname} is missing"))
+            })?;
+            match model_ref.members.get(&func.name) {
+                Some(Member::Method(sig)) => (model_ref.tvars.clone(), sig.clone()),
+                _ => {
+                    return Err(CheckError::Internal(format!(
+                        "the method `{}` is missing from the model of {class_fullname}",
+                        func.name
+                    )))
+                }
+            }
+        };
+        let frame = ClassFrame {
+            fullname: class_fullname.to_string(),
+            tvars,
+        };
+        let self_ty = {
+            let model_ref = self.classes.get(class_fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {class_fullname} is missing"))
+            })?;
+            instance(class_fullname, model::class_frame_tvars(model_ref))
+        };
+        let mut locals: HashMap<String, Type> = HashMap::new();
+        locals.insert("self".to_string(), self_ty);
+        for (pname, ptype) in &sig.params {
+            locals.insert(pname.clone(), ptype.clone());
+        }
+        self.check_body(
+            bindings,
+            Some(&frame),
+            &sig.ret,
+            &mut locals,
+            &func.body,
+            func.line,
+        )?;
+        self.check_override(class_fullname, &func.name, &sig, func.line)
+    }
+
+    /// Pass 3 driver: walk the module in statement order and check
+    /// the deferred bodies. Statements with no body have nothing to
+    /// check here.
+    fn check_top_bodies(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        module: &str,
+        kind: &StmtKind,
+    ) -> Result<(), CheckError> {
+        match kind {
+            StmtKind::FuncDef(func) => self.check_function_body(bindings, func)?,
+            StmtKind::ClassDef(cls) => {
+                let fullname = format!("{module}.{}", cls.name);
+                for stmt in &cls.body {
+                    if let ClassStmt::Method(func) = stmt {
+                        self.check_method_body(bindings, &fullname, func)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// One collection sweep over one class: type every `self.<attr> =
+    /// ...` whose attribute is neither an own member nor
+    /// base-defined, apply the candidates in statement order, and
+    /// splice the model once when any applied. Returns whether a
+    /// candidate applied; the caller loops until false.
+    fn collect_class_sweep_once(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        cls: &crate::subset::ClassDefStmt,
+        fullname: &str,
+    ) -> Result<bool, CheckError> {
+        let candidates = self.collect_class_candidates(bindings, cls, fullname)?;
+        let mut applied = false;
+        for (attr, vt) in candidates {
+            let Some(model_ref) = self.classes.get_mut(fullname) else {
+                return Err(CheckError::Internal(format!(
+                    "the class model for {fullname} is missing"
+                )));
+            };
+            if model_ref.members.contains_key(&attr) {
+                continue;
+            }
+            model_ref.members.insert(attr, Member::InstanceVar(vt));
+            applied = true;
+        }
+        if applied {
+            self.refresh(fullname)?;
+        }
+        Ok(applied)
+    }
+
+    /// Pass 2 over the module: retry the classes' pending
+    /// `self.<attr> = ...` candidates against the full module
+    /// bindings. A body may read any module name (#126), so a value
+    /// the statement-order collection could not type yet (it names a
+    /// later function, variable or class) gets another sweep here.
+    /// Monotone: every sweep only adds members, so it terminates.
+    fn collect_instance_vars(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        module: &str,
+        body: &[crate::subset::TopStmt],
+    ) -> Result<(), CheckError> {
+        let mut applied_any = true;
+        while applied_any {
+            applied_any = false;
+            for stmt in body {
+                let StmtKind::ClassDef(cls) = &stmt.kind else {
+                    continue;
+                };
+                let fullname = format!("{module}.{}", cls.name);
+                if self.collect_class_sweep_once(bindings, cls, &fullname)? {
+                    applied_any = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One sweep over one class: walk every method body and type each
+    /// `self.<attr> = ...` whose attribute is neither an own member
+    /// nor base-defined (those subtype against the existing member
+    /// in pass 3, so they must not be re-registered).
+    fn collect_class_candidates(
+        &self,
+        bindings: &HashMap<String, Binding>,
+        cls: &crate::subset::ClassDefStmt,
+        fullname: &str,
+    ) -> Result<Vec<(String, Type)>, CheckError> {
+        let model_ref = self.classes.get(fullname).ok_or_else(|| {
+            CheckError::Internal(format!("the class model for {fullname} is missing"))
+        })?;
+        let frame = ClassFrame {
+            fullname: fullname.to_string(),
+            tvars: model_ref.tvars.clone(),
+        };
+        let ctx = CollectCtx {
+            bindings,
+            frame: &frame,
+            self_ty: instance(fullname, model::class_frame_tvars(model_ref)),
+            model: model_ref,
+        };
+        let mut candidates = Vec::new();
+        for stmt in &cls.body {
+            let ClassStmt::Method(func) = stmt else {
+                continue;
+            };
+            let Some(Member::Method(sig)) = ctx.model.members.get(&func.name) else {
+                continue;
+            };
+            let mut locals: HashMap<String, Type> = HashMap::new();
+            locals.insert("self".to_string(), ctx.self_ty.clone());
+            for (pname, ptype) in &sig.params {
+                locals.insert(pname.clone(), ptype.clone());
+            }
+            self.collect_body_candidates(&ctx, &mut locals, &func.body, &mut candidates)?;
+        }
+        Ok(candidates)
+    }
+
+    /// The per-body walk of one sweep: collect self-attribute
+    /// candidates and mirror the local-assignment typing so later
+    /// candidates see the same names pass 3 will. A typing failure is
+    /// skipped, never an error: pass 3 re-types the statement and
+    /// rejects it with the construct-naming message.
+    fn collect_body_candidates(
+        &self,
+        ctx: &CollectCtx,
+        locals: &mut HashMap<String, Type>,
+        seq: &[BodyStmt],
+        candidates: &mut Vec<(String, Type)>,
+    ) -> Result<(), CheckError> {
+        for stmt in seq {
+            let scope = Scope {
+                module: ctx.bindings,
+                locals: Some(&*locals),
+                frame: Some(ctx.frame),
+            };
+            match stmt {
+                BodyStmt::SelfAssign { attr, value, .. } => {
+                    if ctx.model.members.contains_key(attr)
+                        || self.find_member(&ctx.self_ty, attr, None)?.is_some()
+                    {
+                        continue;
+                    }
+                    if let Ok(vt) = self.type_expr(&scope, value) {
+                        candidates.push((attr.clone(), vt));
+                    }
+                }
+                BodyStmt::LocalAnnAssign {
+                    name, ann, value, ..
+                } => {
+                    if let Ok(declared) = self.resolve_ann(&scope, ann) {
+                        if self.type_expr(&scope, value).is_ok() {
+                            locals.insert(name.clone(), declared);
+                        }
+                    }
+                }
+                BodyStmt::LocalAssign { name, value, .. } => {
+                    if let Ok(t) = self.type_expr(&scope, value) {
+                        locals.insert(name.clone(), t);
+                    }
+                }
+                BodyStmt::If {
+                    branches,
+                    else_body,
+                    ..
+                } => {
+                    for (_, body) in branches {
+                        self.collect_body_candidates(ctx, locals, body, candidates)?;
+                    }
+                    if let Some(else_body) = else_body {
+                        self.collect_body_candidates(ctx, locals, else_body, candidates)?;
+                    }
+                }
+                BodyStmt::Call(_) | BodyStmt::Return { .. } | BodyStmt::Pass => {}
+            }
+        }
+        Ok(())
     }
 
     fn resolve_sig(&self, scope: &Scope, func: &FuncDefStmt) -> Result<Sig, CheckError> {
@@ -867,18 +1136,11 @@ impl Driver {
                             ))
                         }
                         None => {
-                            let class_fullname =
-                                scope.frame.map(|f| f.fullname.clone()).ok_or_else(|| {
-                                    CheckError::Internal(
-                                        "a self assignment outside a class frame".to_string(),
-                                    )
-                                })?;
-                            self.register_member(
-                                &class_fullname,
-                                attr,
-                                Member::InstanceVar(vt),
-                                *line,
-                            )?;
+                            return Err(CheckError::Internal(
+                                "an instance attribute that the collection pass did not \
+                                 register"
+                                    .to_string(),
+                            ))
                         }
                     }
                 }

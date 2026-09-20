@@ -866,3 +866,131 @@ fn override_exemptions_match_mypy() {
         }
     }
 }
+
+/// Function and method bodies check after the whole module binds
+/// (#126): every name a body reads may be defined later in the
+/// module, exactly the set of forward references real mypy accepts
+/// (verified against it: each clean case below is mypy-clean). The
+/// module-level statements stay eager, so a module assignment that
+/// calls a later function keeps rejecting: mypy reports
+/// used-before-def there, an error class the subset does not render.
+#[test]
+fn forward_reference_bodies_check_clean() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-forward-refs");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32, &str); 6] = [
+        (
+            "func_calls_later_func.py",
+            concat!(
+                "def first() -> int:\n",
+                "    return second()\n",
+                "\n",
+                "def second() -> int:\n",
+                "    return 1\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "method_reads_later_selfattr.py",
+            concat!(
+                "class C:\n",
+                "    def reader(self) -> int:\n",
+                "        return self.value\n",
+                "\n",
+                "    def writer(self) -> None:\n",
+                "        self.value = 1\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "method_calls_later_func.py",
+            concat!(
+                "class D:\n",
+                "    def caller(self) -> int:\n",
+                "        return later()\n",
+                "\n",
+                "def later() -> int:\n",
+                "    return 2\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "func_reads_later_global.py",
+            concat!(
+                "def global_reader() -> int:\n",
+                "    return counter\n",
+                "\n",
+                "counter: int = 3\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "later_class_in_method_body.py",
+            concat!(
+                "class A:\n",
+                "    def make(self) -> None:\n",
+                "        b = B()\n",
+                "\n",
+                "class B:\n",
+                "    pass\n",
+            ),
+            2,
+            "constructing a class without an __init__ is outside the skeleton subset",
+        ),
+        (
+            "module_assign_stays_eager.py",
+            "x = f()\n\ndef f() -> int:\n    return 1\n",
+            2,
+            "calling `f` is outside the skeleton subset",
+        ),
+    ];
+    for (name, source, code, expect) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if code == 2 {
+            assert!(output.stdout.is_empty(), "no stdout for {name}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(expect), "stderr for {name}: {stderr}");
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+            assert!(output.stderr.is_empty(), "stderr for {name}");
+        }
+    }
+}
+
+/// The manifest's supported forward-reference arm (#126): the
+/// differential corpus run must be byte-identical to the .expected
+/// fixture the codegen captured from real mypy.
+#[test]
+fn forward_references_differential() {
+    let output = run_bin_in(&testdata_dir(), "forward_references.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "exit code: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected = fs::read(testdata_dir().join("forward_references.expected"))
+        .expect("missing .expected fixture");
+    assert_eq!(output.stdout, expected, "stdout bytes");
+    assert!(
+        output.stderr.is_empty(),
+        "stderr must be empty: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
