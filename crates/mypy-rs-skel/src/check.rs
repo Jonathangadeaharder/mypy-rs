@@ -983,8 +983,9 @@ impl Driver {
 
     /// The method-override check: every base definer in the MRO (mypy
     /// checks each, not just the nearest) must accept the override's
-    /// parameters and return a supertype. `__init__`/`__new__` are
-    /// exempt, as in mypy.
+    /// parameters and return a supertype. `__init__`, `__new__`,
+    /// `__init_subclass__` and `__post_init__` are exempt, matching
+    /// mypy's checker.py exemption list.
     fn check_override(
         &self,
         class_fullname: &str,
@@ -992,7 +993,10 @@ impl Driver {
         sig: &Sig,
         line: usize,
     ) -> Result<(), CheckError> {
-        if name == "__init__" || name == "__new__" {
+        if matches!(
+            name,
+            "__init__" | "__new__" | "__init_subclass__" | "__post_init__"
+        ) {
             return Ok(());
         }
         let model_ref = self.classes.get(class_fullname).ok_or_else(|| {

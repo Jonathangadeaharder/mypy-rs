@@ -478,3 +478,81 @@ fn int_bool_literal_promote_closure() {
         }
     }
 }
+
+/// mypy exempts `__init__`, `__new__`, `__init_subclass__` and
+/// `__post_init__` from the override check unconditionally
+/// (checker.py:3547). All four shapes below are mypy-clean, so the
+/// skeleton must accept them too; a non-exempt override with a
+/// different parameter count still rejects.
+#[test]
+fn override_exemptions_match_mypy() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-override-exemptions");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32, &str); 3] = [
+        (
+            "init_subclass_override.py",
+            concat!(
+                "class Base:\n",
+                "    def __init_subclass__(self) -> None:\n",
+                "        pass\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init_subclass__(self, bad: int) -> None:\n",
+                "        pass\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "post_init_override.py",
+            concat!(
+                "class Base:\n",
+                "    def __post_init__(self, bad: int) -> None:\n",
+                "        pass\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __post_init__(self) -> None:\n",
+                "        pass\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "plain_override_arity.py",
+            concat!(
+                "class Base:\n",
+                "    def m(self, x: int) -> None:\n",
+                "        pass\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def m(self, x: int, y: int) -> None:\n",
+                "        pass\n",
+            ),
+            2,
+            "a method override with a different parameter count",
+        ),
+    ];
+    for (name, source, code, expect) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if code == 2 {
+            assert!(output.stdout.is_empty(), "no stdout for {name}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(expect), "stderr for {name}: {stderr}");
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+            assert!(output.stderr.is_empty(), "stderr for {name}");
+        }
+    }
+}
