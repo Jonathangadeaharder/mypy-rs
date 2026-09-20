@@ -1401,3 +1401,135 @@ fn duplicate_bases_named_in_rejection() {
         assert!(stderr.contains(needle), "stderr for {name}: {stderr}");
     }
 }
+
+/// A body may read a module name whose assignment comes later, including
+/// a plain (unannotated) assignment: mypy resolves every body after the
+/// module binds (#126). A method may also infer a self attribute from
+/// such a name; pass 3b re-runs the class's member collection against the
+/// completed bindings for that (#145). Module-level *values* keep the
+/// ordered semantics, so a module value reading a later name rejects.
+#[test]
+fn body_reads_later_module_value() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-forward-value");
+    fs::create_dir_all(&dir).expect("temp dir");
+    fs::write(
+        dir.join("forward.py"),
+        concat!(
+            "def reader() -> int:\n",
+            "    return value\n",
+            "\n",
+            "\n",
+            "value = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "forward.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a body read of a later plain assignment must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("ordered.py"),
+        concat!("value = other\n", "\n", "\n", "other = 1\n"),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "ordered.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a module value reading a later name must reject"
+    );
+    assert!(output.stdout.is_empty(), "no stdout for the ordered case");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("`other` is not defined"),
+        "the ordered case must name the used-before-def class: {stderr}"
+    );
+
+    fs::write(
+        dir.join("attr_later.py"),
+        concat!(
+            "class C:\n",
+            "    def store(self) -> None:\n",
+            "        self.value = value\n",
+            "\n",
+            "\n",
+            "value = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "attr_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a self attribute assigned from a later module value must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    // The override check must see the base attribute the 3b re-collection
+    // registers; running only in 3a silently accepted an incompatible
+    // override when a later module value left the attribute unregistered.
+    fs::write(
+        dir.join("override_late_ok.py"),
+        concat!(
+            "class Base:\n",
+            "    def m(self) -> None:\n",
+            "        self.x = value\n",
+            "\n",
+            "\n",
+            "class Sub(Base):\n",
+            "    x: int = 1\n",
+            "\n",
+            "\n",
+            "value = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "override_late_ok.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a compatible override of a late-collected base attribute must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    fs::write(
+        dir.join("override_late_bad.py"),
+        concat!(
+            "class Base:\n",
+            "    def m(self) -> None:\n",
+            "        self.x = value\n",
+            "\n",
+            "\n",
+            "class Sub(Base):\n",
+            "    x: int = 1\n",
+            "\n",
+            "\n",
+            "value = \"a\"\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "override_late_bad.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an incompatible override of a late-collected base attribute must reject: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("overriding a base class member is outside the skeleton subset"),
+        "the override case must loud-reject: {stderr}"
+    );
+}
