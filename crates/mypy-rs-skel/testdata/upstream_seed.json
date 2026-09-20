@@ -1,0 +1,101 @@
+{
+  "seed_version": 1,
+  "notes": [
+    "Curated upstream corpus seed for the skeleton gate (issue #119). Cases were",
+    "selected by scanning all test-data/unit/check-*.test cases (8227) against the",
+    "skeleton binary; only entries that classify cleanly today are seeded.",
+    "Finding: no upstream case has a non-empty main block inside the supported",
+    "subset, so PASS coverage is empty-module only until #118 and later slices",
+    "grow the subset; supported cases with expected errors stay unseeded because",
+    "the upstream harness records expected output with error codes hidden while",
+    "the skeleton renders mypy's default code-suffixed lines, so byte comparison",
+    "cannot hold for them yet."
+  ],
+  "baseline": {
+    "pass": 2,
+    "unsupported": 11,
+    "semantic_diff": 0,
+    "unclassified": 0
+  },
+  "cases": [
+    {
+      "file": "test-data/unit/check-basic.test",
+      "case": "testEmptyFile",
+      "capability": "module.pass_statement",
+      "note": "empty module: the degenerate module-statement arm, expects Success"
+    },
+    {
+      "file": "test-data/unit/check-newsemanal.test",
+      "case": "testNewAnalyzerEmpty",
+      "capability": "module.pass_statement",
+      "note": "empty module: the degenerate module-statement arm, expects Success"
+    },
+    {
+      "file": "test-data/unit/check-basic.test",
+      "case": "testConstructionAndAssignment",
+      "capability": "classes.basic"
+    },
+    {
+      "file": "test-data/unit/check-basic.test",
+      "case": "testInheritInitFromObject",
+      "capability": "classes.basic"
+    },
+    {
+      "file": "test-data/unit/check-async-await.test",
+      "case": "testAsyncDefPass",
+      "capability": "functions.async",
+      "note": "case ships builtins/typing fixture sections; the skeleton rejects at parse lowering, before any fixture semantics could matter"
+    },
+    {
+      "file": "test-data/unit/check-async-await.test",
+      "case": "testAsyncDefReturn",
+      "capability": "functions.async",
+      "note": "case ships builtins/typing fixture sections; the skeleton rejects at parse lowering, before any fixture semantics could matter"
+    },
+    {
+      "file": "test-data/unit/check-ignore.test",
+      "case": "testDontIgnoreWholeModule3",
+      "capability": "functions.decorated",
+      "note": "first construct is a decorated def, so resolution is the decorator gate"
+    },
+    {
+      "file": "test-data/unit/check-overloading.test",
+      "case": "testOverloadNotImportedNoCrash",
+      "capability": "functions.decorated",
+      "note": "first construct is a decorated def, so resolution is the decorator gate"
+    },
+    {
+      "file": "test-data/unit/check-flags.test",
+      "case": "testNoArgumentFunction",
+      "capability": "functions.valueless_body"
+    },
+    {
+      "file": "test-data/unit/check-flags.test",
+      "case": "testWarnNoReturnIgnoresTrivialFunctions",
+      "capability": "functions.valueless_body"
+    },
+    {
+      "file": "test-data/unit/check-basic.test",
+      "case": "testFunctionSignatureAsComment",
+      "capability": "generics.legacy_syntax",
+      "note": "parameterized function; resolves to the parameter gate the manifest files under generics.legacy_syntax"
+    },
+    {
+      "file": "test-data/unit/check-python312.test",
+      "case": "testPEP695Function",
+      "capability": "generics.pep695"
+    },
+    {
+      "file": "test-data/unit/check-python312.test",
+      "case": "testPEP695NestedGenericFunction",
+      "capability": "generics.pep695"
+    }
+  ],
+  "skipped": [
+    {
+      "file": "test-data/unit/check-incremental.test",
+      "case": "testIncrementalEmpty",
+      "reason": "empty module, but the incremental suite (stale/rechecked sections) is outside this single-pass gate"
+    }
+  ]
+}
