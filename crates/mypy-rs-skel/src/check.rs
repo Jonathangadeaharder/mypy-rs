@@ -1485,6 +1485,13 @@ impl Driver {
                 args
             }
             None => {
+                if init.params.len() != arg_types.len() {
+                    return Err(input(
+                        &self.path,
+                        line,
+                        "an argument count mismatch is outside the skeleton subset",
+                    ));
+                }
                 let mut inferred = Vec::with_capacity(model_ref.tvars.len());
                 for tvar in &model_ref.tvars {
                     let needle = model::tvar_type(tvar, fullname);
@@ -1506,7 +1513,7 @@ impl Driver {
                 inferred
             }
         };
-        let env = frame_env(model_ref, &class_args);
+        let env = frame_env(model_ref, &class_args).map_err(CheckError::Internal)?;
         let sig = subst_sig(&init, &env);
         self.check_call_sig(&sig, arg_types, line)?;
         Ok(instance(fullname, class_args))
@@ -1791,7 +1798,7 @@ impl Driver {
                         self.path
                     ))
                 })?;
-            let env = frame_env(model_ref, &args_at);
+            let env = frame_env(model_ref, &args_at).map_err(CheckError::Internal)?;
             let found = match member {
                 Member::Method(sig) => Found::Method(subst_sig(sig, &env)),
                 Member::ClassVar(t) | Member::InstanceVar(t) => Found::Var(subst(t, &env)),
@@ -1854,7 +1861,7 @@ impl Driver {
                     self.path
                 ))
             })?;
-            let env = frame_env(model_ref, &args_at);
+            let env = frame_env(model_ref, &args_at).map_err(CheckError::Internal)?;
             return Ok(Some((subst_sig(sig, &env), entry.to_string())));
         }
         Ok(None)
@@ -1876,7 +1883,7 @@ impl Driver {
         let Some(model_ref) = self.classes.get(from_ref) else {
             return Ok(None);
         };
-        let env = frame_env(model_ref, from_args);
+        let env = frame_env(model_ref, from_args).map_err(CheckError::Internal)?;
         for (b_ref, b_args) in &model_ref.bases {
             let concrete: Vec<Type> = b_args.iter().map(|a| subst(a, &env)).collect();
             if b_ref == target {

@@ -479,6 +479,42 @@ fn float_binop_operator_closure() {
         }
     }
 }
+/// Generic constructor inference validates argument-count arity before
+/// the parameter/argument zip (#129): a too-short call used to
+/// truncate silently and surface the vague inference error, a
+/// too-long call fell through to check_call_sig. Both now reject with
+/// the arity message, matching real mypy's call-arg errors as an
+/// explicit out-of-subset rejection.
+#[test]
+fn generic_constructor_arity_checked_before_inference() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-generic-arity");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let class_def = concat!(
+        "from typing import Generic, TypeVar\n",
+        "T = TypeVar(\"T\")\n",
+        "\n",
+        "class Box(Generic[T]):\n",
+        "    def __init__(self, item: T) -> None:\n",
+        "        self.item = item\n",
+        "\n",
+    );
+    let cases = [
+        ("generic_too_few.py", "b = Box()\n"),
+        ("generic_too_many.py", "b = Box(1, 2)\n"),
+    ];
+    for (name, tail) in cases {
+        let path = dir.join(name);
+        fs::write(&path, format!("{class_def}{tail}")).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(output.status.code(), Some(2), "exit code for {name}");
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("an argument count mismatch is outside the skeleton subset"),
+            "stderr for {name}: {stderr}"
+        );
+    }
+}
 /// `__init__` resolution for construction is corpus-only (#131): a
 /// class whose corpus MRO defines no `__init__` rejects with the
 /// intended message (the fixture walk used to surface builtins.object
