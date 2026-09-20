@@ -1224,3 +1224,119 @@ fn module_value_retyped_after_shadow_repair() {
         "stdout: {stdout}"
     );
 }
+
+/// The round-8 redesign: a base member whose type comes from a module
+/// variable defined earlier must be registered before a subclass
+/// consults it, whether the subclass shadows it with an instance
+/// attribute or with a class variable. Both were silent divergences
+/// under the pre-redesign collection fixpoint (a subclass registered
+/// its own member because the base's was not collected yet); both must
+/// now loudly reject, and a compatible shadow must stay `Success`.
+#[test]
+fn base_member_from_module_var_shadow_rejected() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-modvar-shadow");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32, Option<&str>); 3] = [
+        (
+            "instance_shadow.py",
+            concat!(
+                "modvar = 1\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = modvar\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = \"s\"\n",
+            ),
+            2,
+            Some("instance attribute assignment incompatibility"),
+        ),
+        (
+            "classvar_shadow.py",
+            concat!(
+                "modvar = 1\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = modvar\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    x: str = \"s\"\n",
+            ),
+            2,
+            Some("overriding a base class member"),
+        ),
+        (
+            "compatible_shadow.py",
+            concat!(
+                "modvar = 1\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = modvar\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = 2\n",
+            ),
+            0,
+            None,
+        ),
+    ];
+    for (name, source, code, marker) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let Some(marker) = marker else {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+            assert!(output.stderr.is_empty(), "stderr for {name}");
+            continue;
+        };
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(marker), "stderr for {name}: {stderr}");
+    }
+}
+
+/// The round-8 redesign removed the driver-wide diagnostic dedup set
+/// that let a sibling's incompatibility be swallowed when its line
+/// collided with a main-file diagnostic. The sibling must reject with
+/// its own path (exit 2), never fall through to the main file's render.
+#[test]
+fn sibling_error_survives_main_diagnostic_collision() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-sibling-collision");
+    fs::create_dir_all(&dir).expect("temp dir");
+    fs::write(dir.join("main.py"), "bad: int = \"x\"\nimport sib\n").expect("write main");
+    fs::write(dir.join("sib.py"), "bad: int = \"y\"\n").expect("write sibling");
+    let output = run_bin_in(&dir, "main.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "exit code: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "no stdout");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sib.py:1"),
+        "the sibling must name its own path: {stderr}"
+    );
+}
