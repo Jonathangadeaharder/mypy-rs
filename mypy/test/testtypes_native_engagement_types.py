@@ -15619,6 +15619,15 @@ class StaleKernelRemedySuite(Suite):
                 lambda: mypy.expandtype.expand_type_by_instance(fx.a, fx.ga),
             ),
             (
+                "rust_remove_trivial",
+                lambda: self._sibling_stale_kernel(
+                    mypy.expandtype,
+                    mypy.expandtype._set_native_expand_type_active,
+                    _WriteBuffer=wire_buffer,
+                ),
+                lambda: mypy.expandtype.remove_trivial([fx.a]),
+            ),
+            (
                 "rust_fill_typevars_with_any",
                 lambda: self._sibling_stale_kernel(
                     mypy.typevars, mypy.typevars._set_native_typevars_active

@@ -1159,7 +1159,11 @@ def remove_trivial(types: Iterable[Type]) -> list[Type]:
 
             buf = _WriteBuffer()
             write_type_list(buf, types_list)
-            result = _type_kernel.rust_remove_trivial(buf.getvalue(), state.strict_optional)
+            try:
+                rust_remove_trivial_entry = _type_kernel.rust_remove_trivial
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_remove_trivial_entry(buf.getvalue(), state.strict_optional)
             if result is not None:
                 raw = bytes(result)
                 cached = _expand_remove_trivial_cache.get(raw)
