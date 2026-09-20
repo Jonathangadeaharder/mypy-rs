@@ -3,6 +3,7 @@ name = "mypy-rs-skel"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+publish = false
 
 # Standalone-skeleton crate (issue #91, ADR-0008 Lane 2). Never in a
 # wheel, never in the production check path: the only target is the
@@ -26,7 +27,10 @@ skel = [
 
 [dependencies]
 mypy-type-kernel = { path = "../type_kernel", optional = true, features = ["extension-module"] }
-pyo3-ffi = { version = "0.20.3", optional = true }
+# Same pyo3 minor pin as the sibling crates (pyo3 pins pyo3-ffi `=0.20.x`
+# exactly, so drifting ahead forks the family into two copies). abi3 is
+# declared here rather than inherited via mypy-type-kernel's pyo3 edge.
+pyo3-ffi = { version = "0.20.2", optional = true, features = ["abi3"] }
 ruff_python_ast = { version = "0.0.3", optional = true }
 ruff_python_parser = { version = "0.0.3", optional = true }
 ruff_text_size = { version = "0.0.3", optional = true }

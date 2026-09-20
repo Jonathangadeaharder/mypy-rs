@@ -228,6 +228,9 @@ def extension_dirs() -> list[str]:
             "/private/tmp/mypy-rs-local-typekernel",
         ]
     )
+    missing = [p for p in dirs if not os.path.isdir(p)]
+    if missing:
+        print(f"{TAG} warning: missing extension dir(s): {missing}", file=sys.stderr)
     return [p for p in dirs if os.path.isdir(p)]
 
 
@@ -236,12 +239,30 @@ def regen_expected(scratch: str) -> dict[str, bytes]:
     invocation shape the differential harness uses, so the recorded
     paths and bytes are stable. PYTHONPATH pins this tree plus the
     native extension scratch dirs (AGENTS.md native build order),
-    because sys.path[0] for `-m` is the testdata cwd, not the repo."""
+    because sys.path[0] for `-m` is the testdata cwd, not the repo.
+
+    A probe subprocess resolves `mypy.__file__` under the same env and
+    cwd and must land inside this tree, mirroring the in-process check
+    in main(), so a bypassed PYTHONPATH pin cannot feed golden bytes
+    from a foreign tree into the committed .expected files."""
     extensions = extension_dirs()
     env = os.environ.copy()
     parts = [p for p in [REPO_ROOT, *extensions] if os.path.isdir(p)]
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(parts + ([existing] if existing else []))
+    probe = subprocess.run(
+        [sys.executable, "-c", "import mypy; print(mypy.__file__)"],
+        cwd=TESTDATA_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    resolved = os.path.abspath(probe.stdout.strip())
+    if probe.returncode != 0 or not resolved.startswith(REPO_ROOT + os.sep):
+        raise RuntimeError(
+            f"regen subprocess resolves mypy outside this tree: {resolved} "
+            f"(returncode {probe.returncode}, stderr {probe.stderr!r})"
+        )
     outputs = {}
     cache = os.path.join(scratch, "cache")
     for stem in ("trivial", "empty_control"):
@@ -259,8 +280,12 @@ def regen_expected(scratch: str) -> dict[str, bytes]:
 
 def write_or_compare(path: str, data: bytes, check_only: bool) -> bool:
     if check_only:
-        with open(path, "rb") as f:
-            committed = f.read()
+        try:
+            with open(path, "rb") as f:
+                committed = f.read()
+        except OSError:
+            print(f"{TAG} stale: {path} is missing or unreadable")
+            return False
         if committed != data:
             print(f"{TAG} stale: {path} differs from regenerated output")
             return False

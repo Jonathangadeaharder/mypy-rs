@@ -4,7 +4,7 @@
 //! Why this exists: `is_subtype`'s protocol branches consult mypy's live
 //! typestate map through pyo3 (`Python::with_gil` in subtypes.rs,
 //! protocols.rs, constraints.rs). The skeleton never installs a live map,
-//! so those branches are guarded off at runtime and never run — but the
+//! so those branches are guarded off at runtime and never run, but the
 //! code carrying their `Py_*` references is linked into this binary
 //! unconditionally, and dyld binds every undefined reference eagerly
 //! before `main` (chained fixups admit no lazy binding), so a binary
@@ -33,7 +33,7 @@
 //! coerces pyo3-ffi's own declaration of that symbol to the same
 //! fn-pointer type: if a prototype here ever disagrees with the
 //! registry, the build fails at that line. That guard is why the
-//! signatures are hand-transcribed rather than code-generated — it
+//! signatures are hand-transcribed rather than code-generated; it
 //! checks against the compiled pyo3-ffi of this exact build, which a
 //! registry-parsing generator could only approximate, and it has no
 //! moving parts.
@@ -48,9 +48,18 @@
 //! binary targets. The pyo3-ffi build is abi3, under which PyTypeObject
 //! is an opaque zero-sized marker, so the object-shaped cells derive
 //! their sizes from the exported PyObject/PyVarObject structs and the
-//! type-object cells carry the measured constant. Only the addresses
-//! of these symbols are taken on the guarded paths; the sizing removes
-//! the out-of-bounds read a reached path would otherwise perform.
+//! type-object cells carry the measured constant. Data symbols are
+//! tied to pyo3-ffi's declarations where the types allow it: the
+//! `data_static_type_guard` below binds `PyBool_Type` and `PySet_Type`,
+//! the only struct-shaped data statics pyo3-ffi exports, and the tie
+//! checks existence and declared type, not size, since abi3 hides the
+//! layout. The `_Py_*Struct` singletons are crate-private in pyo3-ffi
+//! and admit no tie, so their cells are covered only by the derived
+//! and measured constants. The LP64 assumption behind the measured
+//! numbers is enforced by the `compile_error!` cfg gate above. Only
+//! the addresses of these symbols are taken on the guarded paths; the
+//! sizing removes the out-of-bounds read a reached path would
+//! otherwise perform.
 
 #![allow(dead_code)]
 
@@ -58,6 +67,12 @@ use std::mem::size_of;
 use std::os::raw::{c_char, c_int, c_long, c_ulong};
 
 use pyo3_ffi::{PyGILState_STATE, PyObject, PyThreadState, PyTypeObject, PyVarObject, Py_ssize_t};
+
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!(
+    "python_stubs data cells are sized for LP64 (measured on CPython \
+     3.12 and 3.13, #94); a non-64-bit target would mis-size them"
+);
 
 fn stub_hit(name: &str) -> ! {
     eprintln!("fatal: python-free skeleton executed {name}, a Python C API stub");
@@ -194,3 +209,19 @@ pub static _Py_TrueStruct: PyLongObjectCell = PyLongObjectCell([0; PY_LONG_OBJEC
 pub static PyBool_Type: PyTypeObjectCell = PyTypeObjectCell([0; PY_TYPE_OBJECT_CELL]);
 #[no_mangle]
 pub static PySet_Type: PyTypeObjectCell = PyTypeObjectCell([0; PY_TYPE_OBJECT_CELL]);
+
+/// Compile-time tie from the type-object data symbols to pyo3-ffi's
+/// own declarations, the data-symbol analogue of the fn guards in
+/// `py_fn_stub!`: the coercions below only compile while pyo3-ffi
+/// exports `PyBool_Type` and `PySet_Type` as `PyTypeObject`-typed
+/// statics. Const items cannot reference statics, so the check lives in
+/// a never-called function; it runs at typecheck time, which is the
+/// part that matters. Under abi3 `PyTypeObject` is an opaque marker, so
+/// this ties existence and declared type, never a size; the `_Py_`
+/// singletons are crate-private in pyo3-ffi and cannot be tied at all.
+fn data_static_type_guard() -> [*const PyTypeObject; 2] {
+    [
+        std::ptr::addr_of!(pyo3_ffi::PyBool_Type),
+        std::ptr::addr_of!(pyo3_ffi::PySet_Type),
+    ]
+}
