@@ -1036,7 +1036,7 @@ fn override_selfattr_inference_differential() {
 fn shadowed_base_attr_loudly_rejects() {
     let dir = std::env::temp_dir().join("mypy-rs-skel-shadowed-base");
     fs::create_dir_all(&dir).expect("temp dir");
-    let cases: [(&str, &str, i32, Option<&str>); 5] = [
+    let cases: [(&str, &str, i32, Option<&str>); 7] = [
         (
             "later_call.py",
             concat!(
@@ -1113,6 +1113,33 @@ fn shadowed_base_attr_loudly_rejects() {
             Some("overriding a base class member"),
         ),
         (
+            "classvar_pass1_order.py",
+            concat!(
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = 1\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    x: int = 2\n",
+            ),
+            0,
+            None,
+        ),
+        (
+            "classvar_covar_classvar.py",
+            concat!(
+                "class Base:\n",
+                "    x: int = 1\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    x: int = 2\n",
+            ),
+            0,
+            None,
+        ),
+        (
             "classvar_compat.py",
             concat!(
                 "class Base:\n",
@@ -1154,4 +1181,46 @@ fn shadowed_base_attr_loudly_rejects() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(marker), "stderr for {name}: {stderr}");
     }
+}
+
+/// A module value reading a class attribute whose type only settles after
+/// the pass-2 repair: mypy keeps the inherited member type, so the module
+/// statement is re-typed against the final model and reports the same
+/// assignment error mypy does (round-6 review, check.rs:221).
+#[test]
+fn module_value_retyped_after_shadow_repair() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-retype");
+    fs::create_dir_all(&dir).expect("temp dir");
+    fs::write(
+        dir.join("retype.py"),
+        concat!(
+            "class Base:\n",
+            "    def __init__(self) -> None:\n",
+            "        self.x = later()\n",
+            "\n",
+            "\n",
+            "class Sub(Base):\n",
+            "    def __init__(self) -> None:\n",
+            "        self.x = True\n",
+            "\n",
+            "\n",
+            "def later() -> int:\n",
+            "    return 1\n",
+            "\n",
+            "\n",
+            "s = Sub()\n",
+            "n: bool = s.x\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "retype.py");
+    assert_eq!(output.status.code(), Some(1), "exit code");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(
+            "Incompatible types in assignment (expression has type \"int\", \
+             variable has type \"bool\")"
+        ),
+        "stdout: {stdout}"
+    );
 }

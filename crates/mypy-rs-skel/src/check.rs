@@ -226,10 +226,74 @@ impl Driver {
         // Retry the classes' pending instance attributes against the
         // full module bindings, then check the deferred bodies.
         self.collect_instance_vars(&bindings, module, &ast.body)?;
+        // Re-type module value statements against the final class models:
+        // pass 1 typed them before the pass-2 repair, so a shadowed
+        // attribute can leave a stale type in a module binding.
+        let reported: std::collections::HashSet<usize> =
+            self.diagnostics.iter().map(|diag| diag.line).collect();
+        self.retype_module_values(&mut bindings, &ast.body, &reported)?;
         for stmt in &ast.body {
             self.check_top_bodies(&bindings, module, &stmt.kind)?;
         }
         Ok(bindings)
+    }
+
+    /// Re-type the module-level value statements against the final class
+    /// models and refresh their bindings. `reported` holds the lines pass
+    /// 1 already diagnosed, so a statement that stays incompatible is not
+    /// reported twice; one whose type only becomes wrong after the pass-2
+    /// repair is reported here (mypy's own result).
+    fn retype_module_values(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        body: &[crate::subset::TopStmt],
+        reported: &std::collections::HashSet<usize>,
+    ) -> Result<(), CheckError> {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Assign { name, value, .. } => {
+                    let t = {
+                        let scope = Scope {
+                            module: &*bindings,
+                            locals: None,
+                            frame: None,
+                        };
+                        self.type_expr(&scope, value)?
+                    };
+                    bindings.insert(name.clone(), Binding::Var(t));
+                }
+                StmtKind::AnnAssign {
+                    name,
+                    ann,
+                    value,
+                    line,
+                } => {
+                    let (declared, expr_t) = {
+                        let scope = Scope {
+                            module: &*bindings,
+                            locals: None,
+                            frame: None,
+                        };
+                        (
+                            self.resolve_ann(&scope, ann)?,
+                            self.type_expr(&scope, value)?,
+                        )
+                    };
+                    let verdict = require_decidable(
+                        self.sub(&expr_t, &declared),
+                        "assignment",
+                        &self.path,
+                        *line,
+                    )?;
+                    if !verdict && !reported.contains(line) {
+                        self.incompatible_assignment(&expr_t, &declared, *line)?;
+                    }
+                    bindings.insert(name.clone(), Binding::Var(declared));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Load and check a sibling module of the importing file.
@@ -534,10 +598,27 @@ impl Driver {
                         })?;
                         instance(&fullname, model::class_frame_tvars(model_ref))
                     };
-                    if self
-                        .find_member(&receiver, name, Some(&fullname))?
-                        .is_some()
-                    {
+                    if let Some(found) = self.find_member(&receiver, name, Some(&fullname))? {
+                        // mypy allows a covariant class-variable override and
+                        // rejects the rest; the pass-2 repair applies the same
+                        // rule, so both statement orders agree.
+                        if let Found::Var(base_ty) = &found {
+                            let verdict = require_decidable(
+                                self.sub(&declared, base_ty),
+                                "class attribute override",
+                                &self.path,
+                                *line,
+                            )?;
+                            if verdict {
+                                self.register_member(
+                                    &fullname,
+                                    name,
+                                    Member::ClassVar(declared),
+                                    *line,
+                                )?;
+                                continue;
+                            }
+                        }
                         return Err(input(
                             &self.path,
                             *line,
