@@ -60,6 +60,14 @@
       "notes": "A subclass attribute overriding a base attribute whose type binds only later in the module: mypy renders an assignment error, the subset loudly rejects it instead of silently keeping the provisional own member (#139 review)."
     },
     {
+      "id": "classes.shadowed_base_classvar",
+      "status": "unsupported",
+      "arm": "classes_shadowed_base_classvar.py",
+      "exit_code": 2,
+      "reject_marker": "overriding a base class member",
+      "notes": "A subclass class variable shadowing a base instance attribute collected only in pass 2 escaped the pass-1 VarDecl guard; mypy renders an incompatible-override assignment error, the subset loudly rejects it (round-5 review, #93). A covariant override stays supported."
+    },
+    {
       "id": "classes.inherited_classvar_read",
       "status": "unsupported",
       "arm": "classes_inherited_classvar_read.py",

@@ -940,31 +940,55 @@ impl Driver {
                 continue;
             };
             let fullname = format!("{module}.{}", cls.name);
-            self.drop_shadowed_base_attrs(&fullname)?;
+            self.repair_shadowed_base_attrs(cls, &fullname)?;
         }
         Ok(())
     }
 
-    /// Remove own instance attributes that a base class also defines.
-    /// The sweeps consider a class's own members before its base's
-    /// later-collected candidates, so a provisional own attribute can
-    /// outlive the base member it should be overriding.
-    fn drop_shadowed_base_attrs(&mut self, fullname: &str) -> Result<(), CheckError> {
-        let (names, receiver) = {
+    /// Repair pass-1 misses against the base members the pass-2 sweeps
+    /// collect. An own instance attribute shadowing a base member is
+    /// provisional and is dropped, so pass 3 checks the override against
+    /// the base. An own class variable shadowing a base instance
+    /// attribute escaped the pass-1 VarDecl guard (the base member was
+    /// not registered yet), so it is checked here: mypy allows a
+    /// covariant override and rejects the rest as an assignment error,
+    /// which the subset loudly rejects.
+    fn repair_shadowed_base_attrs(
+        &mut self,
+        cls: &crate::subset::ClassDefStmt,
+        fullname: &str,
+    ) -> Result<(), CheckError> {
+        let lines: HashMap<String, usize> = cls
+            .body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                ClassStmt::VarDecl { name, line, .. } => Some((name.clone(), *line)),
+                _ => None,
+            })
+            .collect();
+        let (inst_names, classvars, receiver) = {
             let model_ref = self.classes.get(fullname).ok_or_else(|| {
                 CheckError::Internal(format!("the class model for {fullname} is missing"))
             })?;
-            let names: Vec<String> = model_ref
+            let inst_names: Vec<String> = model_ref
                 .members
                 .iter()
                 .filter(|(_, member)| matches!(member, Member::InstanceVar(_)))
                 .map(|(name, _)| name.clone())
                 .collect();
+            let classvars: Vec<(String, Type)> = model_ref
+                .members
+                .iter()
+                .filter_map(|(name, member)| match member {
+                    Member::ClassVar(t) => Some((name.clone(), t.clone())),
+                    _ => None,
+                })
+                .collect();
             let receiver = instance(fullname, model::class_frame_tvars(model_ref));
-            (names, receiver)
+            (inst_names, classvars, receiver)
         };
         let mut dropped = false;
-        for name in names {
+        for name in inst_names {
             if self
                 .find_member(&receiver, &name, Some(fullname))?
                 .is_some()
@@ -978,6 +1002,30 @@ impl Driver {
         }
         if dropped {
             self.refresh(fullname)?;
+        }
+        for (name, own_ty) in classvars {
+            let Some(Found::Var(base_ty)) = self.find_member(&receiver, &name, Some(fullname))?
+            else {
+                continue;
+            };
+            let line = lines.get(&name).copied().ok_or_else(|| {
+                CheckError::Internal(format!(
+                    "the declaration line for the class variable {fullname}.{name} is missing"
+                ))
+            })?;
+            let verdict = require_decidable(
+                self.sub(&own_ty, &base_ty),
+                "class attribute override",
+                &self.path,
+                line,
+            )?;
+            if !verdict {
+                return Err(input(
+                    &self.path,
+                    line,
+                    "overriding a base class member is outside the skeleton subset",
+                ));
+            }
         }
         Ok(())
     }
