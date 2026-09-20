@@ -519,6 +519,12 @@ impl Driver {
     /// Whether every base naming a class binding already has its model;
     /// a base that is not a class binding at all is `resolve_bases`'s
     /// error to report, not a reason to defer.
+    ///
+    /// A `Subscript` base resolves its type arguments through
+    /// `resolve_ann`, so those arguments are readiness dependencies too:
+    /// deferring on the base head alone lets `class C(Box[D])` build while
+    /// `D` has no model yet, which turns valid input into the internal
+    /// "class model is missing" error instead of a clean defer.
     fn class_bases_ready(
         &self,
         bindings: &HashMap<String, Binding>,
@@ -527,13 +533,43 @@ impl Driver {
         cls.bases.iter().all(|base| {
             let head = match &base.kind {
                 BaseRefKind::Plain(name) => name,
-                BaseRefKind::Subscript { base, .. } => base,
+                BaseRefKind::Subscript { base, args } => {
+                    if !args
+                        .iter()
+                        .all(|arg| self.ann_class_names_ready(bindings, arg))
+                    {
+                        return false;
+                    }
+                    base
+                }
             };
-            match bindings.get(head) {
-                Some(Binding::Class(full)) => self.classes.contains_key(full),
-                _ => true,
-            }
+            self.class_name_ready(bindings, head)
         })
+    }
+
+    /// Whether resolving an annotation cannot hit the internal-error path,
+    /// i.e. every class binding it names already has a model.
+    fn ann_class_names_ready(&self, bindings: &HashMap<String, Binding>, ann: &Ann) -> bool {
+        match &ann.kind {
+            AnnKind::NoneT => true,
+            AnnKind::Name(name) => self.class_name_ready(bindings, name),
+            AnnKind::Subscript { base, args } => {
+                self.class_name_ready(bindings, base)
+                    && args
+                        .iter()
+                        .all(|arg| self.ann_class_names_ready(bindings, arg))
+            }
+        }
+    }
+
+    /// A name is ready unless it is a class binding whose model is not
+    /// built yet. Frame type variables shadow module bindings, so a name
+    /// bound to a `TypeVar` (never a `Class`) is always ready.
+    fn class_name_ready(&self, bindings: &HashMap<String, Binding>, name: &str) -> bool {
+        match bindings.get(name) {
+            Some(Binding::Class(full)) => self.classes.contains_key(full),
+            _ => true,
+        }
     }
 
     /// Pass A for one class: build its model, with the frame, bases and

@@ -1434,6 +1434,87 @@ fn deferred_class_resolution() {
     );
 }
 
+/// A subscript base resolves its type arguments, so those arguments are
+/// readiness dependencies like the base head (#157 OCR review): with the
+/// head alone, `class C(Box[D])` built while `D` still had no model and
+/// resolving `D` hit the internal `class model is missing` error on input
+/// mypy accepts. The fixpoint must defer on the arguments too, and a
+/// self-referential argument must stall into the cycle rejection rather
+/// than an internal error.
+#[test]
+fn generic_base_argument_waits_for_later_class() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-base-arg-ready");
+    fs::create_dir_all(&dir).expect("temp dir");
+
+    fs::write(
+        dir.join("arg_later.py"),
+        concat!(
+            "from typing import Generic, TypeVar\n",
+            "\n",
+            "T = TypeVar(\"T\")\n",
+            "\n",
+            "\n",
+            "class Box(Generic[T]):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class C(Box[D]):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class D(Q):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class Q:\n",
+            "    pass\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "arg_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a later class as a generic base argument must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("arg_self.py"),
+        concat!(
+            "from typing import Generic, TypeVar\n",
+            "\n",
+            "T = TypeVar(\"T\")\n",
+            "\n",
+            "\n",
+            "class Box(Generic[T]):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class C(Box[C]):\n",
+            "    pass\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "arg_self.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a self-referential base argument must loud-reject, not crash: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "no stdout for the self-arg case");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("class model"),
+        "no internal model error may surface: {stderr}"
+    );
+}
+
 /// Duplicate bases are named, diamonds are not falsely rejected
 /// (#133): mypy rejects `class D(A, A)` as `Duplicate base class`, so
 /// the subset points at the repeated base instead of the generic
