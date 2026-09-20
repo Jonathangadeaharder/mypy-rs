@@ -1,0 +1,6 @@
+# CodeQL configuration for merge-gate. The skeleton testdata fixtures are
+# deliberately-invalid programs whose arms assert a rejection, so
+# security-and-quality flags invalid-by-design code (alert 1444).
+name: mypy-rs CodeQL config
+paths-ignore:
+  - crates/mypy-rs-skel/testdata
