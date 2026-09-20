@@ -117,13 +117,27 @@ except ImportError:
     _rust_classify_type_parameter = None  # type: ignore[assignment]
     _HAS_TYPE_KERNEL = False
 
-# A stale type_kernel build predating #33 imports fine but lacks
-# `rust_is_subtype_coded`; the gated call must fail with this remedy
-# instead of a bare AttributeError INTERNAL ERROR (#36).
+# A stale type_kernel build predating a seam imports fine but lacks that
+# seam attribute; every gated fetch must fail with this remedy instead of
+# a bare AttributeError INTERNAL ERROR (#36, #42).
 STALE_TYPE_KERNEL_REMEDY = (
     "rebuild the in-repo type_kernel extension and prepend its scratch directory "
     "to PYTHONPATH (see AGENTS.md, 'Type kernel build order')"
 )
+
+
+def _stale_kernel_remedy(err: AttributeError) -> RuntimeError:
+    """Pointed rebuild remedy for a seam attribute a stale kernel lacks.
+
+    Each gated fetch keeps its own typed `except AttributeError` so the
+    module-attribute lookup stays precise; this helper is the single
+    source of the remedy message.
+    """
+    return RuntimeError(
+        "the type_kernel on sys.path is not the in-repo extension: "
+        f"{err}. " + STALE_TYPE_KERNEL_REMEDY
+    )
+
 
 # Module-level flag + resolver, set by the build manager from
 # `Options.native_type_kernel` at the start of each build. The hot path
@@ -987,7 +1001,11 @@ def is_equivalent(
         and subtype_context is None
     ):
         try:
-            result = _type_kernel.rust_is_equivalent(
+            equivalent_entry = _type_kernel.rust_is_equivalent
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        try:
+            result = equivalent_entry(
                 _serialize_type(a),
                 _serialize_type(b),
                 ignore_type_params,
@@ -1048,7 +1066,11 @@ def is_same_type(
         and subtype_context is None
     ):
         try:
-            result = _type_kernel.rust_is_same_type(
+            same_type_entry = _type_kernel.rust_is_same_type
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        try:
+            result = same_type_entry(
                 _serialize_type(a),
                 _serialize_type(b),
                 ignore_promotions,
@@ -1241,10 +1263,7 @@ def _is_subtype(
         except AttributeError as err:
             # A stale extension predating #33 (#36): fail with the
             # rebuild remedy, never as a bare INTERNAL ERROR.
-            raise RuntimeError(
-                "the type_kernel on sys.path is not the in-repo extension: "
-                f"{err}. " + STALE_TYPE_KERNEL_REMEDY
-            ) from err
+            raise _stale_kernel_remedy(err) from err
         if ikey is not None:
             _identity_probe["coded_calls"] += 1
             wire_before = _identity_probe_wire_open()
@@ -1662,7 +1681,11 @@ class SubtypeVisitor(TypeVisitor[bool]):
                 and _native_subtype_resolver is not None
             ):
                 try:
-                    result = _type_kernel.rust_are_parameters_compatible(
+                    parameters_entry = _type_kernel.rust_are_parameters_compatible
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                try:
+                    result = parameters_entry(
                         _serialize_type(left),
                         _serialize_type(self.right),
                         False,  # is_proper_subtype
@@ -1738,7 +1761,11 @@ class SubtypeVisitor(TypeVisitor[bool]):
                     # dropping them skips its unify defer.
                     norm_left = unified.copy_modified(variables=[])
                 try:
-                    result = _type_kernel.rust_callables_compatible(
+                    callables_entry = _type_kernel.rust_callables_compatible
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                try:
+                    result = callables_entry(
                         _serialize_type(norm_left),
                         _serialize_type(norm_right),
                         self.proper_subtype,
@@ -2639,7 +2666,11 @@ def get_member_flags(name: str, itype: Instance, class_obj: bool = False) -> set
     """
     if _HAS_TYPE_KERNEL and _native_subtype_active and _native_subtype_resolver is not None:
         try:
-            result = _type_kernel.rust_get_member_flags(
+            member_flags_entry = _type_kernel.rust_get_member_flags
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        try:
+            result = member_flags_entry(
                 itype.type,
                 name,
                 class_obj,
@@ -2712,7 +2743,11 @@ def is_descriptor(typ: Type | None) -> bool:
             type_bytes = None
         if type_bytes is not None:
             try:
-                result = _type_kernel.rust_is_descriptor(
+                descriptor_entry = _type_kernel.rust_is_descriptor
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            try:
+                result = descriptor_entry(
                     _native_subtype_resolver, type_bytes, state.strict_optional
                 )
             except (AssertionError, NotImplementedError):
@@ -3009,7 +3044,11 @@ def are_parameters_compatible(
         and _native_subtype_resolver is not None
     ):
         try:
-            result = _type_kernel.rust_are_parameters_compatible(
+            params_compat_entry = _type_kernel.rust_are_parameters_compatible
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        try:
+            result = params_compat_entry(
                 _serialize_type(left),
                 _serialize_type(right),
                 is_proper_subtype,
@@ -3367,7 +3406,11 @@ def try_restrict_literal_union(t: UnionType, s: Type) -> list[Type] | None:
     """
     if _HAS_TYPE_KERNEL and _native_subtype_active and _native_subtype_resolver is not None:
         try:
-            result = _type_kernel.rust_try_restrict_literal_union(
+            restrict_literal_entry = _type_kernel.rust_try_restrict_literal_union
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        try:
+            result = restrict_literal_entry(
                 _serialize_type(t),
                 _serialize_type(s),
                 state.strict_optional,
@@ -3514,7 +3557,11 @@ def is_more_precise(left: Type, right: Type, *, ignore_promotions: bool = False)
         return True
     if _HAS_TYPE_KERNEL and _native_subtype_active and _native_subtype_resolver is not None:
         try:
-            result = _type_kernel.rust_is_more_precise(
+            more_precise_entry = _type_kernel.rust_is_more_precise
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        try:
+            result = more_precise_entry(
                 _serialize_type(left),
                 _serialize_type(right),
                 ignore_promotions,
@@ -3629,7 +3676,11 @@ def infer_variance(info: TypeInfo, i: int) -> bool:
 
 def has_underscore_prefix(name: str) -> bool:
     if _HAS_TYPE_KERNEL and _native_subtype_active:
-        return _type_kernel.rust_has_underscore_prefix(name)
+        try:
+            underscore_entry = _type_kernel.rust_has_underscore_prefix
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return underscore_entry(name)
     return name.startswith("_") and not (name.startswith("__") and name.endswith("__"))
 
 
@@ -3651,9 +3702,11 @@ def erase_return_self_types(typ: Type, self_type: Instance) -> Type:
     if isinstance(proper_type, CallableType):
         if _native_erase_return_self_types_active():
             try:
-                result = _type_kernel.rust_erase_return_self_types(
-                    _serialize_type(proper_type), _serialize_type(self_type)
-                )
+                erase_entry = _type_kernel.rust_erase_return_self_types
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            try:
+                result = erase_entry(_serialize_type(proper_type), _serialize_type(self_type))
             except (AssertionError, NotImplementedError):
                 result = None
             if result is not None:
@@ -3677,7 +3730,11 @@ def is_erased_instance(t: Instance) -> bool:
     """Is this an instance where all args are Any types?"""
     if _HAS_TYPE_KERNEL and _native_subtype_active:
         try:
-            result = _type_kernel.rust_is_erased_instance(_serialize_type(t))
+            erased_entry = _type_kernel.rust_is_erased_instance
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        try:
+            result = erased_entry(_serialize_type(t))
         except (AssertionError, NotImplementedError):
             result = None
         if result is not None:
