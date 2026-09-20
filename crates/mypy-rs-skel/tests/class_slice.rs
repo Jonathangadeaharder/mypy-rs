@@ -1513,6 +1513,99 @@ fn generic_base_argument_waits_for_later_class() {
         !stderr.contains("class model"),
         "no internal model error may surface: {stderr}"
     );
+    assert!(
+        stderr.contains("a class hierarchy cycle is outside the skeleton subset"),
+        "the self-referential argument must stall into the cycle rejection: {stderr}"
+    );
+}
+
+/// An inherited attribute keeps its base's type even when the base is
+/// defined after the subclass (#157 OCR review): with statement-ordered
+/// collection the subclass collected first and registered the attribute
+/// as its own, so `self.v = \"str\"` silently type-checked against the
+/// subclass's own type where mypy rejects it against the base's.
+#[test]
+fn forward_base_owns_inherited_attribute() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-fwd-attr-owner");
+    fs::create_dir_all(&dir).expect("temp dir");
+
+    let cases: [(&str, &str, i32, &str); 3] = [
+        (
+            "fwd_conflict.py",
+            concat!(
+                "class Sub(Base):\n",
+                "    def f(self) -> None:\n",
+                "        self.v = \"str\"\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.v = 1\n",
+            ),
+            2,
+            "instance attribute assignment incompatibility",
+        ),
+        (
+            "fwd_ok.py",
+            concat!(
+                "class Sub(Base):\n",
+                "    def f(self) -> None:\n",
+                "        self.v = 2\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.v = 1\n",
+            ),
+            0,
+            "",
+        ),
+        // The base's attribute value names a module variable typed after
+        // the class body, so the base's candidate only lands in pass 3b;
+        // the subclass must not steal ownership in between.
+        (
+            "fwd_module_value.py",
+            concat!(
+                "modvar = 1\n",
+                "\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = \"s\"\n",
+                "\n",
+                "\n",
+                "class Base:\n",
+                "    def __init__(self) -> None:\n",
+                "        self.x = modvar\n",
+            ),
+            2,
+            "instance attribute assignment incompatibility",
+        ),
+    ];
+    for (name, source, code, marker) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if code == 0 {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(marker),
+                "{name} must name the incompatibility: {stderr}"
+            );
+        }
+    }
 }
 
 /// Duplicate bases are named, diamonds are not falsely rejected
