@@ -37,6 +37,7 @@ instruction baselines (the #71/#81 probe-pin discipline).
 
 Usage:
   .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus trivial
+  .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus class-slice
   .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus selfcheck
   .venv/bin/python misc/skeleton_bootstrap_step0_probe.py --corpus empty-control
   --kernel-off disables the native type kernel (diagnostic leg only).
@@ -44,7 +45,7 @@ Usage:
 Prereq: PYTHONPATH with the type_kernel, ast_serialize and module_resolver
 scratch dirs (AGENTS.md native build order) for the kernel-on legs.
 Corpus class: /private/tmp/mypy-rs-sem.sh run 2 for the self-check leg,
-run 1 for the trivial leg.
+run 1 for the file-corpus legs (trivial, class-slice, empty-control).
 """
 
 from __future__ import annotations
@@ -86,16 +87,102 @@ def answer() -> int:
 x_bad: int = "not an int"
 """
 
+# #114 grown corpus: one realistic class/member module plus the sibling it
+# imports its base classes from. Inside the reader-fixed slice, outside the
+# #93 hard-reject set. Mypy-clean, exit 0, two checked modules.
+CLASS_SLICE_MODULE_ID = "class_slice"
+CLASS_SLICE_BASE_MODULE_ID = "class_slice_base"
+
+CLASS_SLICE_BASE_TEXT = """\
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+
+class Shape:
+    kind: str = "shape"
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def area(self) -> float:
+        return 0.0
+
+    def describe(self) -> str:
+        return self.kind + ":" + self.name
+
+
+class Sized(Generic[T]):
+    def __init__(self, item: T) -> None:
+        self.item = item
+
+    def unwrap(self) -> T:
+        return self.item
+
+    def replace(self, item: T) -> "Sized[T]":
+        return Sized(item)
+"""
+
+CLASS_SLICE_TEXT = """\
+from typing import TypeVar
+
+from class_slice_base import Shape, Sized
+
+T = TypeVar("T")
+
+
+class Circle(Shape):
+    def __init__(self, radius: float) -> None:
+        super().__init__("circle")
+        self.radius = radius
+
+    def area(self) -> float:
+        return 3.14159 * self.radius * self.radius
+
+    def describe(self) -> str:
+        return super().describe() + "/r=" + str(self.radius)
+
+
+class NamedBox(Sized[T]):
+    def __init__(self, item: T, label: str) -> None:
+        super().__init__(item)
+        self.label = label
+
+    def unwrap(self) -> T:
+        return super().unwrap()
+
+
+def combined_area(first: Shape, second: Shape) -> float:
+    return first.area() + second.area()
+
+
+def relabelled(box: Sized[int], label: str) -> NamedBox[int]:
+    return NamedBox(box.unwrap(), label)
+
+
+circle = Circle(2.0)
+square = Shape("square")
+area: float = combined_area(circle, square)
+box = NamedBox[int](5, "five")
+item: int = box.unwrap()
+label: str = box.label
+kind: str = Shape.kind
+second: NamedBox[int] = relabelled(box, "six")
+base_view: Shape = circle
+view_area: float = base_view.area()
+"""
+
 SLOT_SURFACES = ("names", "mro", "bases")
 LOOKUP_SURFACES = ("get", "get_method", "get_containing_type_info")
 TAG = "[skel-step0]"
 
 # Corpus family = the modules mypy was asked to check (-p packages or the
-# single corpus file). Only family windows count toward the corpus closure:
+# corpus files). Only family windows count toward the corpus closure:
 # stdlib stubs are fixture data for the skeleton, never checked by it.
 FAMILY_PREFIXES = {
     "trivial": (TRIVIAL_MODULE_ID,),
     "empty-control": (EMPTY_CONTROL_MODULE_ID,),
+    "class-slice": (CLASS_SLICE_MODULE_ID, CLASS_SLICE_BASE_MODULE_ID),
     "selfcheck": ("mypy", "mypyc"),
 }
 
@@ -258,6 +345,21 @@ def setup_empty_control_corpus() -> list[str]:
     return ["--config-file", config_path, "-n0", "--no-incremental", module_path]
 
 
+def setup_class_slice_corpus() -> list[str]:
+    corpus_dir = os.path.join("/private/tmp", "skel-step0", "corpus")
+    os.makedirs(corpus_dir, exist_ok=True)
+    base_path = os.path.join(corpus_dir, CLASS_SLICE_BASE_MODULE_ID + ".py")
+    with open(base_path, "w") as f:
+        f.write(CLASS_SLICE_BASE_TEXT)
+    module_path = os.path.join(corpus_dir, CLASS_SLICE_MODULE_ID + ".py")
+    with open(module_path, "w") as f:
+        f.write(CLASS_SLICE_TEXT)
+    config_path = os.path.join(corpus_dir, "class_slice_mypy.ini")
+    with open(config_path, "w") as f:
+        f.write("[mypy]\n")
+    return ["--config-file", config_path, "-n0", "--no-incremental", module_path]
+
+
 def run_mypy(mypy_main, args: list[str]) -> tuple[str, str, int | None]:
     out = io.StringIO()
     run_status: str
@@ -371,10 +473,9 @@ def evidence_refusals(probe: dict, run_status: str, output: str, extra: dict) ->
         reasons.append("zero checker-phase reads: nothing was measured")
     if not probe["mod_fullnames"]:
         reasons.append("checker-window closure empty: nothing was measured")
-    if extra["corpus_module_id"] not in probe["window_modules"]:
-        reasons.append(
-            f"corpus module {extra['corpus_module_id']!r} never entered a checker window"
-        )
+    for module_id in extra["required_module_ids"]:
+        if module_id not in probe["window_modules"]:
+            reasons.append(f"corpus module {module_id!r} never entered a checker window")
     if probe["id_recycled"]:
         reasons.append(
             f"{probe['id_recycled']} id recyclings among touched infos: "
@@ -393,7 +494,9 @@ def evidence_refusals(probe: dict, run_status: str, output: str, extra: dict) ->
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--corpus", choices=("trivial", "selfcheck", "empty-control"), default="selfcheck"
+        "--corpus",
+        choices=("trivial", "class-slice", "selfcheck", "empty-control"),
+        default="selfcheck",
     )
     parser.add_argument(
         "--kernel-off",
@@ -432,12 +535,19 @@ def main() -> int:
     if opts.corpus == "trivial":
         args = setup_trivial_corpus()
         corpus_module_id = TRIVIAL_MODULE_ID
+        required_module_ids = (TRIVIAL_MODULE_ID,)
     elif opts.corpus == "empty-control":
         args = setup_empty_control_corpus()
         corpus_module_id = EMPTY_CONTROL_MODULE_ID
+        required_module_ids = (EMPTY_CONTROL_MODULE_ID,)
+    elif opts.corpus == "class-slice":
+        args = setup_class_slice_corpus()
+        corpus_module_id = CLASS_SLICE_MODULE_ID
+        required_module_ids = (CLASS_SLICE_MODULE_ID, CLASS_SLICE_BASE_MODULE_ID)
     else:
         args = list(SELFCHECK_ARGS)
         corpus_module_id = "mypy"
+        required_module_ids = ("mypy", "mypyc")
     args.extend(opts.mypy_extra)
 
     import mypy.main
@@ -450,6 +560,7 @@ def main() -> int:
             "resolver_set": None,
             "evidence_lines": [],
             "corpus_module_id": corpus_module_id,
+            "required_module_ids": required_module_ids,
             "expectation_failures": ["run interrupted"],
         }
         report(probe, opts.corpus, "INTERRUPTED, operator Ctrl-C", extra)
@@ -478,6 +589,14 @@ def main() -> int:
                 expectation_failures.append(f"empty control must exit 0, got {exit_code}")
             if not success:
                 expectation_failures.append("empty control success line missing")
+    elif opts.corpus == "class-slice":
+        success = [ln for ln in output.splitlines() if ln.startswith("Success:")]
+        evidence_lines.append(f"success line: {success[0] if success else '<missing>'}")
+        if run_status.startswith("completed"):
+            if exit_code != 0:
+                expectation_failures.append(f"class-slice corpus must exit 0, got {exit_code}")
+            if not success:
+                expectation_failures.append("class-slice success line missing")
     else:
         success = [ln for ln in output.splitlines() if ln.startswith("Success:")]
         evidence_lines.append(f"success line: {success[0] if success else '<missing>'}")
@@ -492,6 +611,7 @@ def main() -> int:
         "resolver_set": resolver_set,
         "evidence_lines": evidence_lines,
         "corpus_module_id": corpus_module_id,
+        "required_module_ids": required_module_ids,
         "expectation_failures": expectation_failures,
     }
     report(probe, opts.corpus, run_status, extra)
