@@ -66,6 +66,28 @@
       "notes": "The same shape with an incompatible override; mypy renders the assignment error and the subset loud-rejects, so an override is never silently accepted (#145)."
     },
     {
+      "id": "classes.forward_base",
+      "status": "supported",
+      "arm": "forward_base.py",
+      "exit_code": 0,
+      "notes": "A base class defined after its subclass; mypy binds names module-wide before resolving bases, so pass A builds class models in dependency order (#142)."
+    },
+    {
+      "id": "functions.forward_sig_class",
+      "status": "supported",
+      "arm": "forward_sig_class.py",
+      "exit_code": 0,
+      "notes": "A function and method signature naming a class defined later in the module; mypy resolves annotations after the module binds, so pass 2 resolves signatures against the completed bindings (#138)."
+    },
+    {
+      "id": "classes.base_cycle",
+      "status": "unsupported",
+      "arm": "classes_base_cycle.py",
+      "exit_code": 2,
+      "reject_marker": "a class hierarchy cycle is outside the skeleton subset",
+      "notes": "mypy rejects a mutually cyclic inheritance hierarchy as an unresolvable name; the subset loud-rejects instead of modeling the error (#142)."
+    },
+    {
       "id": "classes.override_selfattr_inference",
       "status": "supported",
       "arm": "classes_override_selfattr_inference.py",

@@ -222,28 +222,20 @@ impl Driver {
     ) -> Result<HashMap<String, Binding>, CheckError> {
         let ast = crate::subset::parse_module(source, path).map_err(CheckError::Input)?;
         let mut bindings: HashMap<String, Binding> = HashMap::new();
-        // Pass 1: bind every top-level name. A class body gets its frame,
-        // bases, MRO, class variables and method signatures; a module
-        // value statement binds a placeholder whose type lands in pass 3.
+        // Pass 1: bind every top-level name. A class or function binds
+        // its name only; a module value statement binds a placeholder
+        // whose type lands in pass 3.
         for stmt in &ast.body {
             self.bind_top_stmt(&mut bindings, module, dir, &stmt.kind, stmt.line)?;
         }
-        // Pass 1b: resolve the module annotations now that every name is
-        // bound. mypy resolves annotations after semantic analysis, so a
-        // forward reference in an annotation must not reject.
-        for stmt in &ast.body {
-            if let StmtKind::AnnAssign { name, ann, .. } = &stmt.kind {
-                let declared = {
-                    let scope = Scope {
-                        module: &bindings,
-                        locals: None,
-                        frame: None,
-                    };
-                    self.resolve_ann(&scope, ann)?
-                };
-                bindings.insert(name.clone(), Binding::Var(declared));
-            }
-        }
+        // Pass A: build every class model in dependency order. mypy binds
+        // names module-wide before resolving bases, so a base defined
+        // after its subclass is legal (#142).
+        self.build_class_models(&bindings, module, &ast.body)?;
+        // Pass 2: resolve module annotations and every signature against
+        // the completed bindings. mypy resolves annotations after
+        // semantic analysis, so a forward reference must not reject.
+        self.bind_module_declarations(&mut bindings, module, &ast.body)?;
         // Pass 3 is two passes: 3a types module values in statement order
         // (used-before-def) and collects class members; 3b checks every
         // body against the completed bindings, like mypy (#126).
@@ -297,8 +289,8 @@ impl Driver {
         Ok(())
     }
 
-    /// Pass 1: bind one top-level statement's names. Function and
-    /// class bodies are deferred to `check_top_bodies`.
+    /// Pass 1: bind one top-level statement's names. Signatures,
+    /// annotations and bodies resolve in the later passes.
     fn bind_top_stmt(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
@@ -397,7 +389,20 @@ impl Driver {
                 // bound; pass 3 checks the value.
                 bindings.insert(name.clone(), Binding::Pending);
             }
-            StmtKind::ClassDef(cls) => self.process_class(bindings, module, cls)?,
+            StmtKind::ClassDef(cls) => {
+                self.reject_module_rebind(bindings, &cls.name, cls.line)?;
+                let fullname = format!("{module}.{}", cls.name);
+                if self.classes.contains_key(&fullname) {
+                    return Err(input(
+                        &self.path,
+                        cls.line,
+                        "rebinding the class name is outside the skeleton subset",
+                    ));
+                }
+                // The name binds now; the model builds in pass A once its
+                // bases have models, so a forward base is legal (#142).
+                bindings.insert(cls.name.clone(), Binding::Class(fullname));
+            }
             StmtKind::FuncDef(func) => self.bind_function(bindings, func)?,
             StmtKind::Pass => {}
         }
@@ -469,20 +474,78 @@ impl Driver {
         Ok(())
     }
 
-    fn process_class(
+    /// Pass A: build every class's model in dependency order. mypy
+    /// binds all names before resolving bases, so a base defined after
+    /// its subclass is legal (#142); a model builds once every base it
+    /// names has one, and a stall is a hierarchy cycle.
+    fn build_class_models(
         &mut self,
-        bindings: &mut HashMap<String, Binding>,
+        bindings: &HashMap<String, Binding>,
+        module: &str,
+        body: &[crate::subset::TopStmt],
+    ) -> Result<(), CheckError> {
+        let mut pending: Vec<&crate::subset::ClassDefStmt> = body
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                StmtKind::ClassDef(cls) => Some(cls),
+                _ => None,
+            })
+            .collect();
+        loop {
+            let mut remaining: Vec<&crate::subset::ClassDefStmt> = Vec::new();
+            let mut progressed = false;
+            for cls in pending {
+                if self.class_bases_ready(bindings, cls) {
+                    self.build_class_model(bindings, module, cls)?;
+                    progressed = true;
+                } else {
+                    remaining.push(cls);
+                }
+            }
+            if remaining.is_empty() {
+                return Ok(());
+            }
+            if !progressed {
+                return Err(input(
+                    &self.path,
+                    remaining[0].line,
+                    "a class hierarchy cycle is outside the skeleton subset",
+                ));
+            }
+            pending = remaining;
+        }
+    }
+
+    /// Whether every base naming a class binding already has its model;
+    /// a base that is not a class binding at all is `resolve_bases`'s
+    /// error to report, not a reason to defer.
+    fn class_bases_ready(
+        &self,
+        bindings: &HashMap<String, Binding>,
+        cls: &crate::subset::ClassDefStmt,
+    ) -> bool {
+        cls.bases.iter().all(|base| {
+            let head = match &base.kind {
+                BaseRefKind::Plain(name) => name,
+                BaseRefKind::Subscript { base, .. } => base,
+            };
+            match bindings.get(head) {
+                Some(Binding::Class(full)) => self.classes.contains_key(full),
+                _ => true,
+            }
+        })
+    }
+
+    /// Pass A for one class: build its model, with the frame, bases and
+    /// MRO, and register the empty member map. The name is already bound
+    /// (pass 1), so methods may construct their own class.
+    fn build_class_model(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
         module: &str,
         cls: &crate::subset::ClassDefStmt,
     ) -> Result<(), CheckError> {
         let fullname = format!("{module}.{}", cls.name);
-        if self.classes.contains_key(&fullname) || bindings.contains_key(&cls.name) {
-            return Err(input(
-                &self.path,
-                cls.line,
-                "rebinding the class name is outside the skeleton subset",
-            ));
-        }
         let frame = self.bind_class_frame(bindings, module, cls)?;
         let (bases, base_mros) = self.resolve_bases(bindings, &frame, cls)?;
         let mro =
@@ -495,9 +558,28 @@ impl Driver {
             members: std::collections::BTreeMap::new(),
         };
         self.classes.insert(fullname.clone(), model_ref);
-        self.refresh(&fullname)?;
-        // Bind before the body: methods construct their own class.
-        bindings.insert(cls.name.clone(), Binding::Class(fullname.clone()));
+        self.refresh(&fullname)
+    }
+
+    /// Pass 2 for one class: resolve its class-variable annotations and
+    /// method signatures against the completed bindings, then refresh the
+    /// resolver snapshot so member lookups resolve them.
+    fn bind_class_members(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        module: &str,
+        cls: &crate::subset::ClassDefStmt,
+    ) -> Result<(), CheckError> {
+        let fullname = format!("{module}.{}", cls.name);
+        let frame = {
+            let model_ref = self.classes.get(&fullname).ok_or_else(|| {
+                CheckError::Internal(format!("the class model for {fullname} is missing"))
+            })?;
+            ClassFrame {
+                fullname: fullname.clone(),
+                tvars: model_ref.tvars.clone(),
+            }
+        };
         for stmt in &cls.body {
             match stmt {
                 ClassStmt::VarDecl {
@@ -536,10 +618,7 @@ impl Driver {
                 ClassStmt::Pass => {}
             }
         }
-        // Splice the class variables and method signatures into the
-        // resolver snapshot, so a later member lookup resolves them.
-        self.refresh(&fullname)?;
-        Ok(())
+        self.refresh(&fullname)
     }
 
     /// Bind the class frame's type variables: every base-subscript name
@@ -744,7 +823,7 @@ impl Driver {
         Ok(model_ref)
     }
 
-    /// Pass 1 for a method: resolve and register its signature. The
+    /// Pass 2 for a method: resolve and register its signature. The
     /// body checks later, in `check_method_body`.
     fn bind_method(
         &mut self,
@@ -764,23 +843,56 @@ impl Driver {
         self.register_member(class_fullname, &func.name, Member::Method(sig), func.line)
     }
 
-    /// Pass 1 for a module function: bind its signature only. The
-    /// body checks later, in `check_function_body`.
+    /// Pass 1 for a module function: reserve its name. The signature
+    /// resolves in pass 2 and the body checks in `check_function_body`.
     fn bind_function(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         func: &FuncDefStmt,
     ) -> Result<(), CheckError> {
         self.reject_module_rebind(bindings, &func.name, func.line)?;
-        let sig = {
-            let scope = Scope {
-                module: bindings,
-                locals: None,
-                frame: None,
-            };
-            self.resolve_sig(&scope, func)?
-        };
-        bindings.insert(func.name.clone(), Binding::Function(sig));
+        bindings.insert(func.name.clone(), Binding::Pending);
+        Ok(())
+    }
+
+    /// Pass 2: resolve module annotations, function signatures and
+    /// class members against the completed bindings, in statement
+    /// order. mypy resolves every annotation after the module binds,
+    /// so a signature may name a class defined later (#138).
+    fn bind_module_declarations(
+        &mut self,
+        bindings: &mut HashMap<String, Binding>,
+        module: &str,
+        body: &[crate::subset::TopStmt],
+    ) -> Result<(), CheckError> {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::AnnAssign { name, ann, .. } => {
+                    let declared = {
+                        let scope = Scope {
+                            module: bindings,
+                            locals: None,
+                            frame: None,
+                        };
+                        self.resolve_ann(&scope, ann)?
+                    };
+                    bindings.insert(name.clone(), Binding::Var(declared));
+                }
+                StmtKind::FuncDef(func) => {
+                    let sig = {
+                        let scope = Scope {
+                            module: bindings,
+                            locals: None,
+                            frame: None,
+                        };
+                        self.resolve_sig(&scope, func)?
+                    };
+                    bindings.insert(func.name.clone(), Binding::Function(sig));
+                }
+                StmtKind::ClassDef(cls) => self.bind_class_members(bindings, module, cls)?,
+                _ => {}
+            }
+        }
         Ok(())
     }
 

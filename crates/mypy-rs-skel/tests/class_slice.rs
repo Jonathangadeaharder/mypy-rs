@@ -1341,6 +1341,99 @@ fn sibling_error_survives_main_diagnostic_collision() {
     );
 }
 
+/// Signatures and bases resolve after the module binds, like mypy: a
+/// signature may name a class defined later (#138) and a base class may
+/// be defined after its subclass (#142). A mutually cyclic hierarchy is
+/// not resolvable in any order, mypy rejects it as an unresolvable name,
+/// and the subset loud-rejects instead.
+#[test]
+fn deferred_class_resolution() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-deferred-class");
+    fs::create_dir_all(&dir).expect("temp dir");
+
+    fs::write(
+        dir.join("sig_later.py"),
+        concat!(
+            "def use(d: D) -> int:\n",
+            "    return d.v\n",
+            "\n",
+            "\n",
+            "class A:\n",
+            "    def m(self, d: D) -> int:\n",
+            "        return d.v\n",
+            "\n",
+            "\n",
+            "class D:\n",
+            "    def __init__(self) -> None:\n",
+            "        self.v = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "sig_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a signature naming a later class must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("base_later.py"),
+        concat!(
+            "class Sub(Base):\n",
+            "    def read(self) -> int:\n",
+            "        return self.v\n",
+            "\n",
+            "\n",
+            "class Base:\n",
+            "    def __init__(self) -> None:\n",
+            "        self.v = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "base_later.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a forward base class must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("cycle.py"),
+        concat!(
+            "class A(B):\n",
+            "    pass\n",
+            "\n",
+            "\n",
+            "class B(A):\n",
+            "    pass\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "cycle.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a cyclic hierarchy must loud-reject: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty(), "no stdout for the cycle case");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("a class hierarchy cycle is outside the skeleton subset"),
+        "the cycle case must name its class: {stderr}"
+    );
+}
+
 /// Duplicate bases are named, diamonds are not falsely rejected
 /// (#133): mypy rejects `class D(A, A)` as `Duplicate base class`, so
 /// the subset points at the repeated base instead of the generic
