@@ -445,9 +445,7 @@ def child(name: str, iters: int, control: bool) -> int:
 
             require(e2e(None) is True, "first distinct call failed")
             if name.endswith("_on"):
-                require(
-                    len(subtypes._subtype_answers) >= 1, "native distinct path did not engage"
-                )
+                require(len(subtypes._subtype_answers) >= 1, "native distinct path did not engage")
             idx[0] = 0  # re-measure pair 0 too; identical work either way
             loop1(iters, control, e2e, (None,))
     else:
