@@ -1,6 +1,6 @@
 //! The checking phase of the skeleton: a micro semanal pass (annotation
 //! resolution through the fixture symbol map) plus the two corpus checks
-//! — assignment compatibility and function return compatibility — both
+//! — assignment compatibility and function return compatibility; both
 //! decided by the kernel's `is_subtype` over fixture-backed snapshots.
 //!
 //! The `None` verdict means the kernel itself declined to decide (a
@@ -54,7 +54,7 @@ pub fn check_module(
                     path,
                     assign.line,
                 )?;
-                if verdict == Some(false) {
+                if !verdict {
                     diagnostics.push(Diagnostic {
                         line: assign.line,
                         message: format!(
@@ -77,7 +77,7 @@ pub fn check_module(
                     path,
                     func.line,
                 )?;
-                if verdict == Some(false) {
+                if !verdict {
                     return Err(CheckError::Input(format!(
                         "{path}:{}: skeleton subset error: return-value incompatibility is \
                          outside the supported error classes",
@@ -91,17 +91,19 @@ pub fn check_module(
     Ok(diagnostics)
 }
 
-/// `is_subtype` returns `Option<bool>`: `None` is the kernel declining to
-/// decide. Every pair in the supported corpus must land a verdict; a
-/// `None` here means the fixtures no longer cover the closure.
+/// `is_subtype` returns `Option<bool>`: `None` is the kernel declining
+/// to decide. Every pair in the supported corpus must land a verdict; a
+/// `None` here means the fixtures no longer cover the closure. The
+/// returned bool is plain: the caller only distinguishes "subtype" from
+/// "not a subtype", and the `None` case has already become an error.
 fn require_decidable(
     verdict: Option<bool>,
     check: &str,
     path: &str,
     line: usize,
-) -> Result<Option<bool>, CheckError> {
+) -> Result<bool, CheckError> {
     match verdict {
-        Some(v) => Ok(Some(v)),
+        Some(v) => Ok(v),
         None => Err(CheckError::Internal(format!(
             "{path}:{line}: skeleton internal error: kernel deferred the {check} check; \
              the fixture closure no longer covers the corpus"
