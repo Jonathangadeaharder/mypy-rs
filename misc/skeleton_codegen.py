@@ -247,8 +247,10 @@ def supported_arms() -> list[dict]:
     seen: set[str] = set()
     for entry in entries:
         stem, ext = os.path.splitext(entry["arm"])
-        assert ext == ".py", f"supported arm {entry['id']} is not a .py: {entry['arm']}"
-        assert stem not in seen, f"duplicate supported arm: {entry['arm']}"
+        if ext != ".py":
+            raise RuntimeError(f"supported arm {entry['id']} is not a .py: {entry['arm']}")
+        if stem in seen:
+            raise RuntimeError(f"duplicate supported arm: {entry['arm']}")
         seen.add(stem)
     return entries
 
@@ -284,9 +286,7 @@ def regen_expected(scratch: str) -> dict[str, bytes]:
         )
     outputs = {}
     exit_codes = {}
-    arms = {"trivial", "empty_control"} | {
-        os.path.splitext(e["arm"])[0] for e in supported_arms()
-    }
+    arms = {"trivial", "empty_control"} | {os.path.splitext(e["arm"])[0] for e in supported_arms()}
     cache = os.path.join(scratch, "cache")
     for stem in sorted(arms):
         proc = subprocess.run(

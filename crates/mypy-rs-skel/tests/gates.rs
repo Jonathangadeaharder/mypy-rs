@@ -270,9 +270,14 @@ fn manifest_three_way_partition() {
                 }
                 let (code, stdout, stderr) = run_bin(arm);
                 let stderr = String::from_utf8_lossy(&stderr);
-                if code != 2 {
+                let Some(&want_code) = cap.exit_code.as_ref() else {
+                    failures.push(format!("{}: unsupported entry has no exit_code", cap.id));
+                    continue;
+                };
+                if code != want_code {
                     failures.push(format!(
-                        "{}: arm {arm} exited {code}, want hard reject 2; stderr: {stderr}",
+                        "{}: arm {arm} exited {code}, manifest declares {want_code}; \
+                         stderr: {stderr}",
                         cap.id
                     ));
                 }
