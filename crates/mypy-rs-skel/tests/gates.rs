@@ -1,0 +1,199 @@
+//! Gate tests for issue #91 (brief §5). These run only with
+//! `--features skel`; the feature never builds in production jobs.
+//!
+//! Gate 1: differential — bin output is byte-identical to the
+//! expected files the generator captured from real mypy.
+//! Gate 2: no-libpython — the bin links no Python and carries no
+//! undefined Py symbols (the C API stubs are inert linker
+//! artifacts, so `nm -u` must stay empty of them).
+//! Gate 3: the registered production seam count in type_kernel is
+//! unchanged by this lane.
+//! Gate 4: cache isolation — a run leaves no cache artifacts and
+//! does not mutate the corpus.
+//!
+//! Gate 2 is macOS-only (otool/nm); on other targets it compiles away.
+//! The whole file compiles to nothing without the `skel` feature: the
+//! bin's required-features then skip the binary and `CARGO_BIN_EXE_mypy-rs`
+//! is undefined, which `env!` would turn into a hard compile error.
+
+#![cfg(feature = "skel")]
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const TRIVIAL: &str = "trivial.py";
+const EMPTY_CONTROL: &str = "empty_control.py";
+
+fn testdata_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata")
+}
+
+fn run_bin(file: &str) -> (i32, Vec<u8>, Vec<u8>) {
+    let output = Command::new(env!("CARGO_BIN_EXE_mypy-rs"))
+        .arg(file)
+        .current_dir(testdata_dir())
+        .output()
+        .expect("failed to spawn mypy-rs");
+    (
+        output.status.code().expect("terminated by signal"),
+        output.stdout,
+        output.stderr,
+    )
+}
+
+fn expected(file: &str) -> Vec<u8> {
+    let stem = Path::new(file).file_stem().expect("file has no stem");
+    let name = format!("{}.expected", stem.to_string_lossy());
+    fs::read(testdata_dir().join(name)).expect("missing .expected fixture")
+}
+
+fn assert_differential(file: &str, want_code: i32) {
+    let (code, stdout, stderr) = run_bin(file);
+    assert_eq!(code, want_code, "exit code for {file}");
+    assert_eq!(stdout, expected(file), "stdout bytes for {file}");
+    assert!(
+        stderr.is_empty(),
+        "stderr for {file} must be empty: {}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+#[test]
+fn gate1_differential_trivial_error() {
+    assert_differential(TRIVIAL, 1);
+}
+
+#[test]
+fn gate1_differential_empty_control_success() {
+    assert_differential(EMPTY_CONTROL, 0);
+}
+
+/// A non-None return annotation with no returned value is a mypy error
+/// ("Missing return statement"). The skeleton must reject it as
+/// out-of-subset (exit 2), never report Success.
+#[test]
+fn subset_rejects_valueless_function_body() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-subset-reject");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases = [
+        (
+            "pass_body.py",
+            "def f() -> int:\n    pass\n",
+            "pass body is outside",
+        ),
+        (
+            "bare_return.py",
+            "def f() -> int:\n    return\n",
+            "bare return is outside",
+        ),
+    ];
+    for (name, source, needle) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = Command::new(env!("CARGO_BIN_EXE_mypy-rs"))
+            .arg(&path)
+            .output()
+            .expect("spawn mypy-rs");
+        assert_eq!(output.status.code(), Some(2), "exit code for {name}");
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "stderr for {name}: {stderr}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn gate2_no_libpython() {
+    let exe = env!("CARGO_BIN_EXE_mypy-rs");
+
+    let otool = Command::new("otool")
+        .arg("-L")
+        .arg(exe)
+        .output()
+        .expect("otool failed");
+    assert!(otool.status.success());
+    let linked = String::from_utf8_lossy(&otool.stdout).to_lowercase();
+    assert!(
+        !linked.contains("python"),
+        "mypy-rs must not link libpython, otool -L says: {linked}"
+    );
+
+    let nm = Command::new("nm")
+        .arg("-u")
+        .arg(exe)
+        .output()
+        .expect("nm failed");
+    assert!(nm.status.success());
+    let undefined = String::from_utf8_lossy(&nm.stdout);
+    assert!(
+        !undefined.contains("Py"),
+        "no undefined C Python symbols allowed, nm -u says: {undefined}"
+    );
+}
+
+/// Count lines that *are* the attribute (any form, including
+/// `#[pyclass(name = "...")]`), so comment mentions of `#[pyclass]` and
+/// doc lines do not inflate the count. `attr` is the line-start prefix.
+fn count_attr(root: &Path, attr: &str) -> usize {
+    fn walk(dir: &Path, attr: &str, total: &mut usize) {
+        for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}")) {
+            let entry = entry.unwrap_or_else(|e| panic!("dir entry in {dir:?}: {e}"));
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, attr, total);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let content =
+                    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+                *total += content
+                    .lines()
+                    .filter(|line| line.trim_start().starts_with(attr))
+                    .count();
+            }
+        }
+    }
+    let mut total = 0;
+    walk(root, attr, &mut total);
+    total
+}
+
+#[test]
+fn gate3_production_seam_count_unchanged() {
+    let kernel_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../type_kernel/src");
+    assert_eq!(
+        count_attr(&kernel_src, "#[pyfunction"),
+        848,
+        "registered #[pyfunction] seams changed; this lane must not add or remove any"
+    );
+    assert_eq!(
+        count_attr(&kernel_src, "#[pyclass"),
+        7,
+        "registered #[pyclass] seams changed; this lane must not add or remove any"
+    );
+}
+
+#[test]
+fn gate4_cache_and_corpus_isolation() {
+    let dir = testdata_dir();
+    let before: Vec<(PathBuf, Vec<u8>)> = [TRIVIAL, EMPTY_CONTROL]
+        .iter()
+        .map(|f| {
+            (
+                dir.join(f),
+                fs::read(dir.join(f)).expect("corpus read failed"),
+            )
+        })
+        .collect();
+
+    run_bin(TRIVIAL);
+    run_bin(EMPTY_CONTROL);
+
+    assert!(
+        !dir.join(".mypy_cache").exists(),
+        "a run created .mypy_cache in the corpus directory"
+    );
+    for (path, bytes) in before {
+        let after = fs::read(&path).expect("corpus re-read failed");
+        assert_eq!(bytes, after, "{path:?} mutated by a run");
+    }
+}

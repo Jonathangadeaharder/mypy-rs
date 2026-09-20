@@ -169,6 +169,8 @@ mod typeanal_unbound2;
 mod typeinfo;
 mod typeops;
 mod types_impl;
+// Public Rust surface consumed by the standalone skeleton crate (#91).
+pub mod skeleton_api;
 mod unify;
 mod util;
 mod visitor;

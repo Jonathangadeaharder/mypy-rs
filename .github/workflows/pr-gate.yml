@@ -89,6 +89,26 @@ jobs:
           PYO3_PYTHON=$(uv run python -c "import sys; print(sys.executable)") \
           cargo test -p mypy-ast-serialize
 
+      # The skel bin is `required-features = ["skel"]`, so `cargo build
+      # --workspace` skips it; without these the crate and its gate
+      # tests could rot with every gate green (#95).
+      - name: cargo fmt --check (mypy-rs-skel)
+        run: cargo fmt -p mypy-rs-skel -- --check
+
+      # --all-targets also compiles tests/gates.rs, which the bare
+      # `cargo check`/`clippy` skip (integration tests are a separate
+      # target), so a broken gate test fails here instead of rotting.
+      - name: cargo clippy (mypy-rs-skel)
+        run: cargo clippy -p mypy-rs-skel --features skel --all-targets -- -D warnings
+
+      - name: cargo check (mypy-rs-skel)
+        run: cargo check -p mypy-rs-skel --features skel --all-targets --locked
+
+      # Runs the gate tests (1 differential, 3 seam count, 4 cache
+      # isolation; gate 2 is macOS-only and compiles away here).
+      - name: cargo test (mypy-rs-skel gates)
+        run: cargo test -p mypy-rs-skel --features skel --locked
+
       - name: Restore native extensions (built once by build-extensions)
         # Self-check (num_workers=4) forces native_parser/native_resolver
         # on, so those extensions must be importable for the local gate to
@@ -133,6 +153,14 @@ jobs:
 
       - name: Python check_call argmap baseline (native-off)
         run: uv run python -m pytest mypy/test/testinfer.py -q
+
+      - name: Skeleton fixture freshness (#91)
+        # Fail when committed fixtures/expected outputs are stale;
+        # MYPY_RS_EXT_DIRS points the generator (in-process build and
+        # regen subprocess) at the restored extension cache.
+        env:
+          MYPY_RS_EXT_DIRS: ${{ env.SCRATCH }}
+        run: uv run python misc/skeleton_codegen.py --check
 
   # Lint gate for NEW drift only: main carries 572 pre-existing ruff findings
   # and 45 black-dirty files (#1742), so the pinned tools run on the files the

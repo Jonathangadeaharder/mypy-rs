@@ -1,0 +1,32 @@
+[package]
+name = "mypy-rs-skel"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+# Standalone-skeleton crate (issue #91, ADR-0008 Lane 2). Never in a
+# wheel, never in the production check path: the only target is the
+# bin below, gated behind `skel` so no default build ever produces it.
+
+[[bin]]
+name = "mypy-rs"
+path = "src/main.rs"
+required-features = ["skel"]
+
+[features]
+skel = [
+    "dep:mypy-type-kernel",
+    "dep:ruff_python_ast",
+    "dep:ruff_python_parser",
+    "dep:ruff_text_size",
+    "dep:serde",
+    "dep:serde_json",
+]
+
+[dependencies]
+mypy-type-kernel = { path = "../type_kernel", optional = true, features = ["extension-module"] }
+ruff_python_ast = { version = "0.0.3", optional = true }
+ruff_python_parser = { version = "0.0.3", optional = true }
+ruff_text_size = { version = "0.0.3", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
