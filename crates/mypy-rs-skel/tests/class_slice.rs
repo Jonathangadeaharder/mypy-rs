@@ -1401,3 +1401,47 @@ fn duplicate_bases_named_in_rejection() {
         assert!(stderr.contains(needle), "stderr for {name}: {stderr}");
     }
 }
+
+/// A body may read a module name whose assignment comes later, including
+/// a plain (unannotated) assignment: mypy resolves every body after the
+/// module binds (#126). Module-level *values* keep the ordered semantics,
+/// so a module value reading a later name still rejects.
+#[test]
+fn body_reads_later_module_value() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-forward-value");
+    fs::create_dir_all(&dir).expect("temp dir");
+    fs::write(
+        dir.join("forward.py"),
+        concat!(
+            "def reader() -> int:\n",
+            "    return value\n",
+            "\n",
+            "\n",
+            "value = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "forward.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a body read of a later plain assignment must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Success: no issues found in 1 source file\n"
+    );
+
+    fs::write(
+        dir.join("ordered.py"),
+        concat!("value = other\n", "\n", "\n", "other = 1\n"),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "ordered.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "a module value reading a later name must reject"
+    );
+}

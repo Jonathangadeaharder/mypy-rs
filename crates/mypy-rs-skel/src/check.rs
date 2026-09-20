@@ -244,10 +244,11 @@ impl Driver {
                 bindings.insert(name.clone(), Binding::Var(declared));
             }
         }
-        // Pass 3 walks the module in statement order; a class collects
-        // its instance attributes and validates its class-variable
-        // overrides as the walk reaches it. See `check_module_ordered`.
-        self.check_module_ordered(&mut bindings, module, &ast.body)?;
+        // Pass 3 is two passes: 3a types module values in statement order
+        // (used-before-def) and collects class members; 3b checks every
+        // body against the completed bindings, like mypy (#126).
+        self.check_module_values(&mut bindings, module, &ast.body)?;
+        self.check_module_bodies(&bindings, module, &ast.body)?;
         Ok(bindings)
     }
 
@@ -861,7 +862,14 @@ impl Driver {
     /// module annotations resolved in pass 1b). A class's method bodies
     /// check here, in file order, so a base precedes its subclasses and
     /// its own collected attributes are already present.
-    fn check_module_ordered(
+    /// Pass 3a: type every module-level value in statement order and
+    /// collect each class's members as its definition is reached. A
+    /// module value that reads a later name rejects the way mypy's
+    /// used-before-def does; function, class, import and TypeVar names
+    /// enter `visible` at their position, so a module value that calls a
+    /// later function rejects too. Function and method bodies defer to
+    /// pass 3b.
+    fn check_module_values(
         &mut self,
         bindings: &mut HashMap<String, Binding>,
         module: &str,
@@ -915,28 +923,6 @@ impl Driver {
                     bindings.insert(name.clone(), binding.clone());
                     visible.insert(name.clone(), binding);
                 }
-                StmtKind::FuncDef(func) => {
-                    self.check_function_body(&*bindings, func)?;
-                    if let Some(binding) = bindings.get(&func.name).cloned() {
-                        visible.insert(func.name.clone(), binding);
-                    }
-                }
-                StmtKind::ClassDef(cls) => {
-                    let fullname = format!("{module}.{}", cls.name);
-                    // Instance attributes collect and class-variable
-                    // overrides validate here, so a base precedes its
-                    // subclasses and its members are present.
-                    self.collect_class_instance_vars(&*bindings, cls, &fullname)?;
-                    self.check_classvar_overrides(cls, &fullname)?;
-                    for stmt in &cls.body {
-                        if let ClassStmt::Method(func) = stmt {
-                            self.check_method_body(&*bindings, &fullname, func)?;
-                        }
-                    }
-                    if let Some(binding) = bindings.get(&cls.name).cloned() {
-                        visible.insert(cls.name.clone(), binding);
-                    }
-                }
                 StmtKind::Import { names } | StmtKind::ImportFrom { names, .. } => {
                     for name in names {
                         if let Some(binding) = bindings.get(name).cloned() {
@@ -949,7 +935,51 @@ impl Driver {
                         visible.insert(binding.clone(), b);
                     }
                 }
+                StmtKind::FuncDef(func) => {
+                    if let Some(binding) = bindings.get(&func.name).cloned() {
+                        visible.insert(func.name.clone(), binding);
+                    }
+                }
+                StmtKind::ClassDef(cls) => {
+                    let fullname = format!("{module}.{}", cls.name);
+                    // Class members collect here, in statement order, so
+                    // a base precedes its subclasses and a later module
+                    // value sees the members. Only the bodies defer.
+                    self.collect_class_instance_vars(bindings, cls, &fullname)?;
+                    self.check_classvar_overrides(cls, &fullname)?;
+                    if let Some(binding) = bindings.get(&cls.name).cloned() {
+                        visible.insert(cls.name.clone(), binding);
+                    }
+                }
                 StmtKind::Pass => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Pass 3b: check every body against the completed bindings, after
+    /// the ordered pass registered all module values and class members.
+    /// mypy resolves bodies after semantic analysis, so a body may read
+    /// any module name regardless of statement position (#126); only
+    /// module-level *values* and class members keep ordered semantics.
+    fn check_module_bodies(
+        &mut self,
+        bindings: &HashMap<String, Binding>,
+        module: &str,
+        body: &[crate::subset::TopStmt],
+    ) -> Result<(), CheckError> {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::FuncDef(func) => self.check_function_body(bindings, func)?,
+                StmtKind::ClassDef(cls) => {
+                    let fullname = format!("{module}.{}", cls.name);
+                    for stmt in &cls.body {
+                        if let ClassStmt::Method(func) = stmt {
+                            self.check_method_body(bindings, &fullname, func)?;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())

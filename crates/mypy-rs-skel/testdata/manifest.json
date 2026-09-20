@@ -37,6 +37,13 @@
       "notes": "Function and method bodies resolve names bound later in the module: later functions, methods and module variables, plus self attributes assigned in a later method (#126)."
     },
     {
+      "id": "functions.forward_module_value",
+      "status": "supported",
+      "arm": "forward_module_value.py",
+      "exit_code": 0,
+      "notes": "A function body reads a module variable whose plain (unannotated) assignment comes later in the module; mypy resolves bodies after module binding, so the ordered pass defers bodies to a second pass (#126)."
+    },
+    {
       "id": "classes.override_selfattr_inference",
       "status": "supported",
       "arm": "classes_override_selfattr_inference.py",
