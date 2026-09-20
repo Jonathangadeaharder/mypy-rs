@@ -781,10 +781,7 @@ impl Driver {
         for p in &func.params {
             params.push((p.name.clone(), self.resolve_ann(scope, &p.ann)?));
         }
-        let ret = match &func.ret {
-            Some(ann) => self.resolve_ann(scope, ann)?,
-            None => Type::NoneType,
-        };
+        let ret = self.resolve_ann(scope, &func.ret)?;
         Ok(Sig { params, ret })
     }
 
@@ -1464,16 +1461,13 @@ impl Driver {
             )
         })?;
         let receiver = instance(fullname, model::class_frame_tvars(model_ref));
-        let init = match self.find_member(&receiver, "__init__", None)? {
-            Some(Found::Method(sig)) => sig,
-            _ => {
-                return Err(input(
-                    &self.path,
-                    line,
-                    "constructing a class without an __init__ is outside \
-                     the skeleton subset",
-                ))
-            }
+        let Some((init, _)) = self.find_corpus_method(&receiver, "__init__")? else {
+            return Err(input(
+                &self.path,
+                line,
+                "constructing a class without an __init__ is outside \
+                 the skeleton subset",
+            ));
         };
         let class_args = match explicit {
             Some(args) => {
@@ -1817,6 +1811,53 @@ impl Driver {
         Ok(self
             .find_member_entry(receiver, name, skip_class)?
             .map(|(found, _)| found))
+    }
+
+    /// Resolve a method against corpus class models only: walk the
+    /// receiver's MRO like `find_member_entry`, but skip MRO entries
+    /// with no corpus model (builtins.object, typing.Generic) instead
+    /// of surfacing their fixture-backed members. Callers whose
+    /// intended diagnostic is "the corpus does not define this" get it
+    /// instead of the fixture-walk's outside-the-subset error.
+    fn find_corpus_method(
+        &self,
+        receiver: &Type,
+        name: &str,
+    ) -> Result<Option<(Sig, String)>, CheckError> {
+        let Type::Instance {
+            type_ref: recv_ref,
+            args: recv_args,
+            ..
+        } = receiver
+        else {
+            return Err(CheckError::Internal(
+                "a member lookup on a non-instance receiver".to_string(),
+            ));
+        };
+        let snap = self.resolver.get(recv_ref).ok_or_else(|| {
+            CheckError::Internal(format!(
+                "{}: the snapshot for {recv_ref} is missing; the fixture closure \
+                 no longer covers the corpus",
+                self.path
+            ))
+        })?;
+        for entry in &snap.mro {
+            let Some(model_ref) = self.classes.get(entry) else {
+                continue;
+            };
+            let Some(Member::Method(sig)) = model_ref.members.get(name) else {
+                continue;
+            };
+            let args_at = self.map_args(recv_ref, recv_args, entry)?.ok_or_else(|| {
+                CheckError::Internal(format!(
+                    "{}: no inheritance path from {recv_ref} to {entry}",
+                    self.path
+                ))
+            })?;
+            let env = frame_env(model_ref, &args_at);
+            return Ok(Some((subst_sig(sig, &env), entry.to_string())));
+        }
+        Ok(None)
     }
 
     /// Map the receiver's type arguments to the definer's frame: follow

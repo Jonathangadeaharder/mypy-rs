@@ -210,12 +210,14 @@ pub struct ClassDefStmt {
     pub line: usize,
 }
 
-/// A module-level function: all parameters annotated, no self.
+/// A function or method definition: every parameter annotated, with
+/// `self` already stripped for methods and the return annotation
+/// always present (lowering rejects a bare def).
 #[derive(Debug)]
 pub struct FuncDefStmt {
     pub name: String,
     pub params: Vec<Param>,
-    pub ret: Option<Ann>,
+    pub ret: Ann,
     pub body: Vec<BodyStmt>,
     pub line: usize,
 }
@@ -786,7 +788,7 @@ fn lower_function(
     let ret = match f.returns.as_deref() {
         Some(annotation) => {
             let ret_line = lines.line_of(annotation.range().start().to_usize());
-            Some(lower_ann(annotation, path, ret_line)?)
+            lower_ann(annotation, path, ret_line)?
         }
         None => {
             return Err(subset_error(
@@ -825,13 +827,13 @@ fn lower_function(
 /// missing-return diagnostic, except for the single-pass pass body.
 fn check_body_shape(
     body: &[BodyStmt],
-    ret: &Option<Ann>,
+    ret: &Ann,
     path: &str,
     line: usize,
     locals: &mut Vec<String>,
     top: bool,
 ) -> Result<(), String> {
-    let none_ret = matches!(ret, Some(ann) if ann.kind == AnnKind::NoneT);
+    let none_ret = ret.kind == AnnKind::NoneT;
     for (index, stmt) in body.iter().enumerate() {
         let is_last = index + 1 == body.len();
         match stmt {

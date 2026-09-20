@@ -479,6 +479,78 @@ fn float_binop_operator_closure() {
         }
     }
 }
+/// `__init__` resolution for construction is corpus-only (#131): a
+/// class whose corpus MRO defines no `__init__` rejects with the
+/// intended message (the fixture walk used to surface builtins.object
+/// first), an inherited corpus `__init__` still constructs with the
+/// substituted signature, and its arity check matches the own-init path.
+#[test]
+fn constructor_init_resolution() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-init-resolution");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32, &str); 3] = [
+        (
+            "no_init_construct.py",
+            concat!("class C:\n", "    pass\n", "\n", "c = C()\n"),
+            2,
+            "constructing a class without an __init__ is outside the skeleton subset",
+        ),
+        (
+            "inherited_init.py",
+            concat!(
+                "class Base:\n",
+                "    def __init__(self, x: int) -> None:\n",
+                "        self.x = x\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    pass\n",
+                "\n",
+                "s = Sub(1)\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "inherited_init_arity.py",
+            concat!(
+                "class Base:\n",
+                "    def __init__(self, x: int) -> None:\n",
+                "        self.x = x\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    pass\n",
+                "\n",
+                "s = Sub(1, 2)\n",
+            ),
+            2,
+            "an argument count mismatch is outside the skeleton subset",
+        ),
+    ];
+    for (name, source, code, expect) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if code == 2 {
+            assert!(output.stdout.is_empty(), "no stdout for {name}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(expect), "stderr for {name}: {stderr}");
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+            assert!(output.stderr.is_empty(), "stderr for {name}");
+        }
+    }
+}
+
 /// Subset rejections name the actual construct kind (#130): the
 /// statement/expression kind tables are exhaustive over the parser's
 /// AST, so a set literal or a global statement reports its own kind
