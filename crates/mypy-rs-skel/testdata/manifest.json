@@ -1,0 +1,74 @@
+{
+  "manifest_version": 1,
+  "capabilities": [
+    {
+      "id": "assignments.annotated_primitives",
+      "status": "supported",
+      "arm": "assignments_annotated_primitives.py",
+      "exit_code": 1,
+      "notes": "Module-level x: <primitive> = <literal> plus one str to int mismatch."
+    },
+    {
+      "id": "functions.literal_return",
+      "status": "supported",
+      "arm": "functions_literal_return.py",
+      "exit_code": 0,
+      "notes": "Zero-argument function, annotated return, single literal return."
+    },
+    {
+      "id": "module.pass_statement",
+      "status": "supported",
+      "arm": "empty_control.py",
+      "exit_code": 0,
+      "notes": "Module-level pass; reuses the gate 1 empty control arm."
+    },
+    {
+      "id": "classes.basic",
+      "status": "unsupported",
+      "arm": "classes_basic.py",
+      "exit_code": 2,
+      "reject_marker": "statement `ClassDef` is outside the skeleton subset",
+      "notes": "No class semantics exist; rejected at parse lowering."
+    },
+    {
+      "id": "functions.async",
+      "status": "unsupported",
+      "arm": "functions_async.py",
+      "exit_code": 2,
+      "reject_marker": "async functions are outside the skeleton subset",
+      "notes": "mypy checks the return as a Coroutine, not the annotation."
+    },
+    {
+      "id": "functions.decorated",
+      "status": "unsupported",
+      "arm": "functions_decorated.py",
+      "exit_code": 2,
+      "reject_marker": "decorated functions are outside the skeleton subset",
+      "notes": "Dropping the decorator would change the checked type."
+    },
+    {
+      "id": "functions.valueless_body",
+      "status": "unsupported",
+      "arm": "functions_valueless_body.py",
+      "exit_code": 2,
+      "reject_marker": "pass body is outside the skeleton subset",
+      "notes": "mypy reports Missing return statement; the skeleton rejects."
+    },
+    {
+      "id": "generics.legacy_syntax",
+      "status": "unsupported",
+      "arm": "generics_legacy_syntax.py",
+      "exit_code": 2,
+      "reject_marker": "function parameters are unsupported",
+      "notes": "Legacy TypeVar generics need parameters; the parameter gate fires first."
+    },
+    {
+      "id": "generics.pep695",
+      "status": "unsupported",
+      "arm": "generics_pep695.py",
+      "exit_code": 2,
+      "reject_marker": "PEP 695 type parameters are outside the skeleton subset",
+      "notes": "Generic semantics the skeleton does not model."
+    }
+  ]
+}
