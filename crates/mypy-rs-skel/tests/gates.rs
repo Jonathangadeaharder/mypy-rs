@@ -69,6 +69,39 @@ fn gate1_differential_empty_control_success() {
     assert_differential(EMPTY_CONTROL, 0);
 }
 
+/// A non-None return annotation with no returned value is a mypy error
+/// ("Missing return statement"). The skeleton must reject it as
+/// out-of-subset (exit 2), never report Success.
+#[test]
+fn subset_rejects_valueless_function_body() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-subset-reject");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases = [
+        (
+            "pass_body.py",
+            "def f() -> int:\n    pass\n",
+            "pass body is outside",
+        ),
+        (
+            "bare_return.py",
+            "def f() -> int:\n    return\n",
+            "bare return is outside",
+        ),
+    ];
+    for (name, source, needle) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = Command::new(env!("CARGO_BIN_EXE_mypy-rs"))
+            .arg(&path)
+            .output()
+            .expect("spawn mypy-rs");
+        assert_eq!(output.status.code(), Some(2), "exit code for {name}");
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "stderr for {name}: {stderr}");
+    }
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn gate2_no_libpython() {

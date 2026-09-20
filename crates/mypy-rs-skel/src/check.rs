@@ -69,10 +69,7 @@ pub fn check_module(
             TopStmt::FuncDef(func) => {
                 let declared_name =
                     resolve_annotation(&func.ret_annotation, fixtures, path, func.line)?;
-                let Some(value) = &func.ret_value else {
-                    continue;
-                };
-                let returned = instance(value.type_fullname());
+                let returned = instance(func.ret_value.type_fullname());
                 let declared_ret = instance(&declared_name);
                 let verdict = require_decidable(
                     is_subtype(&returned, &declared_ret, &ctx, resolver),

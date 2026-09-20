@@ -3,7 +3,7 @@
 //! The skeleton supports exactly the statement shapes the trivial corpus
 //! uses (ADR-0008 Lane 2): module-level annotated assignments with literal
 //! values, a fully annotated zero-argument function whose body is a
-//! single literal return (or `pass`), and module-level `pass`. Anything
+//! single literal return, and module-level `pass`. Anything
 //! else is a hard error: the skeleton never guesses at semantics it does
 //! not implement.
 
@@ -40,11 +40,11 @@ pub struct AnnAssignStmt {
     pub line: usize,
 }
 
-/// `def f() -> <annotation>: return <literal>` (or `pass`).
+/// `def f() -> <annotation>: return <literal>`.
 #[derive(Debug)]
 pub struct FuncDefStmt {
     pub ret_annotation: String,
-    pub ret_value: Option<Lit>,
+    pub ret_value: Lit,
     pub line: usize,
 }
 
@@ -150,15 +150,29 @@ fn lower_top(stmt: Stmt, source: &str, path: &str) -> Result<TopStmt, String> {
             };
             let ret_value = match f.body.as_slice() {
                 [Stmt::Return(ret)] => match &ret.value {
-                    Some(boxed) => Some(lower_lit((**boxed).clone(), path, line)?),
-                    None => None,
+                    Some(boxed) => lower_lit((**boxed).clone(), path, line)?,
+                    None => {
+                        return Err(subset_error(
+                            path,
+                            line,
+                            "bare return is outside the skeleton subset: a non-None \
+                             annotation requires a returned value",
+                        ))
+                    }
                 },
-                [Stmt::Pass(_)] => None,
+                [Stmt::Pass(_)] => {
+                    return Err(subset_error(
+                        path,
+                        line,
+                        "pass body is outside the skeleton subset: a non-None \
+                         annotation requires a returned value",
+                    ))
+                }
                 _ => {
                     return Err(subset_error(
                         path,
                         line,
-                        "function body must be a single literal return or pass",
+                        "function body must be a single literal return",
                     ))
                 }
             };
