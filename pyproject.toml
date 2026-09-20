@@ -156,7 +156,8 @@ skip-magic-trailing-comma = true
 force-exclude = '''
 ^/mypy/typeshed|
 ^/mypyc/test-data|
-^/test-data
+^/test-data|
+^/crates/mypy-rs-skel/testdata
 '''
 
 [tool.ruff]
@@ -175,6 +176,9 @@ extend-exclude = [
   "mypyc/test-data/*",
   # typeshed has its own .pyi-specific configuration
   "mypy/typeshed/*",
+  # skeleton corpus arms are data the differential consumes, not repo
+  # Python: some arms are deliberately invalid for the py310 target (#115)
+  "crates/mypy-rs-skel/testdata/*",
 ]
 
 [tool.ruff.lint]
