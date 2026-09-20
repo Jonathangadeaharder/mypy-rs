@@ -515,6 +515,108 @@ fn generic_constructor_arity_checked_before_inference() {
         );
     }
 }
+/// Class-object attribute reads are conservative (#127): a read on a
+/// parameterized class object (concrete args via a module var, or a
+/// bare generic's frame tvars) rejects instead of leaking an
+/// unsubstituted tvar, and a member the class does not define itself
+/// (inherited or missing) rejects with its own message. An own
+/// non-generic ClassVar read stays supported, as the corpus requires.
+#[test]
+fn class_object_attr_read_closure() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-classobj-attr");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32, &str); 5] = [
+        (
+            "own_classvar_read.py",
+            concat!(
+                "class Shape:\n",
+                "    kind: str = \"shape\"\n",
+                "\n",
+                "k: str = Shape.kind\n",
+            ),
+            0,
+            "",
+        ),
+        (
+            "bare_generic_read.py",
+            concat!(
+                "from typing import Generic, TypeVar\n",
+                "T = TypeVar(\"T\")\n",
+                "\n",
+                "class Box(Generic[T]):\n",
+                "    label: str = \"box\"\n",
+                "\n",
+                "x: str = Box.label\n",
+            ),
+            2,
+            "reading a class variable through a parameterized class object",
+        ),
+        (
+            "module_var_generic_read.py",
+            concat!(
+                "from typing import Generic, TypeVar\n",
+                "T = TypeVar(\"T\")\n",
+                "\n",
+                "class Box(Generic[T]):\n",
+                "    label: str = \"box\"\n",
+                "\n",
+                "b = Box[int]\n",
+                "x: str = b.label\n",
+            ),
+            2,
+            "reading a class variable through a parameterized class object",
+        ),
+        (
+            "inherited_classvar_read.py",
+            concat!(
+                "class Base:\n",
+                "    kind: str = \"base\"\n",
+                "\n",
+                "class Sub(Base):\n",
+                "    pass\n",
+                "\n",
+                "k: str = Sub.kind\n",
+            ),
+            2,
+            "reading a class variable this class does not define",
+        ),
+        (
+            "method_via_class_object.py",
+            concat!(
+                "class C:\n",
+                "    def m(self) -> None:\n",
+                "        pass\n",
+                "\n",
+                "f = C.m\n",
+            ),
+            2,
+            "reading a non-class-variable through a class object",
+        ),
+    ];
+    for (name, source, code, expect) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if code == 2 {
+            assert!(output.stdout.is_empty(), "no stdout for {name}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(expect), "stderr for {name}: {stderr}");
+        } else {
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout),
+                "Success: no issues found in 1 source file\n",
+                "stdout for {name}"
+            );
+            assert!(output.stderr.is_empty(), "stderr for {name}");
+        }
+    }
+}
 /// `__init__` resolution for construction is corpus-only (#131): a
 /// class whose corpus MRO defines no `__init__` rejects with the
 /// intended message (the fixture walk used to surface builtins.object

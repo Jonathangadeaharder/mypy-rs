@@ -1251,7 +1251,7 @@ impl Driver {
                 )),
             },
             Type::TypeType { item, .. } => match *item {
-                Type::Instance { type_ref, .. } => {
+                Type::Instance { type_ref, args, .. } => {
                     let model_ref = self.classes.get(&type_ref).ok_or_else(|| {
                         input(
                             &self.path,
@@ -1261,12 +1261,29 @@ impl Driver {
                             ),
                         )
                     })?;
+                    // Conservative (#127): parameterized class objects
+                    // would need frame_env substitution first; reject so
+                    // no bare tvar reaches the kernel.
+                    if !args.is_empty() {
+                        return Err(input(
+                            &self.path,
+                            line,
+                            "reading a class variable through a parameterized class \
+                             object is outside the skeleton subset",
+                        ));
+                    }
                     match model_ref.members.get(name) {
                         Some(Member::ClassVar(t)) => Ok(t.clone()),
-                        _ => Err(input(
+                        Some(_) => Err(input(
                             &self.path,
                             line,
                             "reading a non-class-variable through a class object \
+                             is outside the skeleton subset",
+                        )),
+                        None => Err(input(
+                            &self.path,
+                            line,
+                            "reading a class variable this class does not define \
                              is outside the skeleton subset",
                         )),
                     }

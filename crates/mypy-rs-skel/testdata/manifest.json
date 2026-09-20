@@ -30,6 +30,22 @@
       "notes": "Class definition with an empty body; supported since the #118 class/member slice."
     },
     {
+      "id": "classes.generic_classvar_read",
+      "status": "unsupported",
+      "arm": "classes_generic_classvar_read.py",
+      "exit_code": 2,
+      "reject_marker": "reading a class variable through a parameterized class object",
+      "notes": "mypy accepts the bare-generic class-object read; the subset would need frame substitution, so it rejects (#127)."
+    },
+    {
+      "id": "classes.inherited_classvar_read",
+      "status": "unsupported",
+      "arm": "classes_inherited_classvar_read.py",
+      "exit_code": 2,
+      "reject_marker": "reading a class variable this class does not define",
+      "notes": "mypy accepts the inherited class-variable read; own-member lookup cannot model it (#127)."
+    },
+    {
       "id": "control_flow.conditional",
       "status": "supported",
       "arm": "control_flow.py",
