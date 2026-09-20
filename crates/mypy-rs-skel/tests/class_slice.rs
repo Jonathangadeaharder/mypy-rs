@@ -1340,3 +1340,64 @@ fn sibling_error_survives_main_diagnostic_collision() {
         "the sibling must name its own path: {stderr}"
     );
 }
+
+/// Duplicate bases are named, diamonds are not falsely rejected
+/// (#133): mypy rejects `class D(A, A)` as `Duplicate base class`, so
+/// the subset points at the repeated base instead of the generic
+/// linearization message, while the inconsistent reverse ordering
+/// `class D(A, B)` (mypy rejects it too) keeps the linearization
+/// message. The legal diamond ordering is the supported manifest arm
+/// `classes.diamond`.
+#[test]
+fn duplicate_bases_named_in_rejection() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-dup-base");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases: [(&str, &str, i32, &str); 2] = [
+        (
+            "dup_base.py",
+            concat!(
+                "class A:\n",
+                "    def __init__(self) -> None:\n",
+                "        pass\n",
+                "\n",
+                "class D(A, A):\n",
+                "    def __init__(self) -> None:\n",
+                "        pass\n",
+            ),
+            2,
+            "duplicate base class `A` is outside the skeleton subset\n",
+        ),
+        (
+            "diamond_reverse.py",
+            concat!(
+                "class A:\n",
+                "    def __init__(self) -> None:\n",
+                "        pass\n",
+                "\n",
+                "class B(A):\n",
+                "    def __init__(self) -> None:\n",
+                "        pass\n",
+                "\n",
+                "class D(A, B):\n",
+                "    def __init__(self) -> None:\n",
+                "        pass\n",
+            ),
+            2,
+            "is not linearizable\n",
+        ),
+    ];
+    for (name, source, expect_code, needle) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = run_bin_in(&dir, name);
+        assert_eq!(
+            output.status.code(),
+            Some(expect_code),
+            "exit code for {name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "stderr for {name}: {stderr}");
+    }
+}
