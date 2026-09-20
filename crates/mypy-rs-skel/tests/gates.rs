@@ -1,15 +1,19 @@
 //! Gate tests for issue #91 (brief §5). These run only with
 //! `--features skel`; the feature never builds in production jobs.
 //!
-//! Gate 1: differential — bin output is byte-identical to the
+//! Gate 1: differential: bin output is byte-identical to the
 //! expected files the generator captured from real mypy.
-//! Gate 2: no-libpython — the bin links no Python and carries no
+//! Gate 2: no-libpython: the bin links no Python and carries no
 //! undefined Py symbols (the C API stubs are inert linker
 //! artifacts, so `nm -u` must stay empty of them).
 //! Gate 3: the registered production seam count in type_kernel is
 //! unchanged by this lane.
-//! Gate 4: cache isolation — a run leaves no cache artifacts and
+//! Gate 4: cache isolation: a run leaves no cache artifacts and
 //! does not mutate the corpus.
+//! Manifest: gate 5 reads testdata/manifest.json (#115) and enforces
+//! the three-way partition per capability: supported arms byte-identical
+//! to Python mypy, unsupported arms hard-reject with the declared marker,
+//! and a zero semantic-difference count across all arms.
 //!
 //! Gate 2 is macOS-only (otool/nm); on other targets it compiles away.
 //! The whole file compiles to nothing without the `skel` feature: the
@@ -21,6 +25,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use serde::Deserialize;
 
 const TRIVIAL: &str = "trivial.py";
 const EMPTY_CONTROL: &str = "empty_control.py";
@@ -42,10 +48,14 @@ fn run_bin(file: &str) -> (i32, Vec<u8>, Vec<u8>) {
     )
 }
 
-fn expected(file: &str) -> Vec<u8> {
+fn expected_path(file: &str) -> PathBuf {
     let stem = Path::new(file).file_stem().expect("file has no stem");
     let name = format!("{}.expected", stem.to_string_lossy());
-    fs::read(testdata_dir().join(name)).expect("missing .expected fixture")
+    testdata_dir().join(name)
+}
+
+fn expected(file: &str) -> Vec<u8> {
+    fs::read(expected_path(file)).expect("missing .expected fixture")
 }
 
 fn assert_differential(file: &str, want_code: i32) {
@@ -143,6 +153,162 @@ fn subset_rejects_valueless_function_body() {
     }
 }
 
+/// One capability in the committed support manifest (#115): the corpus
+/// arm that exercises it, the partition verdict, and for unsupported
+/// entries the exact reject marker the skeleton must emit.
+#[derive(Deserialize)]
+struct ManifestCapability {
+    id: String,
+    status: String,
+    arm: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    reject_marker: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Manifest {
+    capabilities: Vec<ManifestCapability>,
+}
+
+fn load_manifest() -> Manifest {
+    let path = testdata_dir().join("manifest.json");
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    serde_json::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {path:?}: {e}"))
+}
+
+/// The three-way partition from #93 and #115. A supported arm must be
+/// byte-identical to Python mypy; an unsupported arm must hard reject
+/// with its declared marker. The two categories may never collapse:
+/// a differing supported arm is a wrong answer, and an unsupported arm
+/// with a recorded .expected file would be a semantic-difference
+/// allowlist, which is forbidden outright.
+#[test]
+fn manifest_three_way_partition() {
+    let manifest = load_manifest();
+    assert!(
+        !manifest.capabilities.is_empty(),
+        "manifest has no capabilities"
+    );
+    let dir = testdata_dir();
+    let mut failures: Vec<String> = Vec::new();
+    let mut supported = 0;
+    let mut unsupported = 0;
+    let mut semantic_differences = 0;
+    for cap in &manifest.capabilities {
+        let arm = cap.arm.as_str();
+        if !dir.join(arm).is_file() {
+            failures.push(format!("{}: arm {arm} is missing", cap.id));
+            continue;
+        }
+        match cap.status.as_str() {
+            "supported" => {
+                supported += 1;
+                if let Some(marker) = &cap.reject_marker {
+                    failures.push(format!(
+                        "{}: supported entry declares reject marker {marker:?}",
+                        cap.id
+                    ));
+                    continue;
+                }
+                let Some(&want_code) = cap.exit_code.as_ref() else {
+                    failures.push(format!("{}: supported entry has no exit_code", cap.id));
+                    continue;
+                };
+                let want_bytes = match fs::read(expected_path(arm)) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        failures.push(format!(
+                            "{}: cannot read .expected for arm {arm}: {e}",
+                            cap.id
+                        ));
+                        continue;
+                    }
+                };
+                let (code, stdout, stderr) = run_bin(arm);
+                if !stderr.is_empty() {
+                    failures.push(format!(
+                        "{}: arm {arm} wrote stderr: {}",
+                        cap.id,
+                        String::from_utf8_lossy(&stderr)
+                    ));
+                }
+                if stdout != want_bytes {
+                    semantic_differences += 1;
+                    failures.push(format!(
+                        "{}: WRONG ANSWER, arm {arm} differs from Python mypy\n\
+                         expected:\n{}\nobserved:\n{}",
+                        cap.id,
+                        String::from_utf8_lossy(&want_bytes),
+                        String::from_utf8_lossy(&stdout),
+                    ));
+                }
+                if code != want_code {
+                    failures.push(format!(
+                        "{}: arm {arm} exited {code}, manifest declares {want_code}",
+                        cap.id
+                    ));
+                }
+            }
+            "unsupported" => {
+                unsupported += 1;
+                let Some(marker) = cap.reject_marker.as_deref() else {
+                    failures.push(format!(
+                        "{}: unsupported entry declares no reject_marker",
+                        cap.id
+                    ));
+                    continue;
+                };
+                if expected_path(arm).exists() {
+                    failures.push(format!(
+                        "{}: unsupported arm {arm} has an .expected file; unsupported and \
+                         wrong-answer have collapsed",
+                        cap.id
+                    ));
+                    continue;
+                }
+                let (code, stdout, stderr) = run_bin(arm);
+                let stderr = String::from_utf8_lossy(&stderr);
+                if code != 2 {
+                    failures.push(format!(
+                        "{}: arm {arm} exited {code}, want hard reject 2; stderr: {stderr}",
+                        cap.id
+                    ));
+                }
+                if !stdout.is_empty() {
+                    failures.push(format!(
+                        "{}: arm {arm} wrote stdout: {}",
+                        cap.id,
+                        String::from_utf8_lossy(&stdout)
+                    ));
+                }
+                if !stderr.contains(marker) {
+                    failures.push(format!(
+                        "{}: arm {arm} stderr lacks marker {marker:?}: {stderr}",
+                        cap.id
+                    ));
+                }
+            }
+            other => failures.push(format!("{}: unknown status {other:?}", cap.id)),
+        }
+    }
+    println!(
+        "manifest: {} capabilities, {supported} supported, {unsupported} unsupported, \
+         semantic differences: {semantic_differences}",
+        manifest.capabilities.len()
+    );
+    assert!(
+        failures.is_empty(),
+        "manifest partition failures:\n{}",
+        failures.join("\n")
+    );
+    assert_eq!(
+        semantic_differences, 0,
+        "no arm may differ from Python mypy; the semantic-difference count must stay zero"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn gate2_no_libpython() {
@@ -216,7 +382,11 @@ fn gate3_production_seam_count_unchanged() {
 #[test]
 fn gate4_cache_and_corpus_isolation() {
     let dir = testdata_dir();
-    let before: Vec<(PathBuf, Vec<u8>)> = [TRIVIAL, EMPTY_CONTROL]
+    let mut arms = vec![TRIVIAL.to_string(), EMPTY_CONTROL.to_string()];
+    for cap in &load_manifest().capabilities {
+        arms.push(cap.arm.clone());
+    }
+    let before: Vec<(PathBuf, Vec<u8>)> = arms
         .iter()
         .map(|f| {
             (
@@ -226,8 +396,9 @@ fn gate4_cache_and_corpus_isolation() {
         })
         .collect();
 
-    run_bin(TRIVIAL);
-    run_bin(EMPTY_CONTROL);
+    for arm in &arms {
+        run_bin(arm);
+    }
 
     assert!(
         !dir.join(".mypy_cache").exists(),
