@@ -57,6 +57,7 @@ on:
       - .github/workflows/native-extensions.yml
       - .github/actions/native-extensions/**
       - .github/actions/rustc-version/**
+      - .github/actions/rust-ci-setup/**
   workflow_dispatch:
 
 permissions:
@@ -110,6 +111,7 @@ jobs:
               .github/workflows/native-extensions.yml) ast=true ;;
               .github/actions/native-extensions/*) ast=true ;;
               .github/actions/rustc-version/*) ast=true ;;
+              .github/actions/rust-ci-setup/*) ast=true ;;
               crates/ast_serialize/*) ast=true ;;
               stubs/ast_serialize.pyi) ast=true ;;
               mypy/nativeparse.py|mypy/fastparse.py|mypy/parse.py) ast=true ;;
@@ -133,6 +135,7 @@ jobs:
   parity:
     needs: build-extensions
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -148,42 +151,16 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Record Rust toolchain version
-        id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target dir (build-extensions entry)
-        # These jobs build no Rust; target/ only matters when the extension
-        # cache misses and the composite action rebuilds, so they restore
-        # the exact entry build-extensions saved in this run.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target
-          # Keyed on crate sources + toolchain (#3). Prefix fallback may
-          # restore an older target/ (cargo rebuilds the delta); it stays
-          # rustc-scoped, so a toolchain bump never reuses stale objects.
-          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+      - name: Rust CI setup (toolchain + registry cache)
+        uses: ./.github/actions/rust-ci-setup
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
       - name: Restore native extensions (built once by build-extensions)
         uses: ./.github/actions/native-extensions
+        with:
+          restore-target: "true"
 
       - name: Build in-repo librt (F3 wire cache)
         # PyPI librt (>=0.12.0) omits write_raw_bytes, so the F3 wire-cache
@@ -257,42 +234,16 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Record Rust toolchain version
-        id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target dir (build-extensions entry)
-        # These jobs build no Rust; target/ only matters when the extension
-        # cache misses and the composite action rebuilds, so they restore
-        # the exact entry build-extensions saved in this run.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target
-          # Keyed on crate sources + toolchain (#3). Prefix fallback may
-          # restore an older target/ (cargo rebuilds the delta); it stays
-          # rustc-scoped, so a toolchain bump never reuses stale objects.
-          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+      - name: Rust CI setup (toolchain + registry cache)
+        uses: ./.github/actions/rust-ci-setup
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
       - name: Restore native extensions (built once by build-extensions)
         uses: ./.github/actions/native-extensions
+        with:
+          restore-target: "true"
 
       - name: Build in-repo librt (F3 wire cache)
         # Same as the parity job: the PyPI wheel omits write_raw_bytes and
@@ -360,46 +311,19 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Record Rust toolchain version
-        id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target dir (build-extensions entry)
-        # These jobs build no Rust; target/ only matters when the extension
-        # cache misses and the composite action rebuilds, so they restore
-        # the exact entry build-extensions saved in this run.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target
-          # Keyed on crate sources + toolchain (#3). Prefix fallback may
-          # restore an older target/ (cargo rebuilds the delta); it stays
-          # rustc-scoped, so a toolchain bump never reuses stale objects.
-          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+      - name: Rust CI setup (toolchain + registry cache)
+        uses: ./.github/actions/rust-ci-setup
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
       - name: Restore native extensions (built once by build-extensions)
         # The daemon and fine-grained suites force native_parser on, and
-        # pyproject.toml declares the PyPI `ast-serialize` stub: without
-        # these builds the suite dies on a `parse()` TypeError, not on the
-        # flip.
+        # pyproject.toml declares the PyPI ast-serialize stub, so without
+        # these builds the suite dies on a parse() TypeError, not the flip.
         uses: ./.github/actions/native-extensions
+        with:
+          restore-target: "true"
 
       - name: Build in-repo librt (F3 wire cache)
         # Same as the parity job: the PyPI wheel omits write_raw_bytes, so
@@ -456,6 +380,7 @@ jobs:
     # Gating: typeops graduation (#203, M16) shipped; the truthiness fix
     # (#201) landed and the typeops corpus passes. Keep green before merging.
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -471,42 +396,16 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Record Rust toolchain version
-        id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target dir (build-extensions entry)
-        # These jobs build no Rust; target/ only matters when the extension
-        # cache misses and the composite action rebuilds, so they restore
-        # the exact entry build-extensions saved in this run.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target
-          # Keyed on crate sources + toolchain (#3). Prefix fallback may
-          # restore an older target/ (cargo rebuilds the delta); it stays
-          # rustc-scoped, so a toolchain bump never reuses stale objects.
-          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+      - name: Rust CI setup (toolchain + registry cache)
+        uses: ./.github/actions/rust-ci-setup
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
 
       - name: Restore native extensions (built once by build-extensions)
         uses: ./.github/actions/native-extensions
+        with:
+          restore-target: "true"
 
       - name: Parity testcheck (typeops resolvers installed)
         env:
@@ -542,36 +441,8 @@ jobs:
         with:
           version: "0.11.14"
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
-
-      - name: Record Rust toolchain version
-        id: rustc
-        uses: ./.github/actions/rustc-version
-
-      - name: Cache cargo registry
-        # Registry sources are toolchain-independent: keyed on Cargo.lock
-        # alone, so source edits stop re-saving the multi-GB registry.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-registry-${{ runner.os }}-
-
-      - name: Cache cargo target dir (build-extensions entry)
-        # These jobs build no Rust; target/ only matters when the extension
-        # cache misses and the composite action rebuilds, so they restore
-        # the exact entry build-extensions saved in this run.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: target
-          # Keyed on crate sources + toolchain (#3). Prefix fallback may
-          # restore an older target/ (cargo rebuilds the delta); it stays
-          # rustc-scoped, so a toolchain bump never reuses stale objects.
-          key: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}
-          restore-keys: cargo-ext-${{ runner.os }}-${{ steps.rustc.outputs.version }}-
+      - name: Rust CI setup (toolchain + registry cache)
+        uses: ./.github/actions/rust-ci-setup
 
       - name: Sync Python deps (uv)
         run: uv sync --group test
@@ -580,6 +451,8 @@ jobs:
         # teststubgen always parses natively: stubgen builds its own Options
         # and ignores TEST_NATIVE_PARSER, so ast_serialize must be present.
         uses: ./.github/actions/native-extensions
+        with:
+          restore-target: "true"
 
       - name: AST parity (native parser)
         env:

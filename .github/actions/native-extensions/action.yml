@@ -4,7 +4,10 @@ description: >-
   module_resolver) built once by the build-extensions job, or build all
   three crates on a miss. Exports SCRATCH (/tmp/native-ext, holding the
   three <name>${EXT_SUFFIX} modules) and EXT_SUFFIX, matching the
-  contract the previous per-job cargo rustc steps used.
+  contract the previous per-job cargo rustc steps used. The cargo-ext
+  target/ cache entry is owned here too: restored only on an
+  extension-cache miss (rebuild accelerant), saved only by the
+  producer via save-target.
 
 inputs:
   save-cache:
@@ -17,19 +20,36 @@ inputs:
       Also copy the extensions into GITHUB_WORKSPACE for suites that
       spawn subprocesses with PYTHONPATH reset to the repo root.
     default: "false"
+  restore-target:
+    description: >-
+      On an extension-cache miss, restore the cargo-ext target/ entry
+      before rebuilding (consumers and producer; restore-only, so this
+      job can never overwrite the producer entry).
+    default: "false"
+  save-target:
+    description: >-
+      Save target/ under the cargo-ext key after a miss build. Only the
+      build-extensions job (which owns and builds target/) may set this.
+    default: "false"
 
 runs:
   using: composite
   steps:
-    - name: Compute extension cache key
+    - name: Compute extension and target cache keys
       id: extkey
       shell: bash
       run: |
+        set -eu
         RUSTC="$(rustc --version | tr -d ' ()')"
         EXT_SUFFIX="$(uv run python -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX'))")"
         # v2: arch + EXT_SUFFIX pin the restored ABI; the root manifest
         # closes the crates/**-only hashing gap.
         echo "key=native-ext-v2-${{ runner.os }}-${{ runner.arch }}-${RUSTC}-${EXT_SUFFIX}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'crates/**/Cargo.toml', 'crates/**/*.rs') }}" >> "$GITHUB_OUTPUT"
+        # cargo-ext target entry (#104): single definition of the key
+        # formula. Prefix fallback may restore an older target/ (cargo
+        # rebuilds the delta); it stays rustc-scoped, so no stale objects.
+        echo "target-key=cargo-ext-${{ runner.os }}-${RUSTC}-${{ hashFiles('Cargo.lock', '**/Cargo.toml', 'crates/**/*.rs') }}" >> "$GITHUB_OUTPUT"
+        echo "target-restore-keys=cargo-ext-${{ runner.os }}-${RUSTC}-" >> "$GITHUB_OUTPUT"
 
     - name: Restore shared extension cache
       id: extcache
@@ -62,6 +82,19 @@ runs:
         done
         echo "usable=true" >> "$GITHUB_OUTPUT"
 
+    - name: Restore cargo target dir (rebuild accelerant)
+      # Restore-only (#104): a consumer must never save target/ under the
+      # producer key, so this can only accelerate the rebuild below.
+      id: targetcache
+      if: env.RESTORE_TARGET == 'true' && (steps.extcache.outputs.cache-hit != 'true' || steps.verify.outputs.usable != 'true')
+      env:
+        RESTORE_TARGET: ${{ inputs.restore-target }}
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: target
+        key: ${{ steps.extkey.outputs.target-key }}
+        restore-keys: ${{ steps.extkey.outputs.target-restore-keys }}
+
     - name: Build native extensions (cache miss)
       if: steps.extcache.outputs.cache-hit != 'true' || steps.verify.outputs.usable != 'true'
       shell: bash
@@ -82,6 +115,19 @@ runs:
         done
         echo "SCRATCH=$SCRATCH" >> "$GITHUB_ENV"
         echo "EXT_SUFFIX=$EXT_SUFFIX" >> "$GITHUB_ENV"
+
+    - name: Save cargo target dir
+      # Best-effort like the extension save: same-key races between
+      # workflows must not fail the producer. Fires only when a build
+      # ran and the target key missed (post-step semantics pre-#104).
+      if: env.SAVE_TARGET == 'true' && (steps.extcache.outputs.cache-hit != 'true' || steps.verify.outputs.usable != 'true') && steps.targetcache.outputs.cache-hit != 'true'
+      env:
+        SAVE_TARGET: ${{ inputs.save-target }}
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: target
+        key: ${{ steps.extkey.outputs.target-key }}
 
     - name: Copy extensions into the workspace
       # pytest-cmdline/pytest-slow spawn real mypy and mypyc subprocesses
