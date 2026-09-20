@@ -18,6 +18,11 @@ from mypy.subtypes import (
     is_protocol_implementation,
     is_subtype,
 )
+
+# Stage 3c (M8d) type-kernel seam: when type_kernel is importable
+# and a resolver is installed, trivial_join routes through Rust.
+# Rust returns None for unhandled (non-Instance right).
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.types import (
     _BUILTIN_INSTANCE_BYTES,
     AnyType,
@@ -64,9 +69,6 @@ from mypy.types import (
     split_with_prefix_and_suffix,
 )
 
-# Stage 3c (M8d) type-kernel seam: when type_kernel is importable
-# and a resolver is installed, trivial_join routes through Rust.
-# Rust returns None for unhandled (non-Instance right).
 try:
     import type_kernel as _type_kernel
     from librt.internal import ReadBuffer as _ReadBuffer, WriteBuffer as _WriteBuffer
@@ -452,7 +454,11 @@ def trivial_join(s: Type, t: Type) -> Type:
         and not isinstance(t, ErasedType)
     ):
         try:
-            result = _type_kernel.rust_trivial_join(
+            try:
+                rust_trivial_join_entry = _type_kernel.rust_trivial_join
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_trivial_join_entry(
                 _serialize_type(s),
                 _serialize_type(t),
                 False,  # ignore_type_params
@@ -534,7 +540,11 @@ def join_types(s: Type, t: Type, instance_joiner: InstanceJoiner | None = None) 
         and not isinstance(t, ErasedType)
     ):
         try:
-            result = _type_kernel.rust_join_types(
+            try:
+                rust_join_types_entry = _type_kernel.rust_join_types
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_join_types_entry(
                 _serialize_type(s),
                 _serialize_type(t),
                 state.strict_optional,
@@ -898,7 +908,11 @@ class TypeJoinVisitor(TypeVisitor[ProperType]):
         # Rust returns None for unhandled cases (defer to Python).
         if _HAS_TYPE_KERNEL and _native_join_active and _native_join_resolver is not None:
             try:
-                result = _type_kernel.rust_join_tuples(
+                try:
+                    rust_join_tuples_entry = _type_kernel.rust_join_tuples
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_join_tuples_entry(
                     _serialize_type(s),
                     _serialize_type(t),
                     state.strict_optional,

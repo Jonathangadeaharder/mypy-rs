@@ -13,6 +13,11 @@ from mypy.join import join_type_list
 from mypy.meet import meet_type_list, meet_types
 from mypy.state import state
 from mypy.subtypes import is_subtype
+
+# Stage 4b type-kernel seam: when type_kernel is importable and the
+# solve gate is on, single-variable constraint solving routes through
+# Rust, deferring to Python on join/meet/is_subtype/union gaps.
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.typeops import get_all_type_vars
 from mypy.types import (
     AnyType,
@@ -46,9 +51,6 @@ from mypy.types import (
 )
 from mypy.typestate import type_state
 
-# Stage 4b type-kernel seam: when type_kernel is importable and the
-# solve gate is on, single-variable constraint solving routes through
-# Rust, deferring to Python on join/meet/is_subtype/union gaps.
 try:
     import type_kernel as _type_kernel
     from librt.internal import ReadBuffer as _ReadBuffer, WriteBuffer as _WriteBuffer
@@ -279,7 +281,11 @@ def solve_constraints(
             and _bounds_wire_safe([c.target for c in constraints])
         ):
             try:
-                result = _type_kernel.rust_solve_constraints(
+                try:
+                    rust_solve_constraints_entry = _type_kernel.rust_solve_constraints
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_solve_constraints_entry(
                     _serialize_type_list([originals[tv] for tv in vars + extra_vars]),
                     _serialize_type_list([originals[tv] for tv in vars]),
                     _serialize_constraint_list(constraints),
@@ -366,7 +372,11 @@ def solve_with_dependent(
         and state.strict_optional
     ):
         try:
-            result = _type_kernel.rust_solve_dependent(
+            try:
+                rust_solve_dependent_entry = _type_kernel.rust_solve_dependent
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_solve_dependent_entry(
                 _serialize_type_list([originals[tv] for tv in vars]),
                 _serialize_constraint_list(constraints),
                 type_state.infer_unions,
@@ -490,7 +500,11 @@ def solve_iteratively(
 def _join_sorted_key(t: Type) -> int:
     if _HAS_TYPE_KERNEL and _native_solve_active:
         try:
-            result = _type_kernel.rust_join_sorted_key(_serialize_type_payload(t))
+            try:
+                rust_join_sorted_key_entry = _type_kernel.rust_join_sorted_key
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_join_sorted_key_entry(_serialize_type_payload(t))
             if result is not None:
                 return result
         except (AssertionError, NotImplementedError):
@@ -540,7 +554,11 @@ def solve_one(lowers: Iterable[Type], uppers: Iterable[Type]) -> Type | None:
     ):
         if _bounds_wire_safe(list(lowers) + list(uppers)):
             try:
-                result = _type_kernel.rust_solve_one(
+                try:
+                    rust_solve_one_entry = _type_kernel.rust_solve_one
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_solve_one_entry(
                     _serialize_type_list(lowers),
                     _serialize_type_list(uppers),
                     type_state.infer_unions,
@@ -703,7 +721,11 @@ def _serialize_type_payload(tp: Type) -> bytes:
 def is_trivial_bound(tp: ProperType, allow_tuple: bool = False) -> bool:
     if _HAS_TYPE_KERNEL and _native_solve_active:
         try:
-            result = _type_kernel.rust_is_trivial_bound(_serialize_type_payload(tp), allow_tuple)
+            try:
+                rust_is_trivial_bound_entry = _type_kernel.rust_is_trivial_bound
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_is_trivial_bound_entry(_serialize_type_payload(tp), allow_tuple)
             if result is not None:
                 return result
         except (AssertionError, NotImplementedError):
@@ -717,7 +739,11 @@ def find_linear(c: Constraint) -> tuple[bool, TypeVarId | None]:
     """Find out if this constraint represent a linear relationship, return target id if yes."""
     if _HAS_TYPE_KERNEL and _native_solve_active:
         try:
-            result = _type_kernel.rust_find_linear(_serialize_constraint(c))
+            try:
+                rust_find_linear_entry = _type_kernel.rust_find_linear
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_find_linear_entry(_serialize_constraint(c))
         except (AssertionError, NotImplementedError):
             result = None
         if result is not None:
@@ -949,7 +975,11 @@ def get_vars(target: Type, vars: list[TypeVarId]) -> set[TypeVarId]:
     """Find type variables for which we are solving in a target type."""
     if _HAS_TYPE_KERNEL and _native_solve_active and _bounds_wire_safe([target]):
         try:
-            result = _type_kernel.rust_get_vars(
+            try:
+                rust_get_vars_entry = _type_kernel.rust_get_vars
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_get_vars_entry(
                 _serialize_type_payload(target),
                 [(v.raw_id, v.meta_level, v.namespace) for v in vars],
             )
@@ -1001,7 +1031,11 @@ def is_callable_protocol(t: Type) -> bool:
         and _bounds_wire_safe([t])
     ):
         try:
-            result = _type_kernel.rust_is_callable_protocol(
+            try:
+                rust_is_callable_protocol_entry = _type_kernel.rust_is_callable_protocol
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_is_callable_protocol_entry(
                 _native_solve_resolver, _serialize_type_payload(t)
             )
             if result is not None:

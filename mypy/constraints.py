@@ -12,6 +12,8 @@ import mypy.typeops
 # Stage 4b type-kernel seam: when type_kernel is importable and the
 # constraints gate is on, proxy + top-level TypeVarType inference routes
 # through Rust, deferring to Python on decode/unsupported failures.
+from mypy.type_kernel_access import _stale_kernel_remedy
+
 try:
     import type_kernel as _type_kernel
     from librt.internal import ReadBuffer as _ReadBuffer, WriteBuffer as _WriteBuffer
@@ -106,9 +108,11 @@ def _try_native_infer_constraints(
     template.write(template_buf)
     actual_buf = _WriteBuffer()
     actual.write(actual_buf)
-    raw = _type_kernel.rust_infer_constraints(
-        template_buf.getvalue(), actual_buf.getvalue(), direction
-    )
+    try:
+        rust_infer_constraints_entry = _type_kernel.rust_infer_constraints
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_infer_constraints_entry(template_buf.getvalue(), actual_buf.getvalue(), direction)
     if raw is None:
         raise NotImplementedError("template not a TypeVarType")
     from mypy.cache import read_int
@@ -164,7 +168,11 @@ def _try_native_constraint_builder(
     template.write(template_buf)
     actual_buf = _WriteBuffer()
     actual.write(actual_buf)
-    raw = _type_kernel.rust_infer_constraints_full(
+    try:
+        rust_infer_constraints_full_entry = _type_kernel.rust_infer_constraints_full
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_infer_constraints_full_entry(
         _native_constraints_resolver,
         template_buf.getvalue(),
         actual_buf.getvalue(),
@@ -373,7 +381,11 @@ def _try_native_select_trivial(
         if option is None:
             raise NotImplementedError("None option not supported on the kernel")
         _write_option(buf, option)
-    raw = _type_kernel.rust_select_trivial(buf.getvalue())
+    try:
+        rust_select_trivial_entry = _type_kernel.rust_select_trivial
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_select_trivial_entry(buf.getvalue())
     if raw is None:
         raise NotImplementedError("kernel deferred select_trivial")
     result = [options[i] for i in _read_index_list(bytes(raw))]
@@ -386,7 +398,11 @@ def _try_native_exclude_non_meta_vars(option: list[Constraint] | None) -> list[C
         return option
     buf = _WriteBuffer()
     _write_option(buf, option)
-    raw = _type_kernel.rust_exclude_non_meta_vars(buf.getvalue())
+    try:
+        rust_exclude_non_meta_vars_entry = _type_kernel.rust_exclude_non_meta_vars
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_exclude_non_meta_vars_entry(buf.getvalue())
     if raw is None:
         raise NotImplementedError("kernel deferred exclude_non_meta_vars")
     kept = [option[i] for i in _read_index_list(bytes(raw))]
@@ -399,7 +415,11 @@ def _try_native_is_similar_constraints(x: list[Constraint], y: list[Constraint])
     _write_option(x_buf, x)
     y_buf = _WriteBuffer()
     _write_option(y_buf, y)
-    return _type_kernel.rust_is_similar_constraints(x_buf.getvalue(), y_buf.getvalue())
+    try:
+        rust_is_similar_constraints_entry = _type_kernel.rust_is_similar_constraints
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    return rust_is_similar_constraints_entry(x_buf.getvalue(), y_buf.getvalue())
 
 
 def _try_native_merge_with_any(constraint: Constraint) -> bool | None:
@@ -411,7 +431,11 @@ def _try_native_merge_with_any(constraint: Constraint) -> bool | None:
     """
     buf = _WriteBuffer()
     _write_constraint(buf, constraint)
-    return _type_kernel.rust_merge_with_any(buf.getvalue())
+    try:
+        rust_merge_with_any_entry = _type_kernel.rust_merge_with_any
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    return rust_merge_with_any_entry(buf.getvalue())
 
 
 def _try_native_filter_satisfiable(option: list[Constraint]) -> list[Constraint] | None:
@@ -424,7 +448,11 @@ def _try_native_filter_satisfiable(option: list[Constraint]) -> list[Constraint]
         return None
     buf = _WriteBuffer()
     _write_option(buf, option)
-    raw = _type_kernel.rust_filter_satisfiable(
+    try:
+        rust_filter_satisfiable_entry = _type_kernel.rust_filter_satisfiable
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_filter_satisfiable_entry(
         buf.getvalue(), mypy.state.state.strict_optional, _native_constraints_resolver
     )
     if raw is None:
@@ -441,7 +469,11 @@ def _try_native_is_same_constraints(x: list[Constraint], y: list[Constraint]) ->
     _write_option(x_buf, x)
     y_buf = _WriteBuffer()
     _write_option(y_buf, y)
-    return _type_kernel.rust_is_same_constraints(
+    try:
+        rust_is_same_constraints_entry = _type_kernel.rust_is_same_constraints
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    return rust_is_same_constraints_entry(
         x_buf.getvalue(), y_buf.getvalue(), _native_constraints_resolver
     )
 
@@ -472,7 +504,11 @@ def _try_native_any_constraints(
             write_int_bare(buf, -1)  # marker: None option
         else:
             _write_option(buf, option)
-    raw = _type_kernel.rust_any_constraints(
+    try:
+        rust_any_constraints_entry = _type_kernel.rust_any_constraints
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_any_constraints_entry(
         buf.getvalue(), eager, mypy.state.state.strict_optional, _native_constraints_resolver
     )
     if raw is None:
@@ -539,9 +575,11 @@ def _try_native_repack_callable_args(
         return None
     callable_buf = _WriteBuffer()
     callable.write(callable_buf)
-    raw = _type_kernel.rust_repack_callable_args(
-        callable_buf.getvalue(), _native_constraints_resolver
-    )
+    try:
+        rust_repack_callable_args_entry = _type_kernel.rust_repack_callable_args
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_repack_callable_args_entry(callable_buf.getvalue(), _native_constraints_resolver)
     if raw is None:
         raise NotImplementedError("kernel deferred repack_callable_args")
     # One blob per repacked type; fix up each Instance ref individually so
@@ -567,7 +605,11 @@ def _try_native_filter_imprecise_kinds(cs: list[Constraint]) -> list[Constraint]
     """Route filter_imprecise_kinds through the Rust kernel, deferring on unsupported input."""
     buf = _WriteBuffer()
     _write_option(buf, cs)
-    raw = _type_kernel.rust_filter_imprecise_kinds(buf.getvalue())
+    try:
+        rust_filter_imprecise_kinds_entry = _type_kernel.rust_filter_imprecise_kinds
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_filter_imprecise_kinds_entry(buf.getvalue())
     if raw is None:
         raise NotImplementedError("kernel deferred filter_imprecise_kinds")
     return [cs[i] for i in _read_index_list(bytes(raw))]
@@ -577,7 +619,11 @@ def _try_native_is_type_type(tp: ProperType) -> bool | None:
     """Route _is_type_type through the Rust kernel, deferring on unsupported input."""
     buf = _WriteBuffer()
     tp.write(buf)
-    return _type_kernel.rust_is_type_type(buf.getvalue())
+    try:
+        rust_is_type_type_entry = _type_kernel.rust_is_type_type
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    return rust_is_type_type_entry(buf.getvalue())
 
 
 def _try_native_unwrap_type_type(tp: ProperType) -> ProperType | None:
@@ -601,7 +647,11 @@ def _try_native_unwrap_type_type(tp: ProperType) -> ProperType | None:
             raise NotImplementedError("identity-bearing item")
     buf = _WriteBuffer()
     tp.write(buf)
-    raw = _type_kernel.rust_unwrap_type_type(buf.getvalue())
+    try:
+        rust_unwrap_type_type_entry = _type_kernel.rust_unwrap_type_type
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_unwrap_type_type_entry(buf.getvalue())
     if raw is None:
         raise NotImplementedError("kernel deferred unwrap_type_type")
     data = _ReadBuffer(bytes(raw))
@@ -2217,7 +2267,11 @@ def _try_native_find_matching_overload_items(
         item_buf = _WriteBuffer()
         item.write(item_buf)
         items_buf.append(item_buf.getvalue())
-    raw = _type_kernel.rust_find_matching_overload_items(
+    try:
+        rust_find_matching_overload_items_entry = _type_kernel.rust_find_matching_overload_items
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_find_matching_overload_items_entry(
         _native_constraints_resolver,
         items_buf,
         template_buf.getvalue(),
@@ -2395,7 +2449,13 @@ def _try_native_infer_directed_arg_constraints(
     left.write(left_buf)
     right_buf = _WriteBuffer()
     right.write(right_buf)
-    raw = _type_kernel.rust_infer_directed_arg_constraints(
+    try:
+        rust_infer_directed_arg_constraints_entry = (
+            _type_kernel.rust_infer_directed_arg_constraints
+        )
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_infer_directed_arg_constraints_entry(
         _native_constraints_resolver,
         left_buf.getvalue(),
         right_buf.getvalue(),
@@ -2441,7 +2501,13 @@ def _try_native_infer_callable_args(
     template.write(template_buf)
     actual_buf = _WriteBuffer()
     actual.write(actual_buf)
-    raw = _type_kernel.rust_infer_callable_arguments_constraints(
+    try:
+        rust_infer_callable_arguments_constraints_entry = (
+            _type_kernel.rust_infer_callable_arguments_constraints
+        )
+    except AttributeError as err:
+        raise _stale_kernel_remedy(err) from err
+    raw = rust_infer_callable_arguments_constraints_entry(
         _native_constraints_resolver,
         template_buf.getvalue(),
         actual_buf.getvalue(),

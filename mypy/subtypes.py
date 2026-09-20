@@ -119,25 +119,8 @@ except ImportError:
 
 # A stale type_kernel build predating a seam imports fine but lacks that
 # seam attribute; every gated fetch must fail with this remedy instead of
-# a bare AttributeError INTERNAL ERROR (#36, #42).
-STALE_TYPE_KERNEL_REMEDY = (
-    "rebuild the in-repo type_kernel extension and prepend its scratch directory "
-    "to PYTHONPATH (see AGENTS.md, 'Type kernel build order')"
-)
-
-
-def _stale_kernel_remedy(err: AttributeError) -> RuntimeError:
-    """Pointed rebuild remedy for a seam attribute a stale kernel lacks.
-
-    Each gated fetch keeps its own typed `except AttributeError` so the
-    module-attribute lookup stays precise; this helper is the single
-    source of the remedy message.
-    """
-    return RuntimeError(
-        "the type_kernel on sys.path is not the in-repo extension: "
-        f"{err}. " + STALE_TYPE_KERNEL_REMEDY
-    )
-
+# a bare AttributeError INTERNAL ERROR (#36, #42, #98).
+from mypy.type_kernel_access import _stale_kernel_remedy
 
 # Module-level flag + resolver, set by the build manager from
 # `Options.native_type_kernel` at the start of each build. The hot path

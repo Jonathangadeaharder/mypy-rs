@@ -49,6 +49,8 @@ import mypy.type_visitor  # ruff: isort: skip
 # Stage 6c type-kernel seam: apply_generic_arguments routes through Rust.
 # Rust returns None for unhandled cases, falling back to pure Python.
 # This is the strangler-fig per-call gate.
+from mypy.type_kernel_access import _stale_kernel_remedy
+
 try:
     import type_kernel as _type_kernel
     from librt.internal import (
@@ -316,7 +318,11 @@ def _native_get_target_type(
             upper_bound = erase_typevars(upper_bound)
         bound_ok = is_subtype(type, upper_bound)
     try:
-        return _type_kernel.rust_get_target_type(
+        try:
+            rust_get_target_type_entry = _type_kernel.rust_get_target_type
+        except AttributeError as err:
+            raise _stale_kernel_remedy(err) from err
+        return rust_get_target_type_entry(
             _serialize_type(tvar),
             _serialize_type(type),
             skip_unsatisfied,
@@ -474,7 +480,11 @@ def apply_generic_arguments(
                 and ret.partial_fallback.type.fullname != "builtins.tuple"
             )
             if not has_meta and not tuple_subclass_ctor:
-                result = _type_kernel.rust_apply_generic_arguments(
+                try:
+                    rust_apply_generic_arguments_entry = _type_kernel.rust_apply_generic_arguments
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_apply_generic_arguments_entry(
                     _native_applytype_resolver,
                     _serialize_type(callable),
                     _serialize_optional_type_list(orig_types),

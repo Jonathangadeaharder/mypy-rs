@@ -30,6 +30,11 @@ from mypy.patterns import (
 )
 from mypy.plugin import Plugin
 from mypy.subtypes import is_subtype
+
+# M22 type-kernel seam: with `type_kernel` importable and
+# `Options.native_type_kernel` set, standalone helpers route through Rust;
+# Rust returns None for unhandled cases so Python falls back (strangler-fig).
+from mypy.type_kernel_access import _stale_kernel_remedy
 from mypy.typeops import (
     coerce_to_literal,
     make_simplified_union,
@@ -69,9 +74,6 @@ from mypy.types import (
 from mypy.typevars import fill_typevars, fill_typevars_with_any
 from mypy.visitor import PatternVisitor
 
-# M22 type-kernel seam: with `type_kernel` importable and
-# `Options.native_type_kernel` set, standalone helpers route through Rust;
-# Rust returns None for unhandled cases so Python falls back (strangler-fig).
 try:
     import type_kernel as _type_kernel
     from librt.internal import WriteBuffer as _WriteBuffer
@@ -286,7 +288,11 @@ class PatternChecker(PatternVisitor[PatternType]):
             resolver = _native_subtype_resolver
             if resolver is not None:
                 try:
-                    kept = _type_kernel.rust_filter_or_match_types(
+                    try:
+                        rust_filter_or_match_types_entry = _type_kernel.rust_filter_or_match_types
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    kept = rust_filter_or_match_types_entry(
                         [_serialize_type(p.type) for p in pattern_types], resolver
                     )
                     if kept is not None:
@@ -393,7 +399,13 @@ class PatternChecker(PatternVisitor[PatternType]):
                     "typing.Iterable", [AnyType(TypeOfAny.special_form)]
                 )
                 try:
-                    tag = _type_kernel.rust_classify_sequence_pattern_head(
+                    try:
+                        rust_classify_sequence_pattern_head_entry = (
+                            _type_kernel.rust_classify_sequence_pattern_head
+                        )
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    tag = rust_classify_sequence_pattern_head_entry(
                         _serialize_type(current_type),
                         star_position,
                         required_patterns,
@@ -447,7 +459,13 @@ class PatternChecker(PatternVisitor[PatternType]):
             resolver = _native_subtype_resolver
             if resolver is not None:
                 try:
-                    decided = _type_kernel.rust_classify_sequence_tuple_result(
+                    try:
+                        rust_classify_sequence_tuple_result_entry = (
+                            _type_kernel.rust_classify_sequence_tuple_result
+                        )
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    decided = rust_classify_sequence_tuple_result_entry(
                         [_serialize_type(t) for t in new_inner_types],
                         [_serialize_type(t) for t in rest_inner_types],
                         resolver,
@@ -661,7 +679,13 @@ class PatternChecker(PatternVisitor[PatternType]):
             resolver = _native_subtype_resolver
             if resolver is not None:
                 try:
-                    result = _type_kernel.rust_contract_starred_pattern_types(
+                    try:
+                        rust_contract_starred_pattern_types_entry = (
+                            _type_kernel.rust_contract_starred_pattern_types
+                        )
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    result = rust_contract_starred_pattern_types_entry(
                         [_serialize_type(t) for t in types], star_pos, num_patterns, resolver
                     )
                     if result is not None:
@@ -721,7 +745,13 @@ class PatternChecker(PatternVisitor[PatternType]):
             resolver = _native_subtype_resolver
             if resolver is not None:
                 try:
-                    result = _type_kernel.rust_expand_starred_pattern_types(
+                    try:
+                        rust_expand_starred_pattern_types_entry = (
+                            _type_kernel.rust_expand_starred_pattern_types
+                        )
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    result = rust_expand_starred_pattern_types_entry(
                         [_serialize_type(t) for t in types],
                         star_pos,
                         num_types,
@@ -774,7 +804,11 @@ class PatternChecker(PatternVisitor[PatternType]):
             resolver = _native_subtype_resolver
             if resolver is not None:
                 try:
-                    tag = _type_kernel.rust_classify_mapping_rest(
+                    try:
+                        rust_classify_mapping_rest_entry = _type_kernel.rust_classify_mapping_rest
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    tag = rust_classify_mapping_rest_entry(
                         _serialize_type(current_type), _serialize_type(mapping), resolver
                     )
                     if tag is not None:
@@ -873,7 +907,13 @@ class PatternChecker(PatternVisitor[PatternType]):
         """
         if _HAS_TYPE_KERNEL and _native_checkpattern_active:
             try:
-                decided = _type_kernel.rust_classify_class_pattern_alias_gate(type_info)
+                try:
+                    rust_classify_class_pattern_alias_gate_entry = (
+                        _type_kernel.rust_classify_class_pattern_alias_gate
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                decided = rust_classify_class_pattern_alias_gate_entry(type_info)
                 if decided is not None:
                     return bool(decided)
             except (AssertionError, NotImplementedError):
@@ -892,7 +932,13 @@ class PatternChecker(PatternVisitor[PatternType]):
         """
         if _HAS_TYPE_KERNEL and _native_checkpattern_active:
             try:
-                violations = _type_kernel.rust_classify_class_pattern_keywords(
+                try:
+                    rust_classify_class_pattern_keywords_entry = (
+                        _type_kernel.rust_classify_class_pattern_keywords
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                violations = rust_classify_class_pattern_keywords_entry(
                     match_arg_names, num_positionals, keyword_keys
                 )
                 if violations is not None:
@@ -1071,7 +1117,13 @@ class PatternChecker(PatternVisitor[PatternType]):
         if _HAS_TYPE_KERNEL and _native_checkpattern_active:
             tags = None
             try:
-                tags = _type_kernel.rust_classify_class_pattern_ranges(
+                try:
+                    rust_classify_class_pattern_ranges_entry = (
+                        _type_kernel.rust_classify_class_pattern_ranges
+                    )
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                tags = rust_classify_class_pattern_ranges_entry(
                     _serialize_type(typ), o.class_ref.node
                 )
             except (AssertionError, NotImplementedError):
@@ -1186,7 +1238,11 @@ class PatternChecker(PatternVisitor[PatternType]):
             if resolver is not None:
                 try:
                     union = UnionType.make_union(self.self_match_types)
-                    result = _type_kernel.rust_should_self_match(
+                    try:
+                        rust_should_self_match_entry = _type_kernel.rust_should_self_match
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    result = rust_should_self_match_entry(
                         _serialize_type(typ), has_match_args, _serialize_type(union), resolver
                     )
                     if result is not None:
@@ -1211,7 +1267,11 @@ class PatternChecker(PatternVisitor[PatternType]):
                 sequence = self.chk.named_type("typing.Sequence")
                 try:
                     non_seq_union = UnionType.make_union(self.non_sequence_match_types)
-                    result = _type_kernel.rust_can_match_sequence(
+                    try:
+                        rust_can_match_sequence_entry = _type_kernel.rust_can_match_sequence
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    result = rust_can_match_sequence_entry(
                         _serialize_type(typ),
                         _serialize_type(non_seq_union),
                         _serialize_type(sequence),
@@ -1277,7 +1337,13 @@ class PatternChecker(PatternVisitor[PatternType]):
                 sequence = self.chk.named_generic_type("typing.Sequence", [inner_type])
                 empty_type = fill_typevars(proper_type.type)
                 try:
-                    result = _type_kernel.rust_construct_sequence_child(
+                    try:
+                        rust_construct_sequence_child_entry = (
+                            _type_kernel.rust_construct_sequence_child
+                        )
+                    except AttributeError as err:
+                        raise _stale_kernel_remedy(err) from err
+                    result = rust_construct_sequence_child_entry(
                         _serialize_type(outer_type),
                         _serialize_type(empty_type),
                         _serialize_type(sequence),
@@ -1323,7 +1389,11 @@ def get_match_arg_names(typ: TupleType) -> list[str | None]:
         resolver = _native_subtype_resolver
         if resolver is not None:
             try:
-                result = _type_kernel.rust_get_match_arg_names(_serialize_type(typ), resolver)
+                try:
+                    rust_get_match_arg_names_entry = _type_kernel.rust_get_match_arg_names
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_get_match_arg_names_entry(_serialize_type(typ), resolver)
                 if result is not None:
                     return result
             except (AssertionError, NotImplementedError):
@@ -1353,7 +1423,11 @@ def get_type_range(typ: Type) -> TypeRange:
     typ = get_proper_type(typ)
     if _HAS_TYPE_KERNEL and _native_checkpattern_active:
         try:
-            result = _type_kernel.rust_get_type_range(_serialize_type(typ))
+            try:
+                rust_get_type_range_entry = _type_kernel.rust_get_type_range
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            result = rust_get_type_range_entry(_serialize_type(typ))
             if result is True:
                 # Rust says: the bool LKV should be unwrapped for the
                 # TypeRange. Rust only returns True when typ is an Instance
@@ -1382,7 +1456,11 @@ def is_uninhabited(typ: Type) -> bool:
         resolver = _native_subtype_resolver
         if resolver is not None:
             try:
-                result = _type_kernel.rust_is_uninhabited(_serialize_type(typ), resolver)
+                try:
+                    rust_is_uninhabited_entry = _type_kernel.rust_is_uninhabited
+                except AttributeError as err:
+                    raise _stale_kernel_remedy(err) from err
+                result = rust_is_uninhabited_entry(_serialize_type(typ), resolver)
                 if result is not None:
                     return result
             except (AssertionError, NotImplementedError):
