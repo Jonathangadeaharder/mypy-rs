@@ -245,7 +245,7 @@ def child(name: str, iters: int, control: bool) -> int:
             subtypes._serialize_type(t)
         require(len(subtypes._type_wire_cache) == before, "hit path wrote to the cache")
         require(
-            subtypes._type_wire_cache.get(id(t), (None,))[1] is b1 or before >= 1,
+            subtypes._type_wire_cache.get(id(t), (None, None, None))[1] is b1,
             "hit path did not serve the prewarmed blob",
         )
         loop1(iters, control, subtypes._serialize_type, (t,))
