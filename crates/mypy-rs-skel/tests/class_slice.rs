@@ -1476,4 +1476,60 @@ fn body_reads_later_module_value() {
         String::from_utf8_lossy(&output.stdout),
         "Success: no issues found in 1 source file\n"
     );
+
+    // The override check must see the base attribute the 3b re-collection
+    // registers; running only in 3a silently accepted an incompatible
+    // override when a later module value left the attribute unregistered.
+    fs::write(
+        dir.join("override_late_ok.py"),
+        concat!(
+            "class Base:\n",
+            "    def m(self) -> None:\n",
+            "        self.x = value\n",
+            "\n",
+            "\n",
+            "class Sub(Base):\n",
+            "    x: int = 1\n",
+            "\n",
+            "\n",
+            "value = 1\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "override_late_ok.py");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a compatible override of a late-collected base attribute must be accepted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    fs::write(
+        dir.join("override_late_bad.py"),
+        concat!(
+            "class Base:\n",
+            "    def m(self) -> None:\n",
+            "        self.x = value\n",
+            "\n",
+            "\n",
+            "class Sub(Base):\n",
+            "    x: int = 1\n",
+            "\n",
+            "\n",
+            "value = \"a\"\n",
+        ),
+    )
+    .expect("write case");
+    let output = run_bin_in(&dir, "override_late_bad.py");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "an incompatible override of a late-collected base attribute must reject: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("overriding a base class member is outside the skeleton subset"),
+        "the override case must loud-reject: {stderr}"
+    );
 }

@@ -51,6 +51,21 @@
       "notes": "A method assigns a self attribute whose value is a module variable bound later; pass 3b re-runs the class's member collection against the completed bindings, since pass 3a collected before that name was bound (#145)."
     },
     {
+      "id": "classes.override_late_collected_attr",
+      "status": "supported",
+      "arm": "override_late_value_ok.py",
+      "exit_code": 0,
+      "notes": "A class variable overrides a base instance attribute whose value is a module variable bound later, compatibly; the 3b override check runs after the re-collection, so the base attribute is compared (#145)."
+    },
+    {
+      "id": "classes.override_incompatible_late_attr",
+      "status": "unsupported",
+      "arm": "classes_override_late_value.py",
+      "exit_code": 2,
+      "reject_marker": "overriding a base class member is outside the skeleton subset",
+      "notes": "The same shape with an incompatible override; mypy renders the assignment error and the subset loud-rejects, so an override is never silently accepted (#145)."
+    },
+    {
       "id": "classes.override_selfattr_inference",
       "status": "supported",
       "arm": "classes_override_selfattr_inference.py",

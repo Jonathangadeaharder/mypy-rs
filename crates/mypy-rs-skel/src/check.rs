@@ -938,9 +938,9 @@ impl Driver {
                     let fullname = format!("{module}.{}", cls.name);
                     // Class members collect here, in statement order, so
                     // a base precedes its subclasses and a later module
-                    // value sees the members. Only the bodies defer.
+                    // value sees the members. Bodies and the class-variable
+                    // override checks defer to pass 3b.
                     self.collect_class_instance_vars(bindings, cls, &fullname)?;
-                    self.check_classvar_overrides(cls, &fullname)?;
                     if let Some(binding) = bindings.get(&cls.name).cloned() {
                         visible.insert(cls.name.clone(), binding);
                     }
@@ -956,21 +956,38 @@ impl Driver {
     /// mypy resolves bodies after semantic analysis, so a body may read
     /// any module name regardless of statement position (#126); only
     /// module-level *values* and class members keep ordered semantics.
+    /// The class walk runs in three sweeps: re-collect every class's
+    /// instance attributes against the completed bindings (pass 3a ran
+    /// at each class's position, so an attribute whose value named a
+    /// later module variable was skipped there), validate the
+    /// class-variable overrides now that every base attribute exists,
+    /// then check the bodies.
     fn check_module_bodies(
         &mut self,
         bindings: &HashMap<String, Binding>,
         module: &str,
         body: &[crate::subset::TopStmt],
     ) -> Result<(), CheckError> {
+        let classes: Vec<&crate::subset::ClassDefStmt> = body
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                StmtKind::ClassDef(cls) => Some(cls),
+                _ => None,
+            })
+            .collect();
+        for cls in &classes {
+            let fullname = format!("{module}.{}", cls.name);
+            self.collect_class_instance_vars(bindings, cls, &fullname)?;
+        }
+        for cls in &classes {
+            let fullname = format!("{module}.{}", cls.name);
+            self.check_classvar_overrides(cls, &fullname)?;
+        }
         for stmt in body {
             match &stmt.kind {
                 StmtKind::FuncDef(func) => self.check_function_body(bindings, func)?,
                 StmtKind::ClassDef(cls) => {
                     let fullname = format!("{module}.{}", cls.name);
-                    // Re-collect against the completed bindings: pass 3a
-                    // ran at the class's position, so an attribute whose
-                    // value named a later module variable was skipped.
-                    self.collect_class_instance_vars(bindings, cls, &fullname)?;
                     for stmt in &cls.body {
                         if let ClassStmt::Method(func) = stmt {
                             self.check_method_body(bindings, &fullname, func)?;
@@ -1059,11 +1076,11 @@ impl Driver {
         Ok(applied)
     }
 
-    /// Pass 2b: reject a class variable that overrides a base member
+    /// Pass 3b: reject a class variable that overrides a base member
     /// incompatibly. mypy allows a covariant override and rejects the
     /// rest as an assignment error, which the subset loudly rejects.
-    /// Runs after pass 2, so a base instance attribute the pass-1 class
-    /// body could not see is present here.
+    /// Runs after the 3b re-collection, so a base instance attribute
+    /// whose value named a later module name is present here too.
     fn check_classvar_overrides(
         &mut self,
         cls: &crate::subset::ClassDefStmt,
