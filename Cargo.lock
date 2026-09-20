@@ -413,6 +413,7 @@ name = "mypy-rs-skel"
 version = "0.1.0"
 dependencies = [
  "mypy-type-kernel",
+ "pyo3-ffi",
  "ruff_python_ast",
  "ruff_python_parser",
  "ruff_text_size",

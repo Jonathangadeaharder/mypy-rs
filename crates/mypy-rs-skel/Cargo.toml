@@ -16,6 +16,7 @@ required-features = ["skel"]
 [features]
 skel = [
     "dep:mypy-type-kernel",
+    "dep:pyo3-ffi",
     "dep:ruff_python_ast",
     "dep:ruff_python_parser",
     "dep:ruff_text_size",
@@ -25,6 +26,7 @@ skel = [
 
 [dependencies]
 mypy-type-kernel = { path = "../type_kernel", optional = true, features = ["extension-module"] }
+pyo3-ffi = { version = "0.20.3", optional = true }
 ruff_python_ast = { version = "0.0.3", optional = true }
 ruff_python_parser = { version = "0.0.3", optional = true }
 ruff_text_size = { version = "0.0.3", optional = true }
