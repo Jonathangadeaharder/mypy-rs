@@ -40,13 +40,6 @@ MANIFEST = os.path.join(SKEL, "testdata", "manifest.json")
 FIXTURES = os.path.join(SKEL, "fixtures", "skeleton_fixtures.json")
 SOURCE_ROOTS = (os.path.join(SKEL, "src"), os.path.join(REPO_ROOT, "crates", "type_kernel", "src"))
 
-PRIMITIVES = {
-    "int": "builtins.int",
-    "bool": "builtins.bool",
-    "str": "builtins.str",
-    "float": "builtins.float",
-}
-
 
 def load_facts() -> tuple[list[str], dict[str, str]]:
     with open(FIXTURES, encoding="utf-8") as handle:
@@ -56,7 +49,7 @@ def load_facts() -> tuple[list[str], dict[str, str]]:
     return facts, symbols
 
 
-def arm_rows() -> list[tuple[str, str, list[str]]]:
+def arm_rows(symbols: dict[str, str]) -> list[tuple[str, str, list[str]]]:
     with open(MANIFEST, encoding="utf-8") as handle:
         manifest = json.load(handle)
     rows = []
@@ -73,14 +66,14 @@ def arm_rows() -> list[tuple[str, str, list[str]]]:
             source = handle.read()
         used = sorted(
             fullname
-            for name, fullname in PRIMITIVES.items()
+            for name, fullname in symbols.items()
             if re.search(r"(?<![\w.])" + re.escape(name) + r"(?![\w])", source)
         )
         rows.append((capability["id"], arm, used))
     return rows
 
 
-def code_path_counts(facts: list[str]) -> dict[str, int]:
+def code_path_counts(facts: list[str], symbols: dict[str, str]) -> dict[str, int]:
     texts = []
     for root in SOURCE_ROOTS:
         for dirpath, _dirs, files in os.walk(root):
@@ -91,7 +84,7 @@ def code_path_counts(facts: list[str]) -> dict[str, int]:
                         texts.append(handle.read())
     counts = {}
     for fact in facts:
-        if fact in PRIMITIVES.values():
+        if fact in symbols.values():
             continue
         counts[fact] = sum(len(re.findall(re.escape('"' + fact + '"'), text)) for text in texts)
     return counts
@@ -99,7 +92,7 @@ def code_path_counts(facts: list[str]) -> dict[str, int]:
 
 def build_report() -> dict:
     facts, symbols = load_facts()
-    rows = arm_rows()
+    rows = arm_rows(symbols)
     by_fact: dict[str, list[str]] = defaultdict(list)
     for arm_id, _arm, used in rows:
         for fullname in used:
@@ -118,7 +111,7 @@ def build_report() -> dict:
         "arms": [{"id": arm_id, "arm": arm, "facts": used} for arm_id, arm, used in rows],
         "by_fact": {fact: by_fact[fact] for fact in sorted(by_fact)},
         "families": {fact: sorted(families[fact]) for fact in sorted(families)},
-        "code_path_counts": code_path_counts(facts),
+        "code_path_counts": code_path_counts(facts, symbols),
         "duplicated_facts": triggered,
     }
 
