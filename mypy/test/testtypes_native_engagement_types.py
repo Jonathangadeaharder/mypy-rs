@@ -15288,11 +15288,10 @@ class StaleKernelRemedySuite(Suite):
     def activate_stale_kernel(self, kernel: Any) -> None:
         """Point the gated seam at `kernel` with the gate forced on.
 
-        `_HAS_TYPE_KERNEL` and `_WriteBuffer` are patched to the
-        production binding, so the suite exercises the gated path
-        identically with and without a real extension in the
-        environment: the remedy must not depend on which build
-        answered earlier imports.
+        `_HAS_TYPE_KERNEL`, `_WriteBuffer` and `_ReadBuffer` are patched to
+        the production bindings, so the suite exercises the gated path
+        identically with and without a real extension in the environment:
+        the remedy must not depend on which build answered earlier imports.
         """
         import mypy.subtypes
         from mypy.subtypes import _set_native_subtype_active, _set_native_subtype_resolver
@@ -15306,14 +15305,41 @@ class StaleKernelRemedySuite(Suite):
                 # PyPy / librt absent: production binds the pure-Python path.
                 return mypy.subtypes.__dict__["_WriteBuffer"]
 
+        def _read_buffer() -> Any:
+            try:
+                from librt.internal import ReadBuffer
+
+                return ReadBuffer
+            except ImportError:
+                # PyPy / librt absent: production binds the pure-Python path.
+                return mypy.subtypes.__dict__["_ReadBuffer"]
+
+        def _read_type_fn() -> Any:
+            try:
+                from mypy.types import read_type
+
+                return read_type
+            except ImportError:
+                return mypy.subtypes.__dict__["_read_type"]
+
         WriteBuffer = _write_buffer()
+        # Production binds both buffers and `_read_type` with the kernel
+        # import, so a stubbed kernel needs all three: a decode-capable
+        # control needs `_ReadBuffer`/`_read_type` to reach its value.
+        ReadBuffer = _read_buffer()
+        read_type = _read_type_fn()
 
         _set_native_subtype_active(True)
         # Never reached: the remedy fires on the attribute fetch, before
         # the resolver is handed to the kernel.
         _set_native_subtype_resolver(SimpleNamespace())
         patch = mock.patch.multiple(
-            mypy.subtypes, _HAS_TYPE_KERNEL=True, _type_kernel=kernel, _WriteBuffer=WriteBuffer
+            mypy.subtypes,
+            _HAS_TYPE_KERNEL=True,
+            _type_kernel=kernel,
+            _WriteBuffer=WriteBuffer,
+            _ReadBuffer=ReadBuffer,
+            _read_type=read_type,
         )
         patch.start()
         self.addCleanup(patch.stop)
@@ -15419,6 +15445,12 @@ class StaleKernelRemedySuite(Suite):
         # Positive control for the #42 seams: a kernel exposing them
         # answers through them; only a missing symbol fires the remedy.
         import types as types_module
+
+        try:
+            from librt.internal import ReadBuffer  # noqa: F401
+        except ImportError:
+            # The erase control decodes stubbed bytes, which needs librt.
+            self.skipTest("no librt ReadBuffer binding in this environment")
 
         from mypy.subtypes import (
             _serialize_type,
