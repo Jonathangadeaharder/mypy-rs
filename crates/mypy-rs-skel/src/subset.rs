@@ -117,6 +117,27 @@ fn lower_top(stmt: Stmt, source: &str, path: &str) -> Result<TopStmt, String> {
             }))
         }
         Stmt::FunctionDef(f) => {
+            if f.is_async {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "async functions are outside the skeleton subset",
+                ));
+            }
+            if !f.decorator_list.is_empty() {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "decorated functions are outside the skeleton subset",
+                ));
+            }
+            if f.type_params.is_some() {
+                return Err(subset_error(
+                    path,
+                    line,
+                    "PEP 695 type parameters are outside the skeleton subset",
+                ));
+            }
             if !f.parameters.posonlyargs.is_empty()
                 || !f.parameters.args.is_empty()
                 || f.parameters.vararg.is_some()

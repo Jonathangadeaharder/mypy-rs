@@ -69,6 +69,47 @@ fn gate1_differential_empty_control_success() {
     assert_differential(EMPTY_CONTROL, 0);
 }
 
+/// Constructs whose skeleton lowering would silently diverge from
+/// mypy semantics must be hard subset errors (exit 2), never a
+/// success with dropped information: `async def` (mypy checks the
+/// return as a Coroutine, not the annotation), decorators (dropped
+/// entirely would change the checked type) and PEP 695 type
+/// parameters (generic semantics the skeleton does not model).
+#[test]
+fn subset_rejects_semantics_diverging_functions() {
+    let dir = std::env::temp_dir().join("mypy-rs-skel-subset-reject");
+    fs::create_dir_all(&dir).expect("temp dir");
+    let cases = [
+        (
+            "async_def.py",
+            "async def f() -> int:\n    return 1\n",
+            "async functions are outside the skeleton subset",
+        ),
+        (
+            "decorated_def.py",
+            "@dec\ndef f() -> int:\n    return 1\n",
+            "decorated functions are outside the skeleton subset",
+        ),
+        (
+            "pep695_type_params.py",
+            "def f[T]() -> int:\n    return 1\n",
+            "PEP 695 type parameters are outside the skeleton subset",
+        ),
+    ];
+    for (name, source, needle) in cases {
+        let path = dir.join(name);
+        fs::write(&path, source).expect("write case");
+        let output = Command::new(env!("CARGO_BIN_EXE_mypy-rs"))
+            .arg(&path)
+            .output()
+            .expect("spawn mypy-rs");
+        assert_eq!(output.status.code(), Some(2), "exit code for {name}");
+        assert!(output.stdout.is_empty(), "no stdout for {name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "stderr for {name}: {stderr}");
+    }
+}
+
 /// A non-None return annotation with no returned value is a mypy error
 /// ("Missing return statement"). The skeleton must reject it as
 /// out-of-subset (exit 2), never report Success.
