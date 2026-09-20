@@ -5,11 +5,6 @@ seam attribute, so the staleness surfaces only as a missing module
 attribute on the first gated fetch through the seam (#36, #42, #98).
 Every gated fetch must fail with this pointed remedy instead of a bare
 AttributeError that reads as an INTERNAL ERROR.
-
-Exception: the optional per-call gates in mypy/join.py and mypy/meet.py
-treat a missing seam attribute as "kernel cannot decide, defer to the
-Python path" and stay silent by design; they are not routed through this
-helper.
 """
 
 STALE_TYPE_KERNEL_REMEDY = (

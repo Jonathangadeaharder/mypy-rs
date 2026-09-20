@@ -15485,22 +15485,23 @@ class StaleKernelRemedySuite(Suite):
         self.assertIs(mypy.subtypes.__dict__["_type_kernel"], stale)
 
     def _sibling_stale_kernel(
-        self, module: Any, setter: Callable[[bool], None], **extra: Any
+        self, module: Any, setter: Callable[[bool], None], kernel: Any = None, **extra: Any
     ) -> Any:
-        """Context activating a sibling module's gate against a stale kernel.
+        """Context activating a sibling module's gate against a kernel.
 
         Same shape as `activate_stale_kernel` for the sibling modules
         sharing the #98 fetch guard, scoped per probe: the gate is forced
-        on and the module's kernel binding is a module missing every seam
-        attribute. `extra` patches additional module globals (resolver,
-        wire buffer). Scoped per subTest so one module's stale patch can
-        never answer a later probe's cross-module calls.
+        on and the module's kernel binding is `kernel` when given, else a
+        module missing every seam attribute. `extra` patches additional
+        module globals (resolver, wire buffer). Scoped per subTest so one
+        module's stale patch can never answer a later probe's
+        cross-module calls.
         """
         import types as types_module
 
         @contextmanager
         def ctx() -> Iterator[None]:
-            stale = types_module.ModuleType("type_kernel")
+            stale = kernel if kernel is not None else types_module.ModuleType("type_kernel")
             setter(True)
             try:
                 # `create` covers the kernel-absent import branch, where a
@@ -15515,6 +15516,21 @@ class StaleKernelRemedySuite(Suite):
                 setter(False)
 
         return ctx()
+
+    def _buffered_sibling_stale_kernel(
+        self, module: Any, setter: Callable[[bool], None], buffer: Any, **extra: Any
+    ) -> Any:
+        """Sibling gate ctx whose probe serializes before the fetch.
+
+        The constraints, expandtype and solve heads build a WriteBuffer
+        payload before the guarded fetch, so without a binding (no librt)
+        their probes cannot run. The skip is raised per entry inside the
+        subTest, so the buffer-less probes alone skip and the rest of the
+        suite still runs.
+        """
+        if buffer is None:
+            self.skipTest("no WriteBuffer binding in this environment")
+        return self._sibling_stale_kernel(module, setter, _WriteBuffer=buffer, **extra)
 
     def _sibling_wire_buffer(self) -> Any:
         """The production WriteBuffer binding (librt or the pure fallback)."""
@@ -15535,7 +15551,9 @@ class StaleKernelRemedySuite(Suite):
         the public entry (or the narrow private head where the public
         wrapper short-circuits before the seam); each must name the
         missing symbol and the rebuild remedy instead of dying as a bare
-        AttributeError INTERNAL ERROR or silently deferring.
+        AttributeError INTERNAL ERROR or silently deferring. The probes
+        that serialize a WriteBuffer payload before the fetch skip alone
+        when no buffer binding exists; every other probe runs.
         """
         import mypy.applytype
         import mypy.cache
@@ -15545,6 +15563,7 @@ class StaleKernelRemedySuite(Suite):
         import mypy.expandtype
         import mypy.join
         import mypy.maptype
+        import mypy.meet
         import mypy.messages
         import mypy.solve
         import mypy.typeops
@@ -15553,8 +15572,6 @@ class StaleKernelRemedySuite(Suite):
 
         fx = self.fx
         wire_buffer = self._sibling_wire_buffer()
-        if wire_buffer is None:
-            self.skipTest("no WriteBuffer binding in this environment")
         entries: list[tuple[str, Callable[[], Any], Callable[[], object]]] = [
             (
                 "rust_quote_type_string",
@@ -15572,10 +15589,8 @@ class StaleKernelRemedySuite(Suite):
             ),
             (
                 "rust_is_type_type",
-                lambda: self._sibling_stale_kernel(
-                    mypy.constraints,
-                    mypy.constraints._set_native_constraints_active,
-                    _WriteBuffer=wire_buffer,
+                lambda: self._buffered_sibling_stale_kernel(
+                    mypy.constraints, mypy.constraints._set_native_constraints_active, wire_buffer
                 ),
                 lambda: mypy.constraints._is_type_type(fx.a),
             ),
@@ -15585,6 +15600,15 @@ class StaleKernelRemedySuite(Suite):
                     mypy.checkpattern, mypy.checkpattern._set_native_checkpattern_active
                 ),
                 lambda: mypy.checkpattern.get_type_range(fx.a),
+            ),
+            (
+                "rust_skip_reverse_union_constraints",
+                lambda: self._buffered_sibling_stale_kernel(
+                    mypy.solve, mypy.solve._set_native_solve_active, wire_buffer
+                ),
+                lambda: mypy.solve.skip_reverse_union_constraints(
+                    [Constraint(fx.t, SUBTYPE_OF, fx.a)]
+                ),
             ),
             (
                 "rust_get_vars",
@@ -15601,6 +15625,27 @@ class StaleKernelRemedySuite(Suite):
                     _native_join_resolver=SimpleNamespace(),
                 ),
                 lambda: mypy.join.trivial_join(fx.a, fx.b),
+            ),
+            (
+                "rust_join_instances",
+                lambda: self._sibling_stale_kernel(
+                    mypy.join,
+                    mypy.join._set_native_join_active,
+                    _native_join_resolver=SimpleNamespace(),
+                ),
+                lambda: mypy.join.InstanceJoiner().join_instances(fx.a, fx.b),
+            ),
+            (
+                # B is a proper subtype of A, so the unrelated pair
+                # (A, G[A]) reaches the gated fetch; meet.py shares
+                # join's gate and kernel binding, so the patch targets join.
+                "rust_meet_types",
+                lambda: self._sibling_stale_kernel(
+                    mypy.join,
+                    mypy.join._set_native_join_active,
+                    _native_join_resolver=SimpleNamespace(),
+                ),
+                lambda: mypy.meet.meet_types(fx.a, fx.ga),
             ),
             (
                 "rust_read_cache_meta",
@@ -15620,10 +15665,8 @@ class StaleKernelRemedySuite(Suite):
             ),
             (
                 "rust_remove_trivial",
-                lambda: self._sibling_stale_kernel(
-                    mypy.expandtype,
-                    mypy.expandtype._set_native_expand_type_active,
-                    _WriteBuffer=wire_buffer,
+                lambda: self._buffered_sibling_stale_kernel(
+                    mypy.expandtype, mypy.expandtype._set_native_expand_type_active, wire_buffer
                 ),
                 lambda: mypy.expandtype.remove_trivial([fx.a]),
             ),
@@ -15669,6 +15712,35 @@ class StaleKernelRemedySuite(Suite):
                 self.assertIn("AGENTS.md", message)
                 self.assertIn("Type kernel build order", message)
                 self.assertIsInstance(ctx.exception.__cause__, AttributeError)
+
+    def test_an_in_call_attribute_error_still_defers(self) -> None:
+        """The remedy must fire only on the seam lookup, never inside a call.
+
+        A kernel exposing the entry but failing with AttributeError while
+        deciding (e.g. a FakeInfo attribute access inside the kernel) is a
+        defer, not a stale build: the per-call gates must keep swallowing
+        it and answer from the Python path.
+        """
+        import types as types_module
+
+        import mypy.join
+
+        def in_call_failure(*args: Any, **kwargs: Any) -> Any:
+            raise AttributeError("in-call failure")
+
+        fresh = types_module.ModuleType("type_kernel")
+        fresh.rust_is_better = in_call_failure  # type: ignore[attr-defined]
+        # The call serializes its operands first, so it needs a working
+        # WriteBuffer binding to reach the entry at all.
+        with self._buffered_sibling_stale_kernel(
+            mypy.join,
+            mypy.join._set_native_join_active,
+            self._sibling_wire_buffer(),
+            kernel=fresh,
+            _native_join_resolver=SimpleNamespace(),
+        ):
+            result = mypy.join.is_better(self.fx.a, self.fx.b)
+        self.assertIsInstance(result, bool)
 
 
 @skipUnless(_NATIVE_WIRE_ENABLED, "requires TEST_NATIVE_TYPE_KERNEL=1 and type_kernel ext")

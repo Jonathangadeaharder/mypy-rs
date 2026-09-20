@@ -931,7 +931,13 @@ def skip_reverse_union_constraints(cs: list[Constraint]) -> list[Constraint]:
             from mypy.constraints import _write_option
 
             _write_option(buf, cs)
-            raw = _type_kernel.rust_skip_reverse_union_constraints(buf.getvalue())
+            try:
+                rust_skip_reverse_union_constraints_entry = (
+                    _type_kernel.rust_skip_reverse_union_constraints
+                )
+            except AttributeError as err:
+                raise _stale_kernel_remedy(err) from err
+            raw = rust_skip_reverse_union_constraints_entry(buf.getvalue())
             if raw is not None:
                 data = _ReadBuffer(bytes(raw))
                 from mypy.cache import read_int_bare  # type: ignore[attr-defined]
@@ -953,7 +959,7 @@ def skip_reverse_union_constraints(cs: list[Constraint]) -> list[Constraint]:
                         raise NotImplementedError("target unresolvable on wire")
                     result.append(Constraint(origin, op, target))  # type: ignore[arg-type]
                 return result
-        except (AssertionError, NotImplementedError, ValueError, AttributeError):
+        except (AssertionError, NotImplementedError, ValueError):
             pass
     reverse_union_cs = set()
     for c in cs:
