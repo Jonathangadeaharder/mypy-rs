@@ -166,7 +166,7 @@ pub(crate) fn rust_special_function_elide_names(name: &str) -> bool {
 
 /// Pure-logic core of `rust_special_function_elide_names`, testable
 /// without a Python interpreter.
-fn special_function_elide_names_inner(name: &str) -> bool {
+pub(crate) fn special_function_elide_names_inner(name: &str) -> bool {
     let set = magic_methods_pos_args_only();
     set.contains(name)
 }
@@ -185,7 +185,7 @@ pub(crate) fn rust_argument_elide_name(name: Option<&str>) -> bool {
 }
 
 /// Pure-logic core of `rust_argument_elide_name`.
-fn argument_elide_name_inner(name: Option<&str>) -> bool {
+pub(crate) fn argument_elide_name_inner(name: Option<&str>) -> bool {
     match name {
         Some(s) => s.starts_with("__") && !s.ends_with("__"),
         None => false,

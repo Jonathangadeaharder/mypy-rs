@@ -342,7 +342,7 @@ pub(crate) fn rust_collect_all_inner_types(type_bytes: &[u8]) -> PyResult<Option
 /// chains each child's collected inners, then appends the direct children.
 /// Deferral (`None`) propagates on any TypeAliasType, since its target is
 /// a live alias the wire cannot expand.
-fn collect_all_inner_types_inner(t: &Type) -> Option<Vec<Type>> {
+pub(crate) fn collect_all_inner_types_inner(t: &Type) -> Option<Vec<Type>> {
     if matches!(t, Type::TypeAliasType { .. }) {
         return None;
     }
@@ -651,7 +651,7 @@ pub(crate) fn rust_unknown_unpack(type_bytes: &[u8]) -> PyResult<Option<bool>> {
     }
 }
 
-fn unknown_unpack_inner(t: &Type) -> Option<bool> {
+pub(crate) fn unknown_unpack_inner(t: &Type) -> Option<bool> {
     let Type::UnpackType { typ, .. } = t else {
         return Some(false);
     };
@@ -846,7 +846,7 @@ impl SelfLookup<'_> {
 }
 
 /// `SELF_TYPE_NAMES` (typeanal.py:146).
-fn is_self_fullname(fullname: &str) -> bool {
+pub(crate) fn is_self_fullname(fullname: &str) -> bool {
     fullname == "typing.Self" || fullname == "typing_extensions.Self"
 }
 
@@ -1717,7 +1717,12 @@ fn validate_instance_variadic(
     Ok(true)
 }
 
-fn wrong_type_arg_count_msg(min: usize, max: usize, given: usize, type_name: &str) -> String {
+pub(crate) fn wrong_type_arg_count_msg(
+    min: usize,
+    max: usize,
+    given: usize,
+    type_name: &str,
+) -> String {
     let s = if min == max {
         if min == 0 {
             "no type arguments".to_string()
