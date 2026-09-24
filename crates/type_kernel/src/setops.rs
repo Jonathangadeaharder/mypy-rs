@@ -906,7 +906,7 @@ fn meet_union(
 /// (disc 0 -> s.args[i], 1 -> t.args[i], 4 -> Any); the operands must
 /// be Instances with matching arity, else `None` (mirrors
 /// join.py:422-423). `Encoded` decodes back to the `Type`.
-fn fruit_to_type(m: SetOpResult, s_item: &Type, t_item: &Type) -> Option<Type> {
+pub(crate) fn fruit_to_type(m: SetOpResult, s_item: &Type, t_item: &Type) -> Option<Type> {
     Some(match m {
         SetOpResult::SameS => s_item.clone(),
         SetOpResult::SameT => t_item.clone(),
@@ -3780,7 +3780,12 @@ fn reconstruct_instance_from_args(
 /// `Any` for diverged args) that must be re-wrapped into the outer
 /// `Instance`. `SameTypeWithArgs` is reconstructed via
 /// `reconstruct_instance_from_args`.
-fn materialize_join(s: &Type, t: &Type, r: SetOpResult, resolver: &TypeResolver) -> Option<Type> {
+pub(crate) fn materialize_join(
+    s: &Type,
+    t: &Type,
+    r: SetOpResult,
+    resolver: &TypeResolver,
+) -> Option<Type> {
     let typ = match &r {
         SetOpResult::SameS => s.clone(),
         SetOpResult::SameT => t.clone(),

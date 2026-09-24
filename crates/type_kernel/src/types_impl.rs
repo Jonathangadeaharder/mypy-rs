@@ -888,7 +888,7 @@ pub(crate) fn rust_union_length(type_bytes: &[u8]) -> PyResult<Option<i64>> {
     Ok(union_length_inner(&typ))
 }
 
-fn union_length_inner(typ: &Type) -> Option<i64> {
+pub(crate) fn union_length_inner(typ: &Type) -> Option<i64> {
     if let Type::UnionType { items, .. } = typ {
         Some(items.len() as i64)
     } else {
