@@ -2021,7 +2021,7 @@ fn proper_type_of(t: &Type, resolver: &NativeTypeResolver) -> Option<Type> {
 ///   cases rather than round-tripping an identical object.
 /// * `Overloaded` whose items include a variable-carrying or empty/star-arg
 ///   callable
-fn bind_self_inner(typ: &Type) -> Option<Type> {
+pub(crate) fn bind_self_inner(typ: &Type) -> Option<Type> {
     match typ {
         Type::CallableType {
             fallback,

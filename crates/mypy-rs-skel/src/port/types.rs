@@ -37,9 +37,10 @@
 use std::fmt;
 
 use type_kernel::standalone::types::{
-    is_overlapping_types, is_same_type, is_subtype, join_types, make_simplified_union,
-    map_instance_to_supertype, meet_types, narrow_declared_type, trivial_join, trivial_meet,
-    SubtypeContext, Type, TypeResolver,
+    get_proper_type, is_overlapping_types, is_same_type, is_simple_literal, is_subtype, join_types,
+    make_simplified_union, map_instance_to_supertype, meet_types, narrow_declared_type,
+    trivial_join, trivial_meet, try_expanding_sum_type_to_union, tuple_fallback, SubtypeContext,
+    Type, TypeResolver,
 };
 
 /// A kernel decline: the type algebra could not reproduce mypy's answer
@@ -121,6 +122,14 @@ fn declined_list(operation: &'static str, items: &[Type]) -> Declined {
     Declined {
         operation,
         operands: describe_all(&operands),
+    }
+}
+
+/// A decline for a one-operand operation.
+fn declined_one(operation: &'static str, operand: &Type) -> Declined {
+    Declined {
+        operation,
+        operands: describe(operand),
     }
 }
 
@@ -269,6 +278,54 @@ impl<'a> Algebra<'a> {
             }),
         }
     }
+
+    /// `mypy.types.get_proper_type`: the alias-expanded form of `t`, the
+    /// shape every mypy visitor dispatches on.
+    pub fn proper(&self, t: &Type) -> Result<Type, Declined> {
+        let answer = get_proper_type(t, self.resolver);
+        match answer {
+            Some(proper) => Ok(proper),
+            None => Err(declined_one("get_proper_type", t)),
+        }
+    }
+
+    /// `mypy.typeops.is_simple_literal`: whether `t` is one of the
+    /// literals mypy keeps exact through a comparison narrowing.
+    pub fn simple_literal(&self, t: &Type) -> Result<bool, Declined> {
+        let answer = is_simple_literal(t, self.resolver);
+        match answer {
+            Some(simple) => Ok(simple),
+            None => Err(declined_one("is_simple_literal", t)),
+        }
+    }
+
+    /// `mypy.typeops.tuple_fallback`: the `Instance` a tuple falls back
+    /// to, which is the shape a tuple participates in as a subtype.
+    pub fn tuple_fallback(&self, t: &Type) -> Result<Type, Declined> {
+        let answer = tuple_fallback(t, self.resolver);
+        match answer {
+            Some(fallback) => Ok(fallback),
+            None => Err(declined_one("tuple_fallback", t)),
+        }
+    }
+
+    /// `mypy.typeops.try_expanding_sum_type_to_union`: expand a sum type
+    /// into the union of its members so narrowing can match on them.
+    /// `strict_optional` comes from the pass context; `target_fullname`
+    /// restricts the expansion to one class, as mypy's narrowing callers
+    /// do.
+    pub fn expand_sum_type(
+        &self,
+        t: &Type,
+        target_fullname: Option<&str>,
+    ) -> Result<Type, Declined> {
+        let strict = self.ctx.strict_optional;
+        let answer = try_expanding_sum_type_to_union(t, target_fullname, strict, self.resolver);
+        match answer {
+            Some(expanded) => Ok(expanded),
+            None => Err(declined_one("try_expanding_sum_type_to_union", t)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -277,7 +334,7 @@ mod tests {
 
     use super::*;
     use type_kernel::skeleton_api::{encode_type, TypeInfoSnapshot};
-    use type_kernel::standalone::types::make_union;
+    use type_kernel::standalone::types::{make_union, union_length, LiteralValue};
 
     fn ctx() -> SubtypeContext {
         SubtypeContext {
@@ -300,6 +357,22 @@ mod tests {
             args: Vec::new(),
             type_ref: fullname.to_string(),
             is_recursive: false,
+        }
+    }
+
+    fn tuple(items: Vec<Type>) -> Type {
+        Type::TupleType {
+            partial_fallback: Box::new(instance("builtins.tuple")),
+            items,
+            implicit: false,
+        }
+    }
+
+    fn str_literal(value: &str) -> Type {
+        let text = LiteralValue::Str(value.to_string());
+        Type::LiteralType {
+            fallback: Box::new(instance("builtins.str")),
+            value: text,
         }
     }
 
@@ -499,5 +572,77 @@ mod tests {
         let items = [instance("a.A"), alias_ref("mod.A")];
         let report = declined_list("make_simplified_union", &items);
         assert_eq!(report.operands, "a.A and alias mod.A");
+    }
+
+    #[test]
+    fn a_one_operand_decline_names_that_operand() {
+        let alias = alias_ref("mod.A");
+        let report = declined_one("get_proper_type", &alias);
+        assert_eq!(report.operands, "alias mod.A");
+        let rendered = report.to_string();
+        assert_eq!(rendered, "get_proper_type declined on alias mod.A");
+    }
+
+    #[test]
+    fn proper_passes_a_proper_type_and_declines_on_an_alias() {
+        let r = builtins();
+        let context = ctx();
+        let alg = Algebra::new(&context, &r);
+        let int = instance("builtins.int");
+        assert_eq!(alg.proper(&int), Ok(int.clone()));
+        let alias = alias_ref("mod.A");
+        let out = alg.proper(&alias);
+        let Err(report) = &out else {
+            panic!("an alias must decline, got {out:?}");
+        };
+        assert_eq!(report.operation, "get_proper_type");
+    }
+
+    #[test]
+    fn simple_literal_reads_the_fallback() {
+        let r = builtins();
+        let context = ctx();
+        let alg = Algebra::new(&context, &r);
+        let text = str_literal("x");
+        assert_eq!(alg.simple_literal(&text), Ok(true));
+        let int = instance("builtins.int");
+        assert_eq!(alg.simple_literal(&int), Ok(false));
+    }
+
+    #[test]
+    fn tuple_fallback_builds_the_tuple_instance() {
+        let r = builtins();
+        let context = ctx();
+        let alg = Algebra::new(&context, &r);
+        let tup = tuple(vec![instance("builtins.int")]);
+        let out = alg.tuple_fallback(&tup).unwrap();
+        assert_eq!(describe(&out), "builtins.tuple");
+        // A non-tuple has no fallback to compute.
+        let int = instance("builtins.int");
+        let refused = alg.tuple_fallback(&int);
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn expand_sum_type_turns_bool_into_its_literals() {
+        let r = builtins();
+        let context = ctx();
+        let alg = Algebra::new(&context, &r);
+        let b = instance("builtins.bool");
+        let out = alg.expand_sum_type(&b, None).unwrap();
+        assert_eq!(union_length(&out), Some(2));
+    }
+
+    #[test]
+    fn expand_sum_type_declines_on_an_alias() {
+        let r = builtins();
+        let context = ctx();
+        let alg = Algebra::new(&context, &r);
+        let alias = alias_ref("mod.A");
+        let out = alg.expand_sum_type(&alias, None);
+        let Err(report) = &out else {
+            panic!("an alias must decline, got {out:?}");
+        };
+        assert_eq!(report.operation, "try_expanding_sum_type_to_union");
     }
 }

@@ -567,7 +567,7 @@ pub(crate) fn rust_callable_min_args(type_bytes: &[u8]) -> PyResult<Option<i64>>
     Ok(callable_min_args_inner(&typ))
 }
 
-fn callable_min_args_inner(typ: &Type) -> Option<i64> {
+pub(crate) fn callable_min_args_inner(typ: &Type) -> Option<i64> {
     if let Type::CallableType { arg_kinds, .. } = typ {
         Some(arg_kinds.iter().filter(|&&k| k == ARG_POS).count() as i64)
     } else {
@@ -587,7 +587,7 @@ pub(crate) fn rust_callable_is_var_arg(type_bytes: &[u8]) -> PyResult<Option<boo
     Ok(callable_is_var_arg_inner(&typ))
 }
 
-fn callable_is_var_arg_inner(typ: &Type) -> Option<bool> {
+pub(crate) fn callable_is_var_arg_inner(typ: &Type) -> Option<bool> {
     if let Type::CallableType { arg_kinds, .. } = typ {
         Some(arg_kinds.contains(&ARG_STAR))
     } else {
@@ -607,7 +607,7 @@ pub(crate) fn rust_callable_is_kw_arg(type_bytes: &[u8]) -> PyResult<Option<bool
     Ok(callable_is_kw_arg_inner(&typ))
 }
 
-fn callable_is_kw_arg_inner(typ: &Type) -> Option<bool> {
+pub(crate) fn callable_is_kw_arg_inner(typ: &Type) -> Option<bool> {
     if let Type::CallableType { arg_kinds, .. } = typ {
         Some(arg_kinds.contains(&ARG_STAR2))
     } else {
@@ -630,7 +630,7 @@ pub(crate) fn rust_callable_max_possible_positional_args(
     Ok(callable_max_possible_positional_args_inner(&typ))
 }
 
-fn callable_max_possible_positional_args_inner(typ: &Type) -> Option<i64> {
+pub(crate) fn callable_max_possible_positional_args_inner(typ: &Type) -> Option<i64> {
     if let Type::CallableType { arg_kinds, .. } = typ {
         let is_var = arg_kinds.contains(&ARG_STAR);
         let is_kw = arg_kinds.contains(&ARG_STAR2);
@@ -663,7 +663,7 @@ pub(crate) fn rust_callable_is_generic(type_bytes: &[u8]) -> PyResult<Option<boo
     Ok(callable_is_generic_inner(&typ))
 }
 
-fn callable_is_generic_inner(typ: &Type) -> Option<bool> {
+pub(crate) fn callable_is_generic_inner(typ: &Type) -> Option<bool> {
     if let Type::CallableType { variables, .. } = typ {
         Some(!variables.is_empty())
     } else {
@@ -687,7 +687,7 @@ pub(crate) fn rust_tuple_length(type_bytes: &[u8]) -> PyResult<Option<i64>> {
     Ok(tuple_length_inner(&typ))
 }
 
-fn tuple_length_inner(typ: &Type) -> Option<i64> {
+pub(crate) fn tuple_length_inner(typ: &Type) -> Option<i64> {
     if let Type::TupleType { items, .. } = typ {
         Some(items.len() as i64)
     } else {
