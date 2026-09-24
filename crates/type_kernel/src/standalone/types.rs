@@ -1158,7 +1158,12 @@ mod tests {
         // marks the callable bound.
         let method = callable(vec![ARG_POS, ARG_POS], Vec::new());
         let out = bind_self(&method);
-        let Type::CallableType { arg_types, is_bound, .. } = out.unwrap() else {
+        let Type::CallableType {
+            arg_types,
+            is_bound,
+            ..
+        } = out.unwrap()
+        else {
             panic!("expected a bound callable");
         };
         assert_eq!(arg_types.len(), 1);
