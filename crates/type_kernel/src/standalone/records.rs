@@ -504,7 +504,10 @@ impl std::fmt::Display for RecordError {
                 write!(f, "promotion target `{name}` of `{class}` is not a class")
             }
             RecordError::CyclicBases { class, cycle } => {
-                write!(f, "cycle in the inheritance hierarchy of `{class}`: {cycle:?}")
+                write!(
+                    f,
+                    "cycle in the inheritance hierarchy of `{class}`: {cycle:?}"
+                )
             }
             RecordError::DuplicateBase { class, base } => {
                 write!(f, "duplicate base class `{base}` of `{class}`")
@@ -1405,7 +1408,10 @@ fn first_tuple_fallback(facts: &ClassFacts) -> Option<Type> {
 /// class itself.
 fn member_maps(
     facts: &ClassFacts,
-) -> (HashMap<String, (bool, bool)>, HashMap<String, (i64, String)>) {
+) -> (
+    HashMap<String, (bool, bool)>,
+    HashMap<String, (i64, String)>,
+) {
     let mut member_info = HashMap::with_capacity(facts.members.len());
     let mut member_definers = HashMap::new();
     for (name, member) in &facts.members {
@@ -1478,6 +1484,10 @@ mod tests {
             module.symbols.insert((*name).to_string(), fact);
         }
         module
+    }
+
+    fn add_member(facts: &mut ClassFacts, name: &str, member: MemberFact) {
+        facts.members.insert(name.to_string(), member);
     }
 
     #[test]
@@ -1735,11 +1745,11 @@ mod tests {
     fn member_maps_follow_the_node_kind_rule() {
         let mut store = root_store();
         let mut facts = with_bases("mymod.C", &["builtins.object"]);
-        facts.members.insert("method".to_string(), MemberFact::function());
-        facts.members.insert("prop".to_string(), MemberFact::decorator());
-        facts.members.insert("attr".to_string(), MemberFact::var(true));
+        add_member(&mut facts, "method", MemberFact::function());
+        add_member(&mut facts, "prop", MemberFact::decorator());
+        add_member(&mut facts, "attr", MemberFact::var(true));
         let alias = MemberFact::of_kind(MemberKind::TypeAlias);
-        facts.members.insert("alias".to_string(), alias);
+        add_member(&mut facts, "alias", alias);
         store.insert_class(facts).unwrap();
         let snapshot = store.class("mymod.C").unwrap();
         assert_eq!(snapshot.member_info.len(), 4);
@@ -1845,7 +1855,7 @@ mod tests {
         let mut store = root_store();
         store.insert_module(builtins_classes(&["float"]));
         let mut facts = with_bases("mymod.C", &["builtins.object"]);
-        facts.members.insert("method".to_string(), MemberFact::function());
+        add_member(&mut facts, "method", MemberFact::function());
         store.insert_class(facts).unwrap();
         let scope = SymbolScope::Module("builtins".to_string());
         let got = store.lookup(&scope, "float").unwrap().unwrap();
@@ -1955,7 +1965,7 @@ mod tests {
         store.insert_class(facts).unwrap();
         assert_eq!(store.len(), 3);
         let mut grown = with_bases("mymod.C", &["builtins.object"]);
-        grown.members.insert("method".to_string(), MemberFact::function());
+        add_member(&mut grown, "method", MemberFact::function());
         store.insert_class(grown).unwrap();
         assert_eq!(store.len(), 3);
         assert!(store.member("mymod.C", "method").unwrap().is_some());
