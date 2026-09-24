@@ -563,7 +563,7 @@ fn replace_meta_vars_parameters(
 /// Replace only meta-var type variables (meta_level > 0) with the target type.
 /// Mirrors `replace_meta_vars` (erasetype.py:199-201) which calls
 /// `TypeVarEraser(erase_meta_id, target_type)`.
-fn replace_meta_vars_inner(typ: &Type, target: &Type) -> Option<Type> {
+pub(crate) fn replace_meta_vars_inner(typ: &Type, target: &Type) -> Option<Type> {
     match typ {
         Type::ErasedType => Some(typ.clone()), // Python: visit_erased_type passthrough
         Type::TypeVarType { meta_level, .. } => {

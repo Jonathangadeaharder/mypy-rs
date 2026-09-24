@@ -95,12 +95,12 @@ thread_local! {
 }
 
 /// Reset the report flag before an apply driven by `unify_generic_callable`.
-pub(crate) fn clear_apply_reported() {
+pub fn clear_apply_reported() {
     APPLY_REPORTED.with(|c| c.set(false));
 }
 
 /// Consume the report flag (true = Python's report callback fired).
-pub(crate) fn take_apply_reported() -> bool {
+pub fn take_apply_reported() -> bool {
     APPLY_REPORTED.with(|c| c.replace(false))
 }
 
@@ -307,7 +307,7 @@ pub(crate) fn apply_generic_arguments_inner(
 /// Returns `Some(None)` when the type should be skipped (skip_unsatisfied
 /// and constraint not met).
 /// Returns `None` when Rust can't handle the case (defers to Python).
-fn get_target_type(
+pub(crate) fn get_target_type(
     tvar: &Type,
     type_arg: &Type,
     skip_unsatisfied: bool,

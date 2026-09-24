@@ -64,7 +64,7 @@ pub(crate) fn infer_unions() -> bool {
 
 /// `unify_generic_callable` outcome (see module docs).
 #[derive(Clone, PartialEq, Debug)]
-pub(crate) enum UnifyOutcome {
+pub enum UnifyOutcome {
     Unified(Type),
     NoUnify,
     Defer,

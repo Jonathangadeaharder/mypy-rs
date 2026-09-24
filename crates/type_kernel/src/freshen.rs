@@ -214,7 +214,7 @@ fn set_typevar_id(t: Type, raw_id: i64, ns: &str) -> Type {
 /// dotted qualified name), so native ids never compare `==` to any
 /// Python id even if raw ids were to collide (they cannot either: the
 /// native counter starts at `NATIVE_TVAR_RAW_ID_BASE`).
-pub(crate) const NATIVE_TVAR_NAMESPACE: &str = "\0native";
+pub const NATIVE_TVAR_NAMESPACE: &str = "\0native";
 
 /// Native counterpart of `match_generic_callables`
 /// (join.py:1292-1317) for in-engine callers: when both operands are
@@ -336,7 +336,7 @@ pub(crate) fn rust_match_generic_callables(
 /// node is already proper. Fresh ids are allocated from `next_raw_id` and
 /// advanced (mirrors Python's global `TypeVarId.next_raw_id`). Returns
 /// `None` for deferred cases.
-fn freshen_function_type_vars(callee: &Type, next_raw_id: &mut i64) -> Option<Type> {
+pub(crate) fn freshen_function_type_vars(callee: &Type, next_raw_id: &mut i64) -> Option<Type> {
     match callee {
         Type::CallableType { variables, .. } if variables.is_empty() => Some(callee.clone()),
         Type::CallableType { .. } => {

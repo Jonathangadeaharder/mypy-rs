@@ -50,7 +50,12 @@
 //! RAII guard. Those channels are re-exposed here rather than
 //! reintroducing a callback parameter.
 
+use std::collections::{HashMap, HashSet};
+
+pub use crate::applytype::{clear_apply_reported, take_apply_reported};
 pub use crate::constraints::{neg_op, Constraint, SUBTYPE_OF, SUPERTYPE_OF};
+pub use crate::freshen::NATIVE_TVAR_NAMESPACE;
+pub use crate::unify::UnifyOutcome;
 
 use crate::aliases::TypeAliasResolver;
 use crate::typeinfo::TypeResolver;
@@ -319,6 +324,295 @@ pub fn pre_validate_solutions(
     validated.ok()
 }
 
+// ---------------------------------------------------------------------------
+// applytype.py / typevars.py: substituting a solved type argument
+// ---------------------------------------------------------------------------
+
+/// `(raw_id, meta_level, namespace)`: a type variable's identity, mirroring
+/// `mypy.types.TypeVarId.__eq__` and the kernel's `expandtype::EnvKey`.
+pub type TypeVarKey = (i64, i64, String);
+
+/// `(raw_id, namespace)`: the identity `mypy.erasetype.TypeVarEraser`
+/// matches an `ids_to_erase` set against, mirroring the kernel's
+/// `erase_typevars::IdKey`.
+pub type EraseId = (i64, String);
+
+/// `mypy.applytype.apply_generic_arguments` (applytype.py:88-193).
+///
+/// `orig_types` pairs 1:1 with the callable's `variables`; a `None` entry
+/// is Python's "no type argument here", which falls back to the
+/// variable's default.
+///
+/// Python takes a `report` callback for
+/// `report_incompatible_typevar_value`. The kernel replaced it with a
+/// thread-local flag, so a caller that needs Python's `had_errors` verdict
+/// brackets the call with [`clear_apply_reported`] and
+/// [`take_apply_reported`]: `skip_unsatisfied=false` plus a violated bound
+/// returns `None` and sets the flag.
+pub fn apply_generic_arguments(
+    callable: &Type,
+    orig_types: &[Option<Type>],
+    skip_unsatisfied: bool,
+    strict_optional: bool,
+    resolver: &TypeResolver,
+) -> Option<Type> {
+    let aliases = alias_view(resolver);
+    crate::applytype::apply_generic_arguments_inner(
+        callable,
+        orig_types,
+        skip_unsatisfied,
+        strict_optional,
+        resolver,
+        &aliases,
+    )
+}
+
+/// `get_target_type` outcome (applytype.py:33-85).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TargetType {
+    /// The argument satisfies the variable's values or upper bound.
+    Determined(Type),
+    /// `skip_unsatisfied` is set and the constraint is not met, so the
+    /// variable keeps its default (Python's inner `None`).
+    Skipped,
+}
+
+/// `mypy.applytype.get_target_type` (applytype.py:33-85): validate one
+/// type argument against a type variable's values or upper bound,
+/// promoting a subtype of an allowed value to that value.
+///
+/// `id_to_type` is Python's `dict[TypeVarId, Type]` of already-applied
+/// arguments, through which an ambiguous `Never` argument gradually
+/// expands the variable's default.
+pub fn get_target_type(
+    tvar: &Type,
+    type_arg: &Type,
+    skip_unsatisfied: bool,
+    id_to_type: &HashMap<TypeVarKey, Type>,
+    strict_optional: bool,
+    resolver: &TypeResolver,
+) -> Option<TargetType> {
+    let aliases = alias_view(resolver);
+    let decided = crate::applytype::get_target_type(
+        tvar,
+        type_arg,
+        skip_unsatisfied,
+        resolver,
+        &aliases,
+        id_to_type,
+        strict_optional,
+    )?;
+    Some(match decided {
+        None => TargetType::Skipped,
+        Some(t) => TargetType::Determined(t),
+    })
+}
+
+/// `mypy.typevars.has_no_typevars` (typevars.py:77-84): whether a type is
+/// its own `erase_typevars` result.
+pub fn has_no_typevars(typ: &Type) -> Option<bool> {
+    crate::applytype::has_no_typevars_inner(typ)
+}
+
+// ---------------------------------------------------------------------------
+// expandtype.py: substituting type variables
+// ---------------------------------------------------------------------------
+
+/// `mypy.expandtype.expand_type` (`ExpandTypeVisitor`, expandtype.py:60+).
+///
+/// Substitutes every type variable whose [`TypeVarKey`] is in `env`. A
+/// variable absent from `env` keeps its node, exactly as Python's
+/// `visit_type_var` does; an `Instance` replacement loses its
+/// `last_known_value`, as Python does at expandtype.py:246-249.
+pub fn expand_type(
+    typ: &Type,
+    env: &HashMap<TypeVarKey, Type>,
+    strict_optional: bool,
+) -> Option<Type> {
+    crate::expandtype::expand_type_inner(typ, env, strict_optional)
+}
+
+/// [`expand_type`] under the kernel's identity contract: a result that
+/// still carries a type variable, or a type-alias node a caller could not
+/// re-link, defers instead of being returned.
+pub fn expand_type_vars(
+    typ: &Type,
+    env: &HashMap<TypeVarKey, Type>,
+    strict_optional: bool,
+) -> Option<Type> {
+    crate::expandtype::expand_type_with_env(typ, env, strict_optional)
+}
+
+/// `mypy.expandtype.expand_type_by_instance` (expandtype.py:295-325):
+/// bind a member type's variables to the receiver instance's arguments,
+/// keyed by the class's `type_var_raw_ids` in the instance's namespace.
+pub fn expand_type_by_instance(
+    typ: &Type,
+    instance: &Type,
+    resolver: &TypeResolver,
+    strict_optional: bool,
+) -> Option<Type> {
+    crate::expandtype::expand_type_by_instance_core(typ, instance, resolver, strict_optional)
+}
+
+/// [`expand_type_by_instance`] with leftover type variables returned
+/// instead of deferred, mirroring `freeze_all_type_vars`
+/// (typeops.py:2102), which reifies a method's own variables afterwards.
+pub fn expand_type_by_instance_free(
+    typ: &Type,
+    instance: &Type,
+    resolver: &TypeResolver,
+    strict_optional: bool,
+) -> Option<Type> {
+    crate::expandtype::expand_type_by_instance_free(typ, instance, resolver, strict_optional)
+}
+
+/// `mypy.expandtype.remove_trivial` (expandtype.py:984-1011): the trivial
+/// union simplifications that need no `is_subtype`.
+pub fn remove_trivial(types: &[Type], strict_optional: bool) -> Vec<Type> {
+    crate::expandtype::remove_trivial(types, strict_optional)
+}
+
+// ---------------------------------------------------------------------------
+// expandtype.py / join.py: freshening type variables
+// ---------------------------------------------------------------------------
+
+/// `freshen_all_functions_type_vars` result: the rewritten type, the
+/// advanced raw-id counter and Python's `changed` flag.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Freshened {
+    pub typ: Type,
+    pub next_raw_id: i64,
+    pub changed: bool,
+}
+
+/// `mypy.expandtype.freshen_all_functions_type_vars`
+/// (expandtype.py:416-424) with its `FreshenCallableVisitor`
+/// (expandtype.py:427-435): every generic callable in the tree gets fresh
+/// meta-level-1 variables.
+///
+/// Python mutates the global `TypeVarId.next_raw_id`. The standalone path
+/// takes the counter as `start_raw_id` and returns the advanced value in
+/// [`Freshened`], so the caller owns its id space instead of sharing a
+/// process-global one.
+pub fn freshen_all_functions_type_vars(
+    typ: &Type,
+    start_raw_id: i64,
+    strict_optional: bool,
+) -> Option<Freshened> {
+    let mut next_raw_id = start_raw_id;
+    let mut changed = false;
+    let freshened =
+        crate::freshen::freshen_type(typ, &mut next_raw_id, &mut changed, strict_optional)?;
+    Some(Freshened {
+        typ: freshened,
+        next_raw_id,
+        changed,
+    })
+}
+
+/// `freshen_function_type_vars` result: the rewritten callable and the
+/// advanced raw-id counter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FreshenedVars {
+    pub typ: Type,
+    pub next_raw_id: i64,
+}
+
+/// `mypy.expandtype.freshen_function_type_vars` (expandtype.py:413-432):
+/// replace one callable's declared type variables with fresh
+/// meta-level-1 ones, expanding each default through the variables
+/// freshened before it.
+pub fn freshen_function_type_vars(callee: &Type, start_raw_id: i64) -> Option<FreshenedVars> {
+    let mut next_raw_id = start_raw_id;
+    let freshened = crate::freshen::freshen_function_type_vars(callee, &mut next_raw_id)?;
+    Some(FreshenedVars {
+        typ: freshened,
+        next_raw_id,
+    })
+}
+
+/// `mypy.join.match_generic_callables` (join.py:1292-1317): renumber two
+/// generic callables into one shared id space before joining or meeting
+/// them.
+///
+/// Ids come from the resolver's native registry and carry
+/// [`NATIVE_TVAR_NAMESPACE`], never a caller-held counter, so the two
+/// results are comparable to each other and to nothing else.
+pub fn match_generic_callables(
+    t: &Type,
+    s: &Type,
+    resolver: &TypeResolver,
+) -> Option<(Type, Type)> {
+    crate::freshen::renumber_generic_pair(t, s, resolver)
+}
+
+// ---------------------------------------------------------------------------
+// erasetype.py: replacing type variables
+// ---------------------------------------------------------------------------
+
+/// `mypy.erasetype.erase_typevars` (`TypeVarEraser`, erasetype.py:204-285).
+///
+/// `ids_to_erase` is `None` to erase every type variable, or the set of
+/// [`EraseId`]s to erase; `replacement` is what they become, normally
+/// [`any_special_form`].
+pub fn erase_typevars(
+    typ: &Type,
+    ids_to_erase: Option<&HashSet<EraseId>>,
+    replacement: &Type,
+) -> Option<Type> {
+    crate::erase_typevars::erase_typevars_inner(typ, ids_to_erase, replacement)
+}
+
+/// `mypy.erasetype.replace_meta_vars` (erasetype.py:199-201): replace
+/// only the meta-level type variables, the ones a meta-level inference
+/// pass allocated.
+pub fn replace_meta_vars(typ: &Type, target: &Type) -> Option<Type> {
+    crate::erase_typevars::replace_meta_vars_inner(typ, target)
+}
+
+/// The `AnyType(TypeOfAny.special_form)` node `erase_typevars` replaces a
+/// type variable with (types.py:309, value 6).
+pub fn any_special_form() -> Type {
+    crate::erase_typevars::make_any()
+}
+
+// ---------------------------------------------------------------------------
+// subtypes.py: unification
+// ---------------------------------------------------------------------------
+
+/// `mypy.subtypes.unify_generic_callable` (subtypes.py:2954-3011).
+///
+/// Tri-state, mirroring the Python call site (subtypes.py:2590-2595):
+/// [`UnifyOutcome::Unified`] continues with the unified left,
+/// [`UnifyOutcome::NoUnify`] is Python's `unified is None` arm, and
+/// [`UnifyOutcome::Defer`] means the kernel cannot decide — which on the
+/// standalone path is a loud rejection, never a `False`.
+///
+/// Python reads the ambient `type_state.infer_unions` (typestate.py:110).
+/// The standalone path takes it as an explicit parameter and installs the
+/// kernel's RAII mirror for the duration of the call, the way the
+/// `rust_infer_function_type_arguments` seam entry does.
+pub fn unify_generic_callable(
+    left: &Type,
+    right: &Type,
+    ignore_return: bool,
+    strict_optional: bool,
+    infer_unions: bool,
+    resolver: &TypeResolver,
+) -> UnifyOutcome {
+    let _guard = crate::unify::InferUnionsGuard::install(infer_unions);
+    let aliases = alias_view(resolver);
+    crate::unify::unify_generic_callable_core(
+        left,
+        right,
+        ignore_return,
+        strict_optional,
+        resolver,
+        &aliases,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,6 +743,129 @@ mod tests {
 
     fn primitives() -> TypeResolver {
         resolver_with(&["builtins.int", "builtins.str", "builtins.object"])
+    }
+
+    fn callables() -> TypeResolver {
+        resolver_with(&[
+            "builtins.function",
+            "builtins.int",
+            "builtins.object",
+            "builtins.str",
+        ])
+    }
+
+    /// A resolver holding `m.Box` with one class type variable whose raw
+    /// id is 1, which is what `expand_type_by_instance` keys its env on.
+    fn box_resolver() -> TypeResolver {
+        let mut r = resolver_with(&["m.Box"]);
+        let mut s = TypeInfoSnapshot {
+            fullname: "m.Box".to_string(),
+            name: "Box".to_string(),
+            ..Default::default()
+        };
+        s.mro.push("m.Box".to_string());
+        s.mro.push("builtins.object".to_string());
+        s.has_base.insert("m.Box".to_string());
+        s.has_base.insert("builtins.object".to_string());
+        s.type_var_raw_ids.push(1);
+        r.insert("m.Box".to_string(), s);
+        r
+    }
+
+    fn tvar_ns(raw_id: i64, namespace: &str) -> Type {
+        let mut t = tvar(raw_id);
+        if let Type::TypeVarType { namespace: ns, .. } = &mut t {
+            *ns = namespace.to_string();
+        }
+        t
+    }
+
+    fn meta_tvar(raw_id: i64) -> Type {
+        let mut t = tvar(raw_id);
+        if let Type::TypeVarType { meta_level, .. } = &mut t {
+            *meta_level = 1;
+        }
+        t
+    }
+
+    fn unbound() -> Type {
+        Type::UnboundType {
+            name: "X".to_string(),
+            args: Vec::new(),
+            original_str_expr: None,
+            original_str_fallback: None,
+            optional: false,
+            empty_tuple_index: false,
+        }
+    }
+
+    fn param_spec() -> Type {
+        Type::ParamSpecType {
+            prefix: Box::new(crate::wire::Parameters {
+                arg_types: Vec::new(),
+                arg_kinds: Vec::new(),
+                arg_names: Vec::new(),
+                variables: Vec::new(),
+                imprecise_arg_kinds: false,
+                is_ellipsis_args: false,
+            }),
+            name: "P".to_string(),
+            fullname: "m.P".to_string(),
+            raw_id: 1,
+            namespace: String::new(),
+            flavor: 0,
+            upper_bound: Box::new(object_ty()),
+            default: Box::new(Type::AnyType {
+                type_of_any: 4,
+                source_any: None,
+                missing_import_name: None,
+            }),
+            meta_level: 0,
+        }
+    }
+
+    /// A callable declaring `variables` and taking `args`, the shape the
+    /// apply, freshen and unify operations work on.
+    fn generic_callable(variables: Vec<Type>, args: Vec<Type>, ret: Type) -> Type {
+        let arg_kinds: Vec<i64> = vec![0; args.len()];
+        let arg_names: Vec<Option<String>> = vec![None; args.len()];
+        Type::CallableType {
+            fallback: Box::new(instance("builtins.function", Vec::new())),
+            instance_type: None,
+            is_ellipsis_args: false,
+            implicit: false,
+            is_bound: false,
+            from_concatenate: false,
+            imprecise_arg_kinds: false,
+            unpack_kwargs: false,
+            from_type_type: false,
+            arg_types: args,
+            arg_kinds,
+            arg_names,
+            ret_type: Box::new(ret),
+            name: None,
+            variables,
+            type_guard: None,
+            type_is: None,
+            special_sig: None,
+            definition_ref: None,
+        }
+    }
+
+    /// The (raw_id, namespace) pairs of a callable's declared variables.
+    fn tvar_keys(t: &Type) -> Vec<(i64, String)> {
+        match t {
+            Type::CallableType { variables, .. } => variables
+                .iter()
+                .filter_map(|v| match v {
+                    Type::TypeVarType {
+                        raw_id, namespace, ..
+                    } => Some((*raw_id, namespace.clone())),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 
     #[test]
