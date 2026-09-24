@@ -237,13 +237,9 @@ pub fn check_return(
         // Unreachable for the facts `return_stmt_facts` supplies: the subset
         // has no async generators and `warn_return_any` is off. Rejecting
         // loudly is the plan's rule-6 behaviour if that ever changes.
-        kernel::ReturnOutcome::AsyncGeneratorFail | kernel::ReturnOutcome::WarnReturnAny => {
-            Err(out_of_subset(
-                ctx.path,
-                line,
-                "a return outside the supported outcomes",
-            ))
-        }
+        kernel::ReturnOutcome::AsyncGeneratorFail | kernel::ReturnOutcome::WarnReturnAny => Err(
+            out_of_subset(ctx.path, line, "a return outside the supported outcomes"),
+        ),
     }
 }
 
@@ -391,8 +387,7 @@ mod tests {
 
     impl Harness {
         fn new() -> Harness {
-            let fixtures = crate::fixtures::Fixtures::load()
-                .expect("the fixtures must parse");
+            let fixtures = crate::fixtures::Fixtures::load().expect("the fixtures must parse");
             Harness {
                 resolver: fixtures.resolver,
                 subtype: SubtypeContext {
@@ -431,8 +426,7 @@ mod tests {
         let ctx = h.ctx(true);
         let def = sig(instance("builtins.int", Vec::new()));
         let got = instance("builtins.int", Vec::new());
-        let diag = check_return(&ctx, Some(&def), Some(&got), 3, 12)
-            .expect("decidable");
+        let diag = check_return(&ctx, Some(&def), Some(&got), 3, 12).expect("decidable");
         assert!(diag.is_none());
     }
 
@@ -459,8 +453,7 @@ mod tests {
         let h = Harness::new();
         let ctx = h.ctx(true);
         let got = instance("builtins.int", Vec::new());
-        let err = check_return(&ctx, None, Some(&got), 1, 1)
-            .expect_err("must reject");
+        let err = check_return(&ctx, None, Some(&got), 1, 1).expect_err("must reject");
         match err {
             CheckError::Input(message) => assert!(
                 message.contains("a return statement outside a function"),
@@ -487,8 +480,7 @@ mod tests {
         let h = Harness::new();
         let ctx = h.ctx(true);
         let def = none_sig();
-        let diag = check_return(&ctx, Some(&def), None, 2, 5)
-            .expect("decidable");
+        let diag = check_return(&ctx, Some(&def), None, 2, 5).expect("decidable");
         assert!(diag.is_none());
     }
 
@@ -498,8 +490,7 @@ mod tests {
         let ctx = h.ctx(true);
         let def = none_sig();
         let got = Type::NoneType;
-        let diag = check_return(&ctx, Some(&def), Some(&got), 2, 5)
-            .expect("decidable");
+        let diag = check_return(&ctx, Some(&def), Some(&got), 2, 5).expect("decidable");
         assert!(diag.is_none());
     }
 
@@ -512,7 +503,10 @@ mod tests {
         let diag = check_return(&ctx, Some(&def), Some(&got), 6, 5)
             .expect("decidable")
             .expect("a diagnostic");
-        assert_eq!(diag.message, "error: No return value expected  [return-value]");
+        assert_eq!(
+            diag.message,
+            "error: No return value expected  [return-value]"
+        );
     }
 
     #[test]
@@ -521,8 +515,7 @@ mod tests {
         let ctx = h.ctx(false);
         let def = sig(instance("builtins.int", Vec::new()));
         let got = instance("builtins.str", Vec::new());
-        let err = check_return(&ctx, Some(&def), Some(&got), 3, 12)
-            .expect_err("must reject");
+        let err = check_return(&ctx, Some(&def), Some(&got), 3, 12).expect_err("must reject");
         assert!(matches!(err, CheckError::Input(_)));
     }
 
