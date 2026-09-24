@@ -47,7 +47,11 @@
 //!   `configure_base_classes`, the `verify_base_classes` /
 //!   `verify_duplicate_base_classes` MRO tail, the two
 //!   `six`/`future`/`past` compat-helper classifiers, and the
-//!   `get_declared_metaclass` / `recalculate_metaclass` decision heads.
+//!   `get_declared_metaclass` / `recalculate_metaclass` decision heads;
+//! * type-expression analysis: the branch heads of
+//!   `TypeAnalyser.analyze_type_with_type_info`, `analyze_callable_type`,
+//!   `anal_type_guard_arg` / `anal_type_is_arg` and the implicit-tuple
+//!   message arbitration of `visit_tuple_type`.
 //!
 //! # Deferral is a hard error here, not a fallback
 //!
@@ -67,7 +71,10 @@ use crate::semanal_bases as bases;
 use crate::semanal_lookup as lookup;
 use crate::semanal_metaclass as meta;
 use crate::semanal_shared as shared;
+use crate::typeanal_callable as callable;
+use crate::typeanal_info as info;
 use crate::typeanal_queries as queries;
+use crate::typeanal_special as special;
 
 pub use crate::skeleton_api::{ModuleSnapshot, Type, TypeInfoSnapshot, TypeResolver};
 
@@ -699,6 +706,273 @@ fn recalculated_metaclass(tag: i64) -> RecalculatedMetaclass {
     }
 }
 
+/// The facts `TypeAnalyser.analyze_type_with_type_info` binds an unbound
+/// type against. The hybrid shim reads each from the live `TypeInfo`
+/// (nodes.py:3964-3967); a standalone caller supplies them from records.
+/// The derived `Default` is the plain-reference case: no arguments and none
+/// of the three special fields set.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TypeInfoFacts {
+    /// `len(t.args)`.
+    pub args_len: i64,
+    /// `info.tuple_type is not None`.
+    pub tuple_type_not_none: bool,
+    /// `info.special_alias is not None`.
+    pub special_alias_not_none: bool,
+    /// `info.typeddict_type is not None`.
+    pub typeddict_type_not_none: bool,
+}
+
+/// The terminal branch of `analyze_type_with_type_info`, each named for the
+/// typeanal.py branch the caller must then execute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeInfoBranch {
+    /// typeanal.py:1176-1178: `tuple[...]` with arguments builds a
+    /// `TupleType`.
+    Tuple,
+    /// typeanal.py:1204-1207: `librt.vecs.vec` with an invalid item type
+    /// becomes `Any(from_error)`.
+    Vec,
+    /// typeanal.py:1228-1253: a named-tuple base with no special alias.
+    TupleTail,
+    /// typeanal.py:1232-1250: a tuple base that is also a special alias.
+    TupleTailAlias,
+    /// typeanal.py:1254-1279: a TypedDict base with no special alias.
+    TypedDictTail,
+    /// typeanal.py:1258-1275: a TypedDict base that is also an alias.
+    TypedDictTailAlias,
+    /// typeanal.py:1281-1287: `types.NoneType` fails and builds `NoneType`.
+    NoneType,
+    /// typeanal.py:1289: a plain `Instance`.
+    Instance,
+}
+
+/// `mypy.typeanal.TypeAnalyser.analyze_type_with_type_info`
+/// (typeanal.py:1166-1289).
+///
+/// Binds an unbound type that resolved to a `TypeInfo`: `fullname` is
+/// `info.fullname` and `facts` carries the argument count plus which of
+/// `tuple_type` / `special_alias` / `typeddict_type` are set. Mirrors the
+/// branch order of typeanal.py:1176-1289 exactly.
+///
+/// Every fact is a scalar, so this always decides: there is no deferral and
+/// no `Option`. The caller keeps every side effect mypy performs on the
+/// branch it lands on, namely the `vec` item-type check, the argument-count
+/// validation, the tuple and TypedDict tails, and the `types.NoneType`
+/// error.
+///
+/// Lifts `typeanal_info::classify_type_with_info_inner`.
+pub fn analyze_type_with_type_info(fullname: &str, facts: &TypeInfoFacts) -> TypeInfoBranch {
+    let decided = info::classify_type_with_info_inner(
+        fullname,
+        facts.args_len,
+        facts.tuple_type_not_none,
+        facts.special_alias_not_none,
+        facts.typeddict_type_not_none,
+    );
+    match decided {
+        Some(tag) => type_info_branch(tag),
+        None => unreachable!("every fact is a scalar, so this decides"),
+    }
+}
+
+/// `typeanal_info::TAG_*` to [`TypeInfoBranch`]. The tag set is closed.
+fn type_info_branch(tag: i64) -> TypeInfoBranch {
+    match tag {
+        info::TAG_TUPLE => TypeInfoBranch::Tuple,
+        info::TAG_VEC => TypeInfoBranch::Vec,
+        info::TAG_TUPLE_TAIL => TypeInfoBranch::TupleTail,
+        info::TAG_TUPLE_TAIL_ALIAS => TypeInfoBranch::TupleTailAlias,
+        info::TAG_TYPEDDICT_TAIL => TypeInfoBranch::TypedDictTail,
+        info::TAG_TYPEDDICT_TAIL_ALIAS => TypeInfoBranch::TypedDictTailAlias,
+        info::TAG_NONE_TYPE => TypeInfoBranch::NoneType,
+        info::TAG_INSTANCE => TypeInfoBranch::Instance,
+        other => unreachable!("unknown analyze_type_with_type_info tag {other}"),
+    }
+}
+
+/// The facts `TypeAnalyser.analyze_callable_type` dispatches on. The
+/// derived `Default` is the bare `Callable` case: zero arguments.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallableFacts {
+    /// `len(t.args)`.
+    pub arg_count: i64,
+    /// `isinstance(t.args[0], TypeList)`; only read when `arg_count == 2`.
+    pub arg0_is_type_list: bool,
+    /// `isinstance(t.args[0], EllipsisType)`; only read at `arg_count == 2`.
+    pub arg0_is_ellipsis: bool,
+    /// `options.disallow_any_generics`, which selects the invalid-arity
+    /// message.
+    pub disallow_any_generics: bool,
+}
+
+/// The terminal branch of `analyze_callable_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallableBranch {
+    /// typeanal.py:2333-2335: a bare `Callable` is `Callable[..., Any]`.
+    BareCallable,
+    /// typeanal.py:2337-2344: `Callable[[ARG, ...], RET]`.
+    TypeList,
+    /// typeanal.py:2345-2350: `Callable[..., RET]`.
+    Ellipsis,
+    /// typeanal.py:2351-2376: `Callable[P, RET]`, the ParamSpec form.
+    ParamSpec,
+    /// typeanal.py:2377-2379: an invalid arity under
+    /// `disallow_any_generics`.
+    InvalidArityDisallowed,
+    /// typeanal.py:2380-2382: an invalid arity with any generics allowed.
+    InvalidArityAllowed,
+}
+
+/// `mypy.typeanal.TypeAnalyser.analyze_callable_type` (typeanal.py:2330).
+///
+/// The two-level dispatch head: `len(t.args)`, where 0 is a bare
+/// `Callable`, 2 is the normal form and anything else is an invalid arity;
+/// then, inside the `2` arm, the kind of `t.args[0]` (`TypeList`,
+/// `EllipsisType`, or the ParamSpec form). Every fact is a scalar, so this
+/// always decides.
+///
+/// The caller keeps the side effects mypy applies on the branch: the
+/// `tvar_scope` entry, the `analyze_callable_args*` variants, and the
+/// `fail` / `note` emissions.
+///
+/// Lifts `typeanal_callable::classify_analyze_callable_type_inner`.
+pub fn analyze_callable_type(facts: &CallableFacts) -> CallableBranch {
+    let decided = callable::classify_analyze_callable_type_inner(
+        facts.arg_count,
+        facts.arg0_is_type_list,
+        facts.arg0_is_ellipsis,
+        facts.disallow_any_generics,
+    );
+    match decided {
+        Some(tag) => callable_branch(tag),
+        None => unreachable!("every fact is a scalar, so this decides"),
+    }
+}
+
+/// `typeanal_callable::TAG_*` to [`CallableBranch`]. The tag set is closed.
+fn callable_branch(tag: i64) -> CallableBranch {
+    match tag {
+        callable::TAG_BARE_CALLABLE => CallableBranch::BareCallable,
+        callable::TAG_TYPE_LIST => CallableBranch::TypeList,
+        callable::TAG_ELLIPSIS => CallableBranch::Ellipsis,
+        callable::TAG_PARAMSPEC => CallableBranch::ParamSpec,
+        callable::TAG_INVALID_DISALLOW => CallableBranch::InvalidArityDisallowed,
+        callable::TAG_INVALID_ALLOW => CallableBranch::InvalidArityAllowed,
+        other => unreachable!("unknown analyze_callable_type tag {other}"),
+    }
+}
+
+/// The facts `anal_type_guard_arg` / `anal_type_is_arg` gate on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TypeGuardFacts {
+    /// `len(t.args)`.
+    pub args_len: usize,
+    /// Whether to match the `TypeIs` name set instead of `TypeGuard`'s.
+    pub is_typeis: bool,
+}
+
+/// The outcome of `anal_type_guard_arg` / `anal_type_is_arg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeGuardBranch {
+    /// The fullname is not in the family, so mypy's wrapper returns `None`
+    /// and the caller continues the special-form chain.
+    NotAGuard,
+    /// typeanal.py:2009-2033: the arity is not 1, so mypy fails
+    /// `INVALID_TYPE` and builds `Any(from_error)`.
+    ArityFail,
+    /// The arity is 1: mypy analyzes `t.args[0]`.
+    Recurse,
+}
+
+/// `mypy.typeanal.TypeAnalyser.anal_type_guard_arg` and `anal_type_is_arg`
+/// (typeanal.py:2009-2033).
+///
+/// Two-step decision: family membership, selected by `facts.is_typeis`
+/// between the `TypeIs` names and the `TypeGuard` names (each in `typing`
+/// and `typing_extensions`), then the arity gate. `fullname` is what the
+/// caller resolved through `lookup_qualified`. Every fact is a scalar, so
+/// this always decides.
+///
+/// Lifts `typeanal_special::classify_type_guard_arg_inner`.
+pub fn analyze_type_guard_arg(fullname: &str, facts: &TypeGuardFacts) -> TypeGuardBranch {
+    let args_len = facts.args_len;
+    let is_typeis = facts.is_typeis;
+    let decided = special::classify_type_guard_arg_inner(fullname, args_len, is_typeis);
+    match decided {
+        Some(tag) => type_guard_branch(tag),
+        None => unreachable!("every fact is a scalar, so this decides"),
+    }
+}
+
+/// `typeanal_special::TAG_GUARD_*` to [`TypeGuardBranch`]. Closed tag set.
+fn type_guard_branch(tag: i64) -> TypeGuardBranch {
+    match tag {
+        special::TAG_GUARD_NOT_GUARD => TypeGuardBranch::NotAGuard,
+        special::TAG_GUARD_FAIL => TypeGuardBranch::ArityFail,
+        special::TAG_GUARD_RECURSE => TypeGuardBranch::Recurse,
+        other => unreachable!("unknown anal_type_guard_arg tag {other}"),
+    }
+}
+
+/// The facts `visit_tuple_type` arbitrates its implicit-tuple message on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImplicitTupleFacts {
+    /// `t.implicit`.
+    pub implicit: bool,
+    /// The analyzer flag that permits a tuple literal.
+    pub allow_tuple_literal: bool,
+    /// `len(t.items)`.
+    pub items_len: usize,
+}
+
+/// The note `TypeAnalyser.visit_tuple_type` picks for an implicit tuple.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImplicitTupleNote {
+    /// The error head does not fire: the normal reconstruction path
+    /// (`named_type` plus `anal_array`) runs.
+    Reconstruct,
+    /// `len(t.items) == 0`: the `Tuple[()]` suggestion.
+    SuggestEmptyTuple,
+    /// `len(t.items) == 1`: the spurious-comma suggestion.
+    SuggestSpuriousComma,
+    /// `len(t.items) > 1`: the `Tuple[T1, ..., Tn]` suggestion.
+    SuggestTupleOfItems,
+}
+
+/// `mypy.typeanal.TypeAnalyser.visit_tuple_type` implicit-tuple message
+/// arbitration (typeanal.py:2041-2058).
+///
+/// The error head fires only when `t.implicit` is set and
+/// `allow_tuple_literal` is off; inside the head the note is chosen by
+/// `len(t.items)`. Every fact is a scalar, so this always decides. The
+/// caller keeps the `fail` and `note` emissions and the normal
+/// reconstruction path.
+///
+/// Lifts `typeanal_special::classify_tuple_type_implicit_inner`.
+pub fn visit_tuple_type_implicit(facts: &ImplicitTupleFacts) -> ImplicitTupleNote {
+    let decided = special::classify_tuple_type_implicit_inner(
+        facts.implicit,
+        facts.allow_tuple_literal,
+        facts.items_len,
+    );
+    match decided {
+        Some(tag) => implicit_tuple_note(tag),
+        None => unreachable!("every fact is a scalar, so this decides"),
+    }
+}
+
+/// `typeanal_special::TAG_TUPLE_*` to [`ImplicitTupleNote`]. Closed set.
+fn implicit_tuple_note(tag: i64) -> ImplicitTupleNote {
+    match tag {
+        special::TAG_TUPLE_OK => ImplicitTupleNote::Reconstruct,
+        special::TAG_TUPLE_EMPTY => ImplicitTupleNote::SuggestEmptyTuple,
+        special::TAG_TUPLE_SINGLE => ImplicitTupleNote::SuggestSpuriousComma,
+        special::TAG_TUPLE_MULTI => ImplicitTupleNote::SuggestTupleOfItems,
+        other => unreachable!("unknown visit_tuple_type tag {other}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1326,5 +1600,181 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(recalculate_metaclass(&facts), None);
+    }
+
+    #[test]
+    fn analyze_type_with_type_info_puts_a_subscripted_tuple_first() {
+        let facts = TypeInfoFacts {
+            args_len: 2,
+            tuple_type_not_none: true,
+            typeddict_type_not_none: true,
+            ..Default::default()
+        };
+        let branch = analyze_type_with_type_info("builtins.tuple", &facts);
+        assert_eq!(branch, TypeInfoBranch::Tuple);
+    }
+
+    #[test]
+    fn analyze_type_with_type_info_binds_a_plain_reference_as_instance() {
+        let facts = TypeInfoFacts::default();
+        let branch = analyze_type_with_type_info("mod.UserClass", &facts);
+        assert_eq!(branch, TypeInfoBranch::Instance);
+    }
+
+    #[test]
+    fn analyze_type_with_type_info_splits_the_tails_on_the_alias_flag() {
+        let plain = TypeInfoFacts {
+            tuple_type_not_none: true,
+            ..Default::default()
+        };
+        let branch = analyze_type_with_type_info("mod.Point", &plain);
+        assert_eq!(branch, TypeInfoBranch::TupleTail);
+        let aliased = TypeInfoFacts {
+            tuple_type_not_none: true,
+            special_alias_not_none: true,
+            ..Default::default()
+        };
+        let branch = analyze_type_with_type_info("mod.Point", &aliased);
+        assert_eq!(branch, TypeInfoBranch::TupleTailAlias);
+        let dict = TypeInfoFacts {
+            typeddict_type_not_none: true,
+            ..Default::default()
+        };
+        let branch = analyze_type_with_type_info("mod.TD", &dict);
+        assert_eq!(branch, TypeInfoBranch::TypedDictTail);
+    }
+
+    #[test]
+    fn analyze_type_with_type_info_rejects_a_bare_tuple_and_none_type() {
+        let bare = TypeInfoFacts::default();
+        let branch = analyze_type_with_type_info("builtins.tuple", &bare);
+        assert_eq!(branch, TypeInfoBranch::Instance);
+        let branch = analyze_type_with_type_info("types.NoneType", &bare);
+        assert_eq!(branch, TypeInfoBranch::NoneType);
+        let branch = analyze_type_with_type_info("librt.vecs.vec", &bare);
+        assert_eq!(branch, TypeInfoBranch::Vec);
+    }
+
+    #[test]
+    fn analyze_callable_type_dispatches_on_arity_then_arg0() {
+        let branch = analyze_callable_type(&CallableFacts::default());
+        assert_eq!(branch, CallableBranch::BareCallable);
+        let list = CallableFacts {
+            arg_count: 2,
+            arg0_is_type_list: true,
+            ..Default::default()
+        };
+        let branch = analyze_callable_type(&list);
+        assert_eq!(branch, CallableBranch::TypeList);
+        let dots = CallableFacts {
+            arg_count: 2,
+            arg0_is_ellipsis: true,
+            ..Default::default()
+        };
+        let branch = analyze_callable_type(&dots);
+        assert_eq!(branch, CallableBranch::Ellipsis);
+        let paramspec = CallableFacts {
+            arg_count: 2,
+            ..Default::default()
+        };
+        let branch = analyze_callable_type(&paramspec);
+        assert_eq!(branch, CallableBranch::ParamSpec);
+    }
+
+    #[test]
+    fn analyze_callable_type_splits_an_invalid_arity_on_the_option() {
+        let invalid = CallableFacts {
+            arg_count: 3,
+            ..Default::default()
+        };
+        let branch = analyze_callable_type(&invalid);
+        assert_eq!(branch, CallableBranch::InvalidArityAllowed);
+        let disallowed = CallableFacts {
+            arg_count: 3,
+            disallow_any_generics: true,
+            ..Default::default()
+        };
+        let branch = analyze_callable_type(&disallowed);
+        assert_eq!(branch, CallableBranch::InvalidArityDisallowed);
+    }
+
+    #[test]
+    fn analyze_type_guard_arg_matches_both_is_check_families() {
+        let one = TypeGuardFacts {
+            args_len: 1,
+            is_typeis: false,
+        };
+        let branch = analyze_type_guard_arg("typing.TypeGuard", &one);
+        assert_eq!(branch, TypeGuardBranch::Recurse);
+        let typeis = TypeGuardFacts {
+            args_len: 1,
+            is_typeis: true,
+        };
+        let branch = analyze_type_guard_arg("typing_extensions.TypeIs", &typeis);
+        assert_eq!(branch, TypeGuardBranch::Recurse);
+    }
+
+    #[test]
+    fn analyze_type_guard_arg_rejects_a_bad_arity_or_family() {
+        let two = TypeGuardFacts {
+            args_len: 2,
+            is_typeis: false,
+        };
+        let branch = analyze_type_guard_arg("typing.TypeGuard", &two);
+        assert_eq!(branch, TypeGuardBranch::ArityFail);
+        let one = TypeGuardFacts {
+            args_len: 1,
+            is_typeis: false,
+        };
+        let branch = analyze_type_guard_arg("typing.TypeIs", &one);
+        assert_eq!(branch, TypeGuardBranch::NotAGuard);
+        let typeis = TypeGuardFacts {
+            args_len: 1,
+            is_typeis: true,
+        };
+        let branch = analyze_type_guard_arg("typing.TypeGuard", &typeis);
+        assert_eq!(branch, TypeGuardBranch::NotAGuard);
+    }
+
+    #[test]
+    fn visit_tuple_type_implicit_reconstructs_an_explicit_tuple() {
+        let explicit = ImplicitTupleFacts {
+            implicit: false,
+            items_len: 3,
+            ..Default::default()
+        };
+        let note = visit_tuple_type_implicit(&explicit);
+        assert_eq!(note, ImplicitTupleNote::Reconstruct);
+        let allowed = ImplicitTupleFacts {
+            implicit: true,
+            allow_tuple_literal: true,
+            items_len: 3,
+        };
+        let note = visit_tuple_type_implicit(&allowed);
+        assert_eq!(note, ImplicitTupleNote::Reconstruct);
+    }
+
+    #[test]
+    fn visit_tuple_type_implicit_picks_the_note_by_item_count() {
+        let empty = ImplicitTupleFacts {
+            implicit: true,
+            ..Default::default()
+        };
+        let note = visit_tuple_type_implicit(&empty);
+        assert_eq!(note, ImplicitTupleNote::SuggestEmptyTuple);
+        let single = ImplicitTupleFacts {
+            implicit: true,
+            items_len: 1,
+            ..Default::default()
+        };
+        let note = visit_tuple_type_implicit(&single);
+        assert_eq!(note, ImplicitTupleNote::SuggestSpuriousComma);
+        let multi = ImplicitTupleFacts {
+            implicit: true,
+            items_len: 2,
+            ..Default::default()
+        };
+        let note = visit_tuple_type_implicit(&multi);
+        assert_eq!(note, ImplicitTupleNote::SuggestTupleOfItems);
     }
 }

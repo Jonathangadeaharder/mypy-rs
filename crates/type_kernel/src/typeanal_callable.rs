@@ -26,12 +26,12 @@ use pyo3::prelude::*;
 // Branch tags handed to the Python shim. Each maps to exactly one
 // terminal branch of `analyze_callable_type`; the comment cites the
 // typeanal.py line and the Python-side effect the shim must apply.
-const TAG_BARE_CALLABLE: i64 = 0; // 2333-2335 Callable[..., Any]
-const TAG_TYPE_LIST: i64 = 1; // 2337-2344 Callable[[ARG, ...], RET]
-const TAG_ELLIPSIS: i64 = 2; // 2345-2350 Callable[..., RET]
-const TAG_PARAMSPEC: i64 = 3; // 2351-2376 Callable[P, RET]
-const TAG_INVALID_DISALLOW: i64 = 4; // 2377-2379 disallow_any_generics
-const TAG_INVALID_ALLOW: i64 = 5; // 2380-2382 allow any generics
+pub(crate) const TAG_BARE_CALLABLE: i64 = 0; // 2333-2335 Callable[..., Any]
+pub(crate) const TAG_TYPE_LIST: i64 = 1; // 2337-2344 Callable[[ARG, ...], RET]
+pub(crate) const TAG_ELLIPSIS: i64 = 2; // 2345-2350 Callable[..., RET]
+pub(crate) const TAG_PARAMSPEC: i64 = 3; // 2351-2376 Callable[P, RET]
+pub(crate) const TAG_INVALID_DISALLOW: i64 = 4; // 2377-2379 disallow_any_generics
+pub(crate) const TAG_INVALID_ALLOW: i64 = 5; // 2380-2382 allow any generics
 
 /// `analyze_callable_type` dispatch classifier. Mirrors the branch order
 /// of typeanal.py:2330-2382 and returns the terminal branch tag; `None`
@@ -52,23 +52,39 @@ pub(crate) fn rust_classify_analyze_callable_type(
     arg0_is_ellipsis: bool,
     disallow_any_generics: bool,
 ) -> PyResult<Option<i64>> {
+    Ok(classify_analyze_callable_type_inner(
+        arg_count,
+        arg0_is_type_list,
+        arg0_is_ellipsis,
+        disallow_any_generics,
+    ))
+}
+
+/// Pure decision core of `rust_classify_analyze_callable_type`; PyO3-free so
+/// the standalone path reaches the same table without the seam.
+pub(crate) fn classify_analyze_callable_type_inner(
+    arg_count: i64,
+    arg0_is_type_list: bool,
+    arg0_is_ellipsis: bool,
+    disallow_any_generics: bool,
+) -> Option<i64> {
     if arg_count == 0 {
-        return Ok(Some(TAG_BARE_CALLABLE));
+        return Some(TAG_BARE_CALLABLE);
     }
     if arg_count == 2 {
         if arg0_is_type_list {
-            return Ok(Some(TAG_TYPE_LIST));
+            return Some(TAG_TYPE_LIST);
         }
         if arg0_is_ellipsis {
-            return Ok(Some(TAG_ELLIPSIS));
+            return Some(TAG_ELLIPSIS);
         }
-        return Ok(Some(TAG_PARAMSPEC));
+        return Some(TAG_PARAMSPEC);
     }
-    Ok(Some(if disallow_any_generics {
-        TAG_INVALID_DISALLOW
+    if disallow_any_generics {
+        Some(TAG_INVALID_DISALLOW)
     } else {
-        TAG_INVALID_ALLOW
-    }))
+        Some(TAG_INVALID_ALLOW)
+    }
 }
 
 /// Register this module's Python-facing seam surface (#1677).

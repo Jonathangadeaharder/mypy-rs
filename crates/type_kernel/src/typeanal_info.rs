@@ -28,14 +28,14 @@ use pyo3::prelude::*;
 
 /// Branch tags handed to the Python shim. Each maps to a terminal branch of
 /// `analyze_type_with_type_info`; the comment cites the typeanal.py line.
-const TAG_TUPLE: i64 = 1; // 1176-1178 tuple[...] with args -> TupleType
-const TAG_VEC: i64 = 2; // 1204-1207 librt.vecs.vec bad item -> Any(from_error)
-const TAG_TUPLE_TAIL: i64 = 3; // 1228-1253 named-tuple base, no alias
-const TAG_TUPLE_TAIL_ALIAS: i64 = 4; // 1232-1250 tuple-alias base
-const TAG_TYPEDDICT_TAIL: i64 = 5; // 1254-1279 TypedDict base, no alias
-const TAG_TYPEDDICT_TAIL_ALIAS: i64 = 6; // 1258-1275 TypedDict-alias base
-const TAG_NONE_TYPE: i64 = 7; // 1281-1287 types.NoneType -> error + NoneType
-const TAG_INSTANCE: i64 = 8; // 1289 plain Instance
+pub(crate) const TAG_TUPLE: i64 = 1; // 1176-1178 tuple[...] with args -> TupleType
+pub(crate) const TAG_VEC: i64 = 2; // 1204-1207 librt.vecs.vec bad item -> Any(from_error)
+pub(crate) const TAG_TUPLE_TAIL: i64 = 3; // 1228-1253 named-tuple base, no alias
+pub(crate) const TAG_TUPLE_TAIL_ALIAS: i64 = 4; // 1232-1250 tuple-alias base
+pub(crate) const TAG_TYPEDDICT_TAIL: i64 = 5; // 1254-1279 TypedDict base, no alias
+pub(crate) const TAG_TYPEDDICT_TAIL_ALIAS: i64 = 6; // 1258-1275 TypedDict-alias base
+pub(crate) const TAG_NONE_TYPE: i64 = 7; // 1281-1287 types.NoneType -> error + NoneType
+pub(crate) const TAG_INSTANCE: i64 = 8; // 1289 plain Instance
 
 /// `analyze_type_with_type_info` decision classifier. Mirrors the branch
 /// order of typeanal.py:1176-1289 exactly and returns the terminal branch
@@ -61,39 +61,59 @@ pub(crate) fn rust_classify_type_with_info(
     special_alias_not_none: bool,
     typeddict_type_not_none: bool,
 ) -> PyResult<Option<i64>> {
+    Ok(classify_type_with_info_inner(
+        &fullname,
+        args_len,
+        tuple_type_not_none,
+        special_alias_not_none,
+        typeddict_type_not_none,
+    ))
+}
+
+/// Pure decision core of `rust_classify_type_with_info`; PyO3-free so the
+/// standalone path reaches the same table without the seam. Takes the
+/// fullname by reference: the seam's owned `String` exists only to cross
+/// the PyO3 boundary.
+pub(crate) fn classify_type_with_info_inner(
+    fullname: &str,
+    args_len: i64,
+    tuple_type_not_none: bool,
+    special_alias_not_none: bool,
+    typeddict_type_not_none: bool,
+) -> Option<i64> {
     // Tuple with arguments (typeanal.py:1176-1178): before everything else.
     if args_len > 0 && fullname == "builtins.tuple" {
-        return Ok(Some(TAG_TUPLE));
+        return Some(TAG_TUPLE);
     }
     // librt.vecs.vec (typeanal.py:1204-1207): the item-type validity check
     // itself is already native (`rust_check_vec_type_args`); the shim runs
     // the original body, which re-derives the check.
     if fullname == "librt.vecs.vec" {
-        return Ok(Some(TAG_VEC));
+        return Some(TAG_VEC);
     }
     // Named-tuple / tuple-alias tail (typeanal.py:1228-1253).
     if tuple_type_not_none {
-        return Ok(Some(if special_alias_not_none {
+        return Some(if special_alias_not_none {
             TAG_TUPLE_TAIL_ALIAS
         } else {
             TAG_TUPLE_TAIL
-        }));
+        });
     }
     // TypedDict tail (typeanal.py:1254-1279).
     if typeddict_type_not_none {
-        return Ok(Some(if special_alias_not_none {
+        return Some(if special_alias_not_none {
             TAG_TYPEDDICT_TAIL_ALIAS
         } else {
             TAG_TYPEDDICT_TAIL
-        }));
+        });
     }
     // types.NoneType (typeanal.py:1281-1287): the shim fails + builds
     // NoneType inline.
     if fullname == "types.NoneType" {
-        return Ok(Some(TAG_NONE_TYPE));
+        return Some(TAG_NONE_TYPE);
     }
     // Plain Instance (typeanal.py:1289).
-    Ok(Some(TAG_INSTANCE))
+    Some(TAG_INSTANCE)
 }
 
 /// Register this module's Python-facing seam surface (#1677).

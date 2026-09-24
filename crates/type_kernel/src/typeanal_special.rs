@@ -283,10 +283,10 @@ pub(crate) fn rust_classify_special_unbound(
 // Implicit-tuple message tags for the Python shim (visit_tuple_type,
 // typeanal.py:2041-2058). OK takes the normal reconstruction path;
 // EMPTY/SINGLE/MULTI select the one-of-three suggestion note.
-const TAG_TUPLE_OK: i64 = 0; // normal path: named_type + anal_array
-const TAG_TUPLE_EMPTY: i64 = 1; // len(items) == 0 -> Tuple[()] suggestion
-const TAG_TUPLE_SINGLE: i64 = 2; // len(items) == 1 -> spurious comma
-const TAG_TUPLE_MULTI: i64 = 3; // len(items) > 1 -> Tuple[T1, ..., Tn]
+pub(crate) const TAG_TUPLE_OK: i64 = 0; // normal path: named_type + anal_array
+pub(crate) const TAG_TUPLE_EMPTY: i64 = 1; // len(items) == 0 -> Tuple[()] suggestion
+pub(crate) const TAG_TUPLE_SINGLE: i64 = 2; // len(items) == 1 -> spurious comma
+pub(crate) const TAG_TUPLE_MULTI: i64 = 3; // len(items) > 1 -> Tuple[T1, ..., Tn]
 
 /// `visit_tuple_type` implicit-tuple message-arbitration classifier.
 /// Mirrors the branch order of typeanal.py:2041-2058: the error head fires
@@ -301,25 +301,38 @@ pub(crate) fn rust_classify_tuple_type_implicit(
     allow_tuple_literal: bool,
     items_len: usize,
 ) -> PyResult<Option<i64>> {
+    Ok(classify_tuple_type_implicit_inner(
+        implicit,
+        allow_tuple_literal,
+        items_len,
+    ))
+}
+
+/// Pure decision core of `rust_classify_tuple_type_implicit`; PyO3-free so
+/// the standalone path reaches the same table without the seam.
+pub(crate) fn classify_tuple_type_implicit_inner(
+    implicit: bool,
+    allow_tuple_literal: bool,
+    items_len: usize,
+) -> Option<i64> {
     if !(implicit && !allow_tuple_literal) {
-        return Ok(Some(TAG_TUPLE_OK));
+        return Some(TAG_TUPLE_OK);
     }
-    let tag = if items_len == 0 {
-        TAG_TUPLE_EMPTY
-    } else if items_len == 1 {
-        TAG_TUPLE_SINGLE
-    } else {
-        TAG_TUPLE_MULTI
-    };
-    Ok(Some(tag))
+    if items_len == 0 {
+        return Some(TAG_TUPLE_EMPTY);
+    }
+    if items_len == 1 {
+        return Some(TAG_TUPLE_SINGLE);
+    }
+    Some(TAG_TUPLE_MULTI)
 }
 
 // TypeGuard/TypeIs argument tags for the Python shim (anal_type_guard_arg /
 // anal_type_is_arg, typeanal.py:2009-2033). NOT_GUARD lets the Python
 // wrapper return None; FAIL/RECURSE select the shim's side effects.
-const TAG_GUARD_NOT_GUARD: i64 = 0; // fullname not in the family -> Python returns None
-const TAG_GUARD_FAIL: i64 = 1; // arity != 1 -> fail(VALID_TYPE) + Any(from_error)
-const TAG_GUARD_RECURSE: i64 = 2; // arity == 1 -> anal_type(t.args[0])
+pub(crate) const TAG_GUARD_NOT_GUARD: i64 = 0; // fullname not in the family -> Python returns None
+pub(crate) const TAG_GUARD_FAIL: i64 = 1; // arity != 1 -> fail(VALID_TYPE) + Any(from_error)
+pub(crate) const TAG_GUARD_RECURSE: i64 = 2; // arity == 1 -> anal_type(t.args[0])
 
 /// `anal_type_guard_arg` / `anal_type_is_arg` classifier (typeanal.py
 /// 2009-2033). Mirrors the two-step decision: family membership by the
@@ -335,18 +348,34 @@ pub(crate) fn rust_classify_type_guard_arg(
     args_len: usize,
     is_typeis: bool,
 ) -> PyResult<Option<i64>> {
+    Ok(classify_type_guard_arg_inner(
+        &fullname,
+        args_len,
+        is_typeis,
+    ))
+}
+
+/// Pure decision core of `rust_classify_type_guard_arg`; PyO3-free so the
+/// standalone path reaches the same table without the seam. Takes the
+/// fullname by reference: the seam's owned `String` exists only to cross
+/// the PyO3 boundary.
+pub(crate) fn classify_type_guard_arg_inner(
+    fullname: &str,
+    args_len: usize,
+    is_typeis: bool,
+) -> Option<i64> {
     let in_family = if is_typeis {
         fullname == "typing.TypeIs" || fullname == "typing_extensions.TypeIs"
     } else {
         fullname == "typing.TypeGuard" || fullname == "typing_extensions.TypeGuard"
     };
     if !in_family {
-        return Ok(Some(TAG_GUARD_NOT_GUARD));
+        return Some(TAG_GUARD_NOT_GUARD);
     }
     if args_len != 1 {
-        return Ok(Some(TAG_GUARD_FAIL));
+        return Some(TAG_GUARD_FAIL);
     }
-    Ok(Some(TAG_GUARD_RECURSE))
+    Some(TAG_GUARD_RECURSE)
 }
 
 /// Classify the tail of `try_analyze_special_unbound_type`
