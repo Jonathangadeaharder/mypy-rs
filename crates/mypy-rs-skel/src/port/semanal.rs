@@ -233,7 +233,8 @@ mod tests {
         let mut resolver = TypeResolver::new();
         let mut sub = class_model("mod.Sub", &["mod.Sub"], &[]);
         model::refresh_snapshot(&sub, &mut resolver).unwrap();
-        sub.members.insert("shape".to_string(), Member::ClassVar(object_type()));
+        sub.members
+            .insert("shape".to_string(), Member::ClassVar(object_type()));
         let owner = class_member_owner(&mut resolver, &sub, "shape");
         let in_sub = MemberOwner::DefinedIn("mod.Sub".to_string());
         assert_eq!(owner.unwrap(), in_sub);
