@@ -384,7 +384,7 @@ pub(crate) fn rust_is_trivial_bound(t_bytes: &[u8], allow_tuple: bool) -> Option
     is_trivial_bound_inner(&t, allow_tuple)
 }
 
-fn is_trivial_bound_inner(t: &Type, allow_tuple: bool) -> Option<bool> {
+pub(crate) fn is_trivial_bound_inner(t: &Type, allow_tuple: bool) -> Option<bool> {
     match t {
         Type::TypeAliasType { args, .. } => {
             let arg = args.first()?;

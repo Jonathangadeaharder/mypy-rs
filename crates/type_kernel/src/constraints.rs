@@ -30,8 +30,8 @@ use crate::wire::{
 
 // Used only by the wire round-trip tests.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const SUPERTYPE_OF: i64 = 1;
-pub(crate) const SUBTYPE_OF: i64 = 0;
+pub const SUPERTYPE_OF: i64 = 1;
+pub const SUBTYPE_OF: i64 = 0;
 const ANY_SUGGESTION: i64 = 9;
 const TUPLE_LIKE_INSTANCE_NAMES: [&str; 5] = [
     "builtins.tuple",
@@ -42,7 +42,7 @@ const TUPLE_LIKE_INSTANCE_NAMES: [&str; 5] = [
 ];
 
 /// Mirrors `mypy.utils.neg_op` (constraints.py:1617).
-pub(crate) fn neg_op(op: i64) -> i64 {
+pub fn neg_op(op: i64) -> i64 {
     if op == SUBTYPE_OF {
         SUPERTYPE_OF
     } else {
@@ -94,7 +94,7 @@ pub(crate) fn write_ffi_constraint(
 /// (constraints.py:1810-1812). Rust-internal only; `write`/`read` stay
 /// 3-field, so a decoded constraint carries an empty list.
 #[derive(Debug, Clone)]
-pub(crate) struct Constraint {
+pub struct Constraint {
     pub origin_type_var: Type,
     pub op: i64, // SUBTYPE_OF or SUPERTYPE_OF
     pub target: Type,
@@ -159,7 +159,11 @@ pub(crate) fn rust_infer_constraints(
 
 /// Emit a constraint for the top-level `TypeVarType` template, mirroring
 /// `_infer_constraints`'s first branch. Defer (None) on anything else.
-fn infer_constraints_inner(template: &Type, actual: &Type, direction: i64) -> Option<Constraint> {
+pub(crate) fn infer_constraints_inner(
+    template: &Type,
+    actual: &Type,
+    direction: i64,
+) -> Option<Constraint> {
     // Unions must be normalized before emitting, which Rust cannot do — defer
     // so Python's `_infer_constraints` runs make_simplified_union first.
     if matches!(
@@ -700,7 +704,7 @@ fn unwrap_type_type_dispatch(
 /// Outer `None` = defer (an undecidable gate, or the recursion itself
 /// deferred); inner `None` = unsatisfiable, per Python.
 #[allow(clippy::type_complexity)]
-fn infer_constraints_if_possible_inner(
+pub(crate) fn infer_constraints_if_possible_inner(
     template: &Type,
     actual: &Type,
     direction: i64,
@@ -778,7 +782,7 @@ fn rep_to_constraint(r: ConstraintRep) -> Constraint {
 /// `any_constraints` body (constraints.py:1070+): convert the options,
 /// run the shared kernel fold, convert back. `None` defers the branch to
 /// Python (`any-constraints`).
-fn run_any_constraints(
+pub(crate) fn run_any_constraints(
     options: Vec<Option<Vec<Constraint>>>,
     eager: bool,
     strict_optional: bool,
