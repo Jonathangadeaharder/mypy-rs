@@ -31,7 +31,7 @@
 //! decides differently: every function is the identical code path the
 //! `#[pyfunction]` seam calls, minus the wire decode/encode round trip.
 //!
-//! Three families are exposed by this increment:
+//! The exposed families, each named after the mypy function it ports:
 //!
 //! * the `Any`-rewriting algebra and the type queries of
 //!   `mypy/semanal.py` and `mypy/typeanal.py`, which the driver needs to
@@ -41,7 +41,13 @@
 //!   decide the parameter names a signature displays;
 //! * the two record-decidable arms of
 //!   `SemanticAnalyzer.lookup_qualified`, the TypeInfo MRO step and the
-//!   MypyFile symbol-table chain.
+//!   MypyFile symbol-table chain;
+//! * base-class and metaclass resolution: the per-base decisions of
+//!   `clean_up_bases_and_infer_type_variables` and
+//!   `configure_base_classes`, the `verify_base_classes` /
+//!   `verify_duplicate_base_classes` MRO tail, the two
+//!   `six`/`future`/`past` compat-helper classifiers, and the
+//!   `get_declared_metaclass` / `recalculate_metaclass` decision heads.
 //!
 //! # Deferral is a hard error here, not a fallback
 //!
@@ -56,6 +62,13 @@
 //! `typeinfo::NativeTypeResolver`, a `#[pyclass]`, and
 //! `aliases::TypeAliasResolver` is crate-private.
 
+use crate::semanal_algebra as algebra;
+use crate::semanal_bases as bases;
+use crate::semanal_lookup as lookup;
+use crate::semanal_metaclass as meta;
+use crate::semanal_shared as shared;
+use crate::typeanal_queries as queries;
+
 pub use crate::skeleton_api::{ModuleSnapshot, Type, TypeInfoSnapshot, TypeResolver};
 
 /// `mypy.semanal.make_any_non_explicit` (semanal.py:10161).
@@ -66,7 +79,7 @@ pub use crate::skeleton_api::{ModuleSnapshot, Type, TypeInfoSnapshot, TypeResolv
 /// `semanal_algebra::make_any_non_explicit_inner`, the same code the
 /// `rust_make_any_non_explicit` seam wraps.
 pub fn make_any_non_explicit(t: Type) -> Type {
-    crate::semanal_algebra::make_any_non_explicit_inner(t)
+    algebra::make_any_non_explicit_inner(t)
 }
 
 /// `mypy.semanal.make_any_non_unimported` (semanal.py:10188).
@@ -76,7 +89,7 @@ pub fn make_any_non_explicit(t: Type) -> Type {
 /// `AnyType` it walks whether or not it rewrote it. Lifts
 /// `semanal_algebra::make_any_non_unimported_inner`.
 pub fn make_any_non_unimported(t: Type) -> Type {
-    crate::semanal_algebra::make_any_non_unimported_inner(t)
+    algebra::make_any_non_unimported_inner(t)
 }
 
 /// `mypy.semanal.replace_implicit_first_type` (semanal.py:9994).
@@ -91,7 +104,7 @@ pub fn make_any_non_unimported(t: Type) -> Type {
 /// to: the caller must reject loudly. Lifts
 /// `semanal_algebra::replace_implicit_first_type_inner`.
 pub fn replace_implicit_first_type(sig: Type, new: &Type) -> Option<Type> {
-    crate::semanal_algebra::replace_implicit_first_type_inner(sig, new)
+    algebra::replace_implicit_first_type_inner(sig, new)
 }
 
 /// `mypy.typeanal.has_explicit_any` (typeanal.py:4276).
@@ -105,8 +118,7 @@ pub fn replace_implicit_first_type(sig: Type, new: &Type) -> Option<Type> {
 /// `TypeAliasType` whose target the wire type does not carry. Lifts
 /// `typeanal_queries::has_explicit_any_inner`.
 pub fn has_explicit_any(t: &Type) -> Option<bool> {
-    let explicit = crate::typeanal_queries::EXPLICIT;
-    crate::typeanal_queries::has_explicit_any_inner(t, explicit)
+    queries::has_explicit_any_inner(t, queries::EXPLICIT)
 }
 
 /// `mypy.typeanal.has_any_from_unimported_type` (typeanal.py:4307).
@@ -115,8 +127,7 @@ pub fn has_explicit_any(t: &Type) -> Option<bool> {
 /// `type_of_any == from_unimported_type` instead. `None` defers on a
 /// `TypeAliasType`. Lifts `typeanal_queries::has_explicit_any_inner`.
 pub fn has_any_from_unimported_type(t: &Type) -> Option<bool> {
-    let unimported = crate::typeanal_queries::FROM_UNIMPORTED_TYPE;
-    crate::typeanal_queries::has_explicit_any_inner(t, unimported)
+    queries::has_explicit_any_inner(t, queries::FROM_UNIMPORTED_TYPE)
 }
 
 /// `mypy.typeanal.check_for_explicit_any` (typeanal.py:3805).
@@ -190,7 +201,7 @@ pub fn wrong_type_arg_count_msg(min: usize, max: usize, given: usize, type_name:
 /// minus `MAGIC_METHODS_ALLOWING_KWARGS`. Lifts
 /// `semanal_shared::special_function_elide_names_inner`.
 pub fn special_function_elide_names(name: &str) -> bool {
-    crate::semanal_shared::special_function_elide_names_inner(name)
+    shared::special_function_elide_names_inner(name)
 }
 
 /// `mypy.sharedparse.argument_elide_name` (sharedparse.py:113).
@@ -199,7 +210,7 @@ pub fn special_function_elide_names(name: &str) -> bool {
 /// dunder that is not also a trailing one. `None` (an unnamed parameter)
 /// is never elided. Lifts `semanal_shared::argument_elide_name_inner`.
 pub fn argument_elide_name(name: Option<&str>) -> bool {
-    crate::semanal_shared::argument_elide_name_inner(name)
+    shared::argument_elide_name_inner(name)
 }
 
 /// The answer one `SemanticAnalyzer.lookup_qualified` dot-chain step
@@ -242,7 +253,7 @@ pub fn lookup_typeinfo_member(
     let Some(snap) = resolver.get(class_fullname) else {
         return LookupOutcome::Deferred;
     };
-    match crate::semanal_lookup::find_member_in_mro(resolver, snap, name) {
+    match lookup::find_member_in_mro(resolver, snap, name) {
         Some(defining) => LookupOutcome::Resolved(defining),
         None => LookupOutcome::NotFound,
     }
@@ -267,10 +278,424 @@ pub fn lookup_module_chain(
     dotted_name: &str,
 ) -> LookupOutcome {
     let parts: Vec<&str> = dotted_name.split('.').collect();
-    match crate::semanal_lookup::walk_mypyfile_chain(resolver, &parts, module_fullname) {
-        crate::semanal_lookup::WalkOutcome::Resolved(full) => LookupOutcome::Resolved(full),
-        crate::semanal_lookup::WalkOutcome::NotFound => LookupOutcome::NotFound,
-        crate::semanal_lookup::WalkOutcome::Defer => LookupOutcome::Deferred,
+    match lookup::walk_mypyfile_chain(resolver, &parts, module_fullname) {
+        lookup::WalkOutcome::Resolved(full) => LookupOutcome::Resolved(full),
+        lookup::WalkOutcome::NotFound => LookupOutcome::NotFound,
+        lookup::WalkOutcome::Defer => LookupOutcome::Deferred,
+    }
+}
+
+/// What `SemanticAnalyzer.clean_up_bases_and_infer_type_variables`
+/// (semanal.py:2709) does with one base expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseCleanup {
+    /// Not a `Generic[...]` / `Protocol[...]` declaration: the base stays
+    /// in `defn.base_type_exprs` and is analyzed normally.
+    Keep,
+    /// `typing.Generic`, with or without arguments. Removed; its type
+    /// variables are declared for the class and `is_protocol` is unchanged
+    /// (semanal.py:2824: a bare `Generic` is still a declaration).
+    Generic,
+    /// `typing.Protocol` / `typing_extensions.Protocol` with arguments.
+    /// Removed; its type variables are declared and `is_protocol` is set.
+    ProtocolGeneric,
+    /// A bare `Protocol` name. Removed; `is_protocol` is set and no type
+    /// variables are declared.
+    BareProtocol,
+}
+
+/// The per-base decision of
+/// `SemanticAnalyzer.clean_up_bases_and_infer_type_variables`
+/// (semanal.py:2817-2843 + 2768-2774).
+///
+/// `fullname` is the resolved `sym.node.fullname` of an `UnboundType` base,
+/// or `None` when the lookup failed or the node is missing.
+/// `in_protocol_names` is whether that fullname is in `mypy.types`'
+/// `PROTOCOL_NAMES`; the set travels from the caller so it stays
+/// single-sourced, exactly as the hybrid shim passes it. `has_args` is
+/// `bool(base.args)`.
+///
+/// Branch order mirrors Python exactly: `typing.Generic` wins first, then
+/// the `Protocol` names split on whether arguments are present. Always
+/// decidable. Lifts `semanal_bases::clean_up_bases_inner`.
+pub fn clean_up_bases(
+    fullname: Option<&str>,
+    in_protocol_names: bool,
+    has_args: bool,
+) -> BaseCleanup {
+    match bases::clean_up_bases_inner(fullname, in_protocol_names, has_args) {
+        bases::ACTION_GENERIC => BaseCleanup::Generic,
+        bases::ACTION_PROTOCOL_GENERIC => BaseCleanup::ProtocolGeneric,
+        bases::ACTION_BARE_PROTOCOL => BaseCleanup::BareProtocol,
+        bases::ACTION_KEEP => BaseCleanup::Keep,
+        other => unreachable!("clean_up_bases_inner returned the tag {other}"),
+    }
+}
+
+/// The option gates `SemanticAnalyzer.configure_base_classes`
+/// (semanal.py:3348-3381) reads before validating one base. The derived
+/// `Default` is every gate off, which is mypy's default for all three
+/// options plus a non-stub file.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BaseClassOptions {
+    /// `--disallow-subclassing-any`: an `Any` base is an error, not just a
+    /// `fallback_to_any` marker.
+    pub disallow_subclassing_any: bool,
+    /// `--disallow-any-unimported`: run the `has_any_from_unimported_type`
+    /// walk over the base.
+    pub disallow_any_unimported: bool,
+    /// `--disallow-any-explicit`: run the `has_explicit_any` walk over the
+    /// base.
+    pub disallow_any_explicit: bool,
+    /// Whether the file is a typeshed stub, which suppresses the
+    /// explicit-`Any` report.
+    pub is_typeshed_stub_file: bool,
+}
+
+/// The per-base kind `configure_base_classes` decides from the
+/// `ProperType` isinstance chain (semanal.py:3349-3372).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseKind {
+    /// A `TupleType` base: the caller runs `configure_tuple_base_class`.
+    Tuple,
+    /// A plain `Instance` base: append it to `info.bases`.
+    Instance,
+    /// An `Instance` base that is a `NewType`: mypy fails
+    /// 'Cannot subclass "NewType"' and still appends the base.
+    NewTypeFail,
+    /// An `AnyType` base with `disallow_subclassing_any` off: only
+    /// `info.fallback_to_any` is set.
+    AnyAllowed,
+    /// An `AnyType` base with `disallow_subclassing_any` on: mypy also
+    /// fails "Class cannot subclass ...".
+    AnyRejected,
+    /// A `TypedDictType` base: append `base.fallback`.
+    TypedDictFallback,
+    /// Anything else: mypy fails "Invalid base class ..." and sets
+    /// `fallback_to_any`.
+    Invalid,
+}
+
+/// One base's `configure_base_classes` decision plus the two `Any` reports
+/// the caller must emit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BaseConfiguration {
+    /// What kind of base this is, and so which effect mypy applies.
+    pub kind: BaseKind,
+    /// Emit `msg.unimported_type_becomes_any` for this base. Only ever true
+    /// when `BaseClassOptions::disallow_any_unimported` is set.
+    pub report_unimported_any: bool,
+    /// Emit `msg.explicit_any` for this base. Only ever true when
+    /// `disallow_any_explicit` is set and the file is not a typeshed stub.
+    pub report_explicit_any: bool,
+}
+
+/// `SemanticAnalyzer.configure_base_classes` for one base
+/// (semanal.py:3348-3381).
+///
+/// `base` must be the base's `ProperType` (mypy runs `get_proper_type`
+/// before the isinstance chain), so its top-level variant decides the kind
+/// one to one. The two `Any` walks run under exactly the gates Python uses:
+/// `has_any_from_unimported_type` only when `disallow_any_unimported`,
+/// `has_explicit_any` only when `disallow_any_explicit` and the file is not
+/// a typeshed stub.
+///
+/// `None` means a walk reached a `TypeAliasType` the records cannot expand
+/// (see the module docs); the caller must reject loudly. Every side effect
+/// stays with the caller: `configure_tuple_base_class`, the two `fail`
+/// emissions, `info.fallback_to_any` and the `info.bases` writes.
+///
+/// Lifts the per-base body of `semanal_bases::rust_classify_configure_bases`
+/// minus its wire decode: `wire_base_kind`, `has_any_from_unimported_inner`,
+/// `typeanal_queries::has_explicit_any_inner` and
+/// `classify_configure_base_inner`.
+pub fn configure_base_class(
+    base: &Type,
+    is_newtype: bool,
+    opts: &BaseClassOptions,
+) -> Option<BaseConfiguration> {
+    let kind = bases::wire_base_kind(base);
+    let unimported_any = if opts.disallow_any_unimported {
+        bases::has_any_from_unimported_inner(base)
+    } else {
+        Some(false)
+    };
+    let explicit_any = if opts.disallow_any_explicit && !opts.is_typeshed_stub_file {
+        queries::has_explicit_any_inner(base, queries::EXPLICIT)
+    } else {
+        Some(false)
+    };
+    let decided = bases::classify_configure_base_inner(
+        kind,
+        is_newtype,
+        opts.disallow_subclassing_any,
+        unimported_any,
+        explicit_any,
+    )?;
+    let configuration = BaseConfiguration {
+        kind: base_kind(decided.0),
+        report_unimported_any: decided.1,
+        report_explicit_any: decided.2,
+    };
+    Some(configuration)
+}
+
+/// `CONFIGURE_*` tag to [`BaseKind`]. The tag set is closed, so an unknown
+/// value is a kernel contract break rather than an input error.
+fn base_kind(tag: i64) -> BaseKind {
+    match tag {
+        bases::CONFIGURE_TUPLE => BaseKind::Tuple,
+        bases::CONFIGURE_INSTANCE => BaseKind::Instance,
+        bases::CONFIGURE_INSTANCE_NEWTYPE_FAIL => BaseKind::NewTypeFail,
+        bases::CONFIGURE_ANY_OK => BaseKind::AnyAllowed,
+        bases::CONFIGURE_ANY_FAIL => BaseKind::AnyRejected,
+        bases::CONFIGURE_TYPEDDICT_FALLBACK => BaseKind::TypedDictFallback,
+        bases::CONFIGURE_INVALID_BASE => BaseKind::Invalid,
+        other => unreachable!("classify_configure_base_inner returned {other}"),
+    }
+}
+
+/// The `verify_base_classes` + `verify_duplicate_base_classes` tail of
+/// `configure_base_classes` (semanal.py:3390-3397 + 3512-3526).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MroTail {
+    /// At least one base cycles back to the class. mypy fails "Cycle in
+    /// inheritance hierarchy" once per index in `cyclic`, in `info.bases`
+    /// order, and calls `set_dummy_mro`.
+    DummyHierarchy { cyclic: Vec<usize> },
+    /// A duplicate direct base. mypy fails 'Duplicate base class "..."' and
+    /// calls `set_any_mro`, then `calculate_class_mro`.
+    AnyHierarchy { duplicate: String },
+    /// A clean hierarchy: the caller just runs `calculate_class_mro`.
+    Proceed,
+}
+
+/// The MRO tail decision of `SemanticAnalyzer.configure_base_classes`
+/// (semanal.py:3390-3397, folding `verify_base_classes` and
+/// `verify_duplicate_base_classes` at :3512-3526).
+///
+/// `cyclic_bases` holds the indices into `info.bases` whose base cycles back
+/// to the class being configured (mypy's `is_base_class` walk);
+/// `duplicate_base` is the name `find_duplicate(direct_base_classes())`
+/// returned. Cyclic bases win, matching Python's early return, then a
+/// duplicate, else proceed. Always decidable. Lifts
+/// `semanal_bases::configure_mro_tail_inner`.
+pub fn configure_mro_tail(cyclic_bases: &[usize], duplicate_base: Option<&str>) -> MroTail {
+    let (tag, cyclic, duplicate) = bases::configure_mro_tail_inner(cyclic_bases, duplicate_base);
+    match tag {
+        bases::MRO_DUMMY => MroTail::DummyHierarchy { cyclic },
+        bases::MRO_ANY => match duplicate {
+            Some(duplicate) => MroTail::AnyHierarchy { duplicate },
+            None => unreachable!("the MRO_ANY tag carries a duplicate name"),
+        },
+        bases::MRO_PROCEED => MroTail::Proceed,
+        other => unreachable!("configure_mro_tail_inner returned the tag {other}"),
+    }
+}
+
+/// Whether a base expression is a `six.with_metaclass(M, B1, ...)`
+/// compat-helper call: the base side of
+/// `SemanticAnalyzer.infer_metaclass_and_bases_from_compat_helpers`
+/// (semanal.py:3321-3338).
+///
+/// `fullname` is the callee's `fullname`, which the caller must have
+/// populated by analyzing the base expression first. Matches
+/// `six.with_metaclass`, `future.utils.with_metaclass` and
+/// `past.utils.with_metaclass` with at least one argument, all positional.
+/// On `true` mypy sets `with_meta_expr = args[0]` and rewrites
+/// `defn.base_type_exprs = args[1:]`. Always decidable. Lifts
+/// `semanal_bases::classify_with_metaclass_inner`.
+pub fn compat_helper_with_metaclass(
+    fullname: Option<&str>,
+    args_len: usize,
+    all_positional: bool,
+) -> bool {
+    let tag = bases::classify_with_metaclass_inner(fullname, args_len, all_positional);
+    tag == bases::ACTION_WITH_METACLASS
+}
+
+/// Whether a decorator is `@six.add_metaclass(M)`: the decorator side of
+/// `SemanticAnalyzer.infer_metaclass_and_bases_from_compat_helpers`
+/// (semanal.py:3369-3379).
+///
+/// Matches `six.add_metaclass` with exactly one positional argument. On
+/// `true` mypy sets `add_meta_expr = args[0]` and stops scanning the
+/// decorators. Always decidable. Lifts
+/// `semanal_bases::classify_add_metaclass_inner`.
+pub fn compat_helper_add_metaclass(
+    fullname: Option<&str>,
+    args_len: usize,
+    arg0_positional: bool,
+) -> bool {
+    let tag = bases::classify_add_metaclass_inner(fullname, args_len, arg0_positional);
+    tag == bases::ACTION_ADD_METACLASS
+}
+
+/// The resolved facts `SemanticAnalyzer.get_declared_metaclass`
+/// (semanal.py:3767-3835) gates on.
+///
+/// The hybrid shim reads each field from a live Python object through
+/// PyO3; a standalone caller supplies them from its own records, which is
+/// the substitution wave-1 rule 4 asks for. `None` in an `Option` field
+/// means "the fact could not be read", and the gate that needs it defers.
+/// The derived `Default` is therefore the all-unreadable state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeclaredMetaclassFacts {
+    /// The metaclass expression's dotted name, or `None` when it is not a
+    /// `NameExpr` / `MemberExpr` chain.
+    pub mc_name: Option<String>,
+    /// `lookup_qualified` returned `None`.
+    pub sym_missing: bool,
+    /// The symbol node is a `Var`.
+    pub sym_is_var: Option<bool>,
+    /// The symbol node is a `PlaceholderNode`.
+    pub sym_is_placeholder: Option<bool>,
+    /// The `Var` symbol's proper type is an `AnyType`. Only consulted when
+    /// `sym_is_var` is true.
+    pub var_any: Option<bool>,
+    /// The resolved symbol is a `TypeInfo`.
+    pub meta_is_typeinfo: Option<bool>,
+    /// That `TypeInfo` has a `tuple_type`. Only consulted when
+    /// `meta_is_typeinfo` is true.
+    pub meta_has_tuple_type: Option<bool>,
+    /// That `TypeInfo` inherits from `type`.
+    pub meta_is_metaclass: Option<bool>,
+}
+
+/// The gate `get_declared_metaclass` stopped at, each with the mypy effect
+/// the caller must apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclaredMetaclass {
+    /// A valid metaclass `TypeInfo`: mypy runs `fill_typevars` and returns
+    /// `(inst, False, False)`.
+    Valid,
+    /// The metaclass name is not representable: mypy fails 'Dynamic
+    /// metaclass not supported for "..."' and returns `(None, False, True)`.
+    Dynamic,
+    /// `lookup_qualified` failed; the name error is reported elsewhere.
+    NameError,
+    /// A `Var` symbol whose proper type is `Any`: mypy fails 'Class cannot
+    /// use "..." as a metaclass' only under `disallow_subclassing_any`.
+    AnyVar,
+    /// A `PlaceholderNode` symbol: mypy returns `(None, True, False)` and
+    /// the class deferral runs.
+    Placeholder,
+    /// The symbol is not a `TypeInfo`, or is a tuple-named class: mypy
+    /// fails 'Invalid metaclass "..."'.
+    Invalid,
+    /// The class does not inherit from `type`: mypy fails 'Metaclasses not
+    /// inheriting from "type" are not supported'.
+    NotMetaclass,
+}
+
+/// `SemanticAnalyzer.get_declared_metaclass` decision head
+/// (semanal.py:3767-3835).
+///
+/// Runs mypy's strictly sequential gate chain over [`DeclaredMetaclassFacts`]
+/// and returns the gate it stopped at. `None` means a fact was unreadable at
+/// the gate that needed it, which is the module-docs deferral. Every side
+/// effect stays with the caller: the four `self.fail` calls, the
+/// `disallow_subclassing_any` option gate on [`DeclaredMetaclass::AnyVar`],
+/// and the `fill_typevars` construction.
+///
+/// Lifts `semanal_metaclass::classify_declared_metaclass_inner`.
+pub fn get_declared_metaclass(facts: &DeclaredMetaclassFacts) -> Option<DeclaredMetaclass> {
+    let tag = meta::classify_declared_metaclass_inner(
+        facts.mc_name.as_deref(),
+        facts.sym_missing,
+        facts.sym_is_var,
+        facts.sym_is_placeholder,
+        facts.var_any,
+        facts.meta_is_typeinfo,
+        facts.meta_has_tuple_type,
+        facts.meta_is_metaclass,
+    )?;
+    Some(declared_metaclass(tag))
+}
+
+/// `META_*` tag to [`DeclaredMetaclass`]. The tag set is closed.
+fn declared_metaclass(tag: i64) -> DeclaredMetaclass {
+    match tag {
+        meta::META_OK => DeclaredMetaclass::Valid,
+        meta::META_DYNAMIC => DeclaredMetaclass::Dynamic,
+        meta::META_NAME_ERROR => DeclaredMetaclass::NameError,
+        meta::META_ANY => DeclaredMetaclass::AnyVar,
+        meta::META_DEFER => DeclaredMetaclass::Placeholder,
+        meta::META_INVALID => DeclaredMetaclass::Invalid,
+        meta::META_NOT_METACLASS => DeclaredMetaclass::NotMetaclass,
+        other => unreachable!("classify_declared_metaclass_inner returned {other}"),
+    }
+}
+
+/// The facts `SemanticAnalyzer.recalculate_metaclass` (semanal.py:3837)
+/// scans. mypy's two unconditional writes (`declared_metaclass`,
+/// `metaclass_type = calculate_metaclass_type()`) happen before this is
+/// consulted, so `meta_present` describes the recalculated metaclass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecalculateMetaclassFacts {
+    /// Any class in the MRO is a protocol.
+    pub any_protocol_mro: bool,
+    /// The class has a metaclass at all (not `None`).
+    pub meta_present: bool,
+    /// That metaclass is `builtins.type`. Only consulted when
+    /// `any_protocol_mro` and `meta_present` both hold.
+    pub meta_is_builtins_type: Option<bool>,
+    /// That metaclass has the `enum.EnumMeta` base.
+    pub meta_is_enum: Option<bool>,
+    /// The class definition is generic (`defn.type_vars` non-empty).
+    pub type_vars_nonempty: bool,
+}
+
+/// The `recalculate_metaclass` tail decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecalculatedMetaclass {
+    /// Nothing to do.
+    Unchanged,
+    /// A protocol in the MRO with no metaclass or the default one: mypy
+    /// installs `named_type_or_none("abc.ABCMeta", [])`.
+    AbcMeta,
+    /// The metaclass derives from `enum.EnumMeta`: mypy sets
+    /// `info.is_enum = True`.
+    IsEnum,
+    /// The same, on a generic class definition: mypy also fails "Enum class
+    /// cannot be generic".
+    EnumGenericFail,
+}
+
+/// `SemanticAnalyzer.recalculate_metaclass` decision head
+/// (semanal.py:3837-3856).
+///
+/// Folds mypy's protocol-MRO scan and enum scan into one exclusive answer.
+/// The arms are exclusive by construction: when the `abc.ABCMeta`
+/// replacement fires it installs `abc.ABCMeta`, never an enum metaclass, or
+/// leaves a `None` / `builtins.type` metaclass in place, so the enum scan
+/// cannot fire on the same class. Branch order mirrors Python: the
+/// protocol-MRO block runs before the enum scan, which reads the
+/// post-replacement metaclass.
+///
+/// `None` is the module-docs deferral. Every side effect stays with the
+/// caller: the `named_type_or_none("abc.ABCMeta")` write, `is_enum = True`
+/// and the "Enum class cannot be generic" fail. Lifts
+/// `semanal_metaclass::classify_recalculate_metaclass_inner`.
+pub fn recalculate_metaclass(facts: &RecalculateMetaclassFacts) -> Option<RecalculatedMetaclass> {
+    let tag = meta::classify_recalculate_metaclass_inner(
+        facts.any_protocol_mro,
+        facts.meta_present,
+        facts.meta_is_builtins_type,
+        facts.meta_is_enum,
+        facts.type_vars_nonempty,
+    )?;
+    Some(recalculated_metaclass(tag))
+}
+
+/// `RECALC_*` tag to [`RecalculatedMetaclass`]. The tag set is closed.
+fn recalculated_metaclass(tag: i64) -> RecalculatedMetaclass {
+    match tag {
+        meta::RECALC_OK => RecalculatedMetaclass::Unchanged,
+        meta::RECALC_ABCMETA => RecalculatedMetaclass::AbcMeta,
+        meta::RECALC_IS_ENUM => RecalculatedMetaclass::IsEnum,
+        meta::RECALC_ENUM_GENERIC_FAIL => RecalculatedMetaclass::EnumGenericFail,
+        other => unreachable!("classify_recalculate_metaclass_inner returned {other}"),
     }
 }
 
@@ -278,7 +703,7 @@ pub fn lookup_module_chain(
 mod tests {
     use super::*;
     use crate::typeanal_queries::{EXPLICIT, FROM_UNIMPORTED_TYPE};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     /// `TypeOfAny.from_error` (mypy/types.py:213-239). The kernel keeps
     /// this constant private, so the test names it.
@@ -324,6 +749,47 @@ mod tests {
             typ: Box::new(target),
             from_star_syntax: false,
         }
+    }
+
+    fn tuple_type() -> Type {
+        Type::TupleType {
+            partial_fallback: Box::new(instance("builtins.tuple", vec![])),
+            items: Vec::new(),
+            implicit: false,
+        }
+    }
+
+    fn typed_dict() -> Type {
+        Type::TypedDictType {
+            fallback: Box::new(instance("builtins.dict", vec![])),
+            items: Vec::new(),
+            required_keys: HashSet::new(),
+            readonly_keys: HashSet::new(),
+            is_closed: false,
+        }
+    }
+
+    /// The facts of a resolved, valid metaclass: a named symbol that is a
+    /// non-tuple `TypeInfo` inheriting from `type`. Each test overrides one
+    /// field to reach a different gate.
+    fn declared_facts() -> DeclaredMetaclassFacts {
+        DeclaredMetaclassFacts {
+            mc_name: Some("mod.Meta".to_string()),
+            sym_missing: false,
+            sym_is_var: Some(false),
+            sym_is_placeholder: Some(false),
+            var_any: Some(false),
+            meta_is_typeinfo: Some(true),
+            meta_has_tuple_type: Some(false),
+            meta_is_metaclass: Some(true),
+        }
+    }
+
+    /// `configure_base_class` narrowed to the kind, asserting the decision
+    /// was reachable at all (a `None` here means an unexpected deferral).
+    fn base_kind_of(base: &Type, is_newtype: bool, opts: &BaseClassOptions) -> BaseKind {
+        let decided = configure_base_class(base, is_newtype, opts);
+        decided.unwrap().kind
     }
 
     fn callable(arg_types: Vec<Type>) -> Type {
@@ -612,5 +1078,229 @@ mod tests {
             lookup_module_chain(&resolver, "pkg", "pkg.x"),
             LookupOutcome::Deferred
         );
+    }
+
+    #[test]
+    fn clean_up_bases_declares_generic_and_protocol_bases() {
+        let generic = clean_up_bases(Some("typing.Generic"), false, false);
+        assert_eq!(generic, BaseCleanup::Generic);
+        let subscripted = clean_up_bases(Some("typing.Protocol"), true, true);
+        assert_eq!(subscripted, BaseCleanup::ProtocolGeneric);
+        let bare = clean_up_bases(Some("typing.Protocol"), true, false);
+        assert_eq!(bare, BaseCleanup::BareProtocol);
+    }
+
+    #[test]
+    fn clean_up_bases_keeps_an_ordinary_or_unresolved_base() {
+        let plain = clean_up_bases(Some("mod.Base"), false, false);
+        assert_eq!(plain, BaseCleanup::Keep);
+        let unresolved = clean_up_bases(None, true, true);
+        assert_eq!(unresolved, BaseCleanup::Keep);
+    }
+
+    #[test]
+    fn configure_base_class_splits_an_instance_on_the_newtype_flag() {
+        let base = instance("builtins.object", vec![]);
+        let opts = BaseClassOptions::default();
+        assert_eq!(base_kind_of(&base, false, &opts), BaseKind::Instance);
+        assert_eq!(base_kind_of(&base, true, &opts), BaseKind::NewTypeFail);
+    }
+
+    #[test]
+    fn configure_base_class_gates_the_explicit_any_report() {
+        let base = any(EXPLICIT);
+        let off_opts = BaseClassOptions::default();
+        let off = configure_base_class(&base, false, &off_opts);
+        assert!(!off.unwrap().report_explicit_any);
+        let opts = BaseClassOptions {
+            disallow_any_explicit: true,
+            ..Default::default()
+        };
+        let on = configure_base_class(&base, false, &opts);
+        let on = on.unwrap();
+        assert_eq!(on.kind, BaseKind::AnyAllowed);
+        assert!(on.report_explicit_any);
+    }
+
+    #[test]
+    fn configure_base_class_rejects_an_any_base_under_the_option() {
+        let opts = BaseClassOptions {
+            disallow_subclassing_any: true,
+            ..Default::default()
+        };
+        let base = any(EXPLICIT);
+        assert_eq!(base_kind_of(&base, false, &opts), BaseKind::AnyRejected);
+    }
+
+    #[test]
+    fn configure_base_class_kinds_follow_the_proper_type_chain() {
+        let opts = BaseClassOptions::default();
+        let tuple = base_kind_of(&tuple_type(), false, &opts);
+        assert_eq!(tuple, BaseKind::Tuple);
+        let dict = base_kind_of(&typed_dict(), false, &opts);
+        assert_eq!(dict, BaseKind::TypedDictFallback);
+        let invalid = base_kind_of(&Type::NoneType, false, &opts);
+        assert_eq!(invalid, BaseKind::Invalid);
+    }
+
+    #[test]
+    fn configure_base_class_defers_on_an_aliased_base() {
+        let opts = BaseClassOptions {
+            disallow_any_unimported: true,
+            ..Default::default()
+        };
+        let base = alias("mod.A");
+        assert_eq!(configure_base_class(&base, false, &opts), None);
+    }
+
+    #[test]
+    fn configure_mro_tail_lets_a_clean_hierarchy_proceed() {
+        assert_eq!(configure_mro_tail(&[], None), MroTail::Proceed);
+    }
+
+    #[test]
+    fn configure_mro_tail_names_a_duplicate_base() {
+        let tail = configure_mro_tail(&[], Some("mod.Base"));
+        let expected = MroTail::AnyHierarchy {
+            duplicate: "mod.Base".to_string(),
+        };
+        assert_eq!(tail, expected);
+    }
+
+    #[test]
+    fn configure_mro_tail_lets_a_cycle_win_over_a_duplicate() {
+        let tail = configure_mro_tail(&[1, 2], Some("mod.Base"));
+        match tail {
+            MroTail::DummyHierarchy { cyclic } => assert_eq!(cyclic, vec![1usize, 2usize]),
+            other => panic!("expected a dummy hierarchy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compat_helper_with_metaclass_matches_the_three_helper_names() {
+        let six = compat_helper_with_metaclass(Some("six.with_metaclass"), 2, true);
+        assert!(six);
+        let future = compat_helper_with_metaclass(Some("future.utils.with_metaclass"), 1, true);
+        assert!(future);
+        let past = compat_helper_with_metaclass(Some("past.utils.with_metaclass"), 1, true);
+        assert!(past);
+    }
+
+    #[test]
+    fn compat_helper_with_metaclass_rejects_a_bad_arity_or_kind() {
+        assert!(!compat_helper_with_metaclass(Some("six.with_metaclass"), 0, true));
+        assert!(!compat_helper_with_metaclass(Some("six.with_metaclass"), 2, false));
+        assert!(!compat_helper_with_metaclass(Some("mod.NotMeta"), 2, true));
+        assert!(!compat_helper_with_metaclass(None, 2, true));
+    }
+
+    #[test]
+    fn compat_helper_add_metaclass_matches_only_six_add_metaclass() {
+        assert!(compat_helper_add_metaclass(Some("six.add_metaclass"), 1, true));
+    }
+
+    #[test]
+    fn compat_helper_add_metaclass_rejects_arity_kind_and_name() {
+        assert!(!compat_helper_add_metaclass(Some("six.add_metaclass"), 2, true));
+        assert!(!compat_helper_add_metaclass(Some("six.add_metaclass"), 1, false));
+        assert!(!compat_helper_add_metaclass(Some("six.with_metaclass"), 1, true));
+    }
+
+    #[test]
+    fn get_declared_metaclass_accepts_a_valid_metaclass() {
+        let facts = declared_facts();
+        let decided = get_declared_metaclass(&facts);
+        assert_eq!(decided, Some(DeclaredMetaclass::Valid));
+    }
+
+    #[test]
+    fn get_declared_metaclass_walks_the_gate_chain_in_order() {
+        let dynamic = DeclaredMetaclassFacts {
+            mc_name: None,
+            ..declared_facts()
+        };
+        let decided = get_declared_metaclass(&dynamic);
+        assert_eq!(decided, Some(DeclaredMetaclass::Dynamic));
+        let any_var = DeclaredMetaclassFacts {
+            sym_is_var: Some(true),
+            var_any: Some(true),
+            ..declared_facts()
+        };
+        let decided = get_declared_metaclass(&any_var);
+        assert_eq!(decided, Some(DeclaredMetaclass::AnyVar));
+        let placeholder = DeclaredMetaclassFacts {
+            sym_is_placeholder: Some(true),
+            ..declared_facts()
+        };
+        let decided = get_declared_metaclass(&placeholder);
+        assert_eq!(decided, Some(DeclaredMetaclass::Placeholder));
+        let tuple_named = DeclaredMetaclassFacts {
+            meta_has_tuple_type: Some(true),
+            ..declared_facts()
+        };
+        let decided = get_declared_metaclass(&tuple_named);
+        assert_eq!(decided, Some(DeclaredMetaclass::Invalid));
+        let not_meta = DeclaredMetaclassFacts {
+            meta_is_metaclass: Some(false),
+            ..declared_facts()
+        };
+        let decided = get_declared_metaclass(&not_meta);
+        assert_eq!(decided, Some(DeclaredMetaclass::NotMetaclass));
+    }
+
+    #[test]
+    fn get_declared_metaclass_defers_on_an_unreadable_fact() {
+        let unreadable = DeclaredMetaclassFacts {
+            sym_is_var: None,
+            ..declared_facts()
+        };
+        assert_eq!(get_declared_metaclass(&unreadable), None);
+    }
+
+    #[test]
+    fn recalculate_metaclass_leaves_a_plain_class_alone() {
+        let facts = RecalculateMetaclassFacts {
+            meta_present: true,
+            meta_is_enum: Some(false),
+            ..Default::default()
+        };
+        let decided = recalculate_metaclass(&facts);
+        assert_eq!(decided, Some(RecalculatedMetaclass::Unchanged));
+    }
+
+    #[test]
+    fn recalculate_metaclass_installs_abcmeta_for_a_bare_protocol() {
+        let facts = RecalculateMetaclassFacts {
+            any_protocol_mro: true,
+            ..Default::default()
+        };
+        let decided = recalculate_metaclass(&facts);
+        assert_eq!(decided, Some(RecalculatedMetaclass::AbcMeta));
+    }
+
+    #[test]
+    fn recalculate_metaclass_flags_an_enum_metaclass() {
+        let facts = RecalculateMetaclassFacts {
+            meta_present: true,
+            meta_is_enum: Some(true),
+            ..Default::default()
+        };
+        let decided = recalculate_metaclass(&facts);
+        assert_eq!(decided, Some(RecalculatedMetaclass::IsEnum));
+        let generic = RecalculateMetaclassFacts {
+            type_vars_nonempty: true,
+            ..facts
+        };
+        let decided = recalculate_metaclass(&generic);
+        assert_eq!(decided, Some(RecalculatedMetaclass::EnumGenericFail));
+    }
+
+    #[test]
+    fn recalculate_metaclass_defers_on_an_unreadable_enum_fact() {
+        let facts = RecalculateMetaclassFacts {
+            meta_present: true,
+            ..Default::default()
+        };
+        assert_eq!(recalculate_metaclass(&facts), None);
     }
 }

@@ -89,14 +89,29 @@ pub(crate) fn rust_clean_up_bases(
     in_protocol_names: bool,
     has_args: bool,
 ) -> PyResult<i64> {
-    match fullname.as_deref() {
-        Some(GENERIC_FULLNAME) => Ok(ACTION_GENERIC),
-        Some(_) if in_protocol_names => Ok(if has_args {
-            ACTION_PROTOCOL_GENERIC
-        } else {
-            ACTION_BARE_PROTOCOL
-        }),
-        Some(_) | None => Ok(ACTION_KEEP),
+    Ok(clean_up_bases_inner(
+        fullname.as_deref(),
+        in_protocol_names,
+        has_args,
+    ))
+}
+
+/// Pure decision core of `rust_clean_up_bases`, PyO3-free so the
+/// standalone path reaches the same table without the seam. The two
+/// `in_protocol_names` guards replace the seam's `Ok(if has_args ...)`
+/// arm; match guards run in order, so `has_args` decides
+/// `ACTION_PROTOCOL_GENERIC` first and the bare form second, exactly as
+/// the original branch did.
+pub(crate) fn clean_up_bases_inner(
+    fullname: Option<&str>,
+    in_protocol_names: bool,
+    has_args: bool,
+) -> i64 {
+    match fullname {
+        Some(GENERIC_FULLNAME) => ACTION_GENERIC,
+        Some(_) if in_protocol_names && has_args => ACTION_PROTOCOL_GENERIC,
+        Some(_) if in_protocol_names => ACTION_BARE_PROTOCOL,
+        Some(_) | None => ACTION_KEEP,
     }
 }
 
@@ -185,7 +200,7 @@ pub(crate) fn rust_is_core_builtin_class(
 /// Matches one of the three compat-helper names with `args_len >= 1` and
 /// all positional args -> `ACTION_WITH_METACLASS`, else
 /// `ACTION_NOT_WITH_METACLASS`. Always decidable.
-fn classify_with_metaclass_inner(
+pub(crate) fn classify_with_metaclass_inner(
     fullname: Option<&str>,
     args_len: usize,
     all_positional: bool,
@@ -237,7 +252,7 @@ const ADD_METACLASS_FULLNAME: &str = "six.add_metaclass";
 /// ref), then passes the fullname plus the two scalar facts. Matches
 /// `six.add_metaclass` with exactly 1 positional arg ->
 /// `ACTION_ADD_METACLASS`, else `ACTION_NOT_ADD_METACLASS`.
-fn classify_add_metaclass_inner(
+pub(crate) fn classify_add_metaclass_inner(
     fullname: Option<&str>,
     args_len: usize,
     arg_kind_0_positional: bool,
@@ -359,7 +374,7 @@ pub(crate) const MRO_PROCEED: i64 = 3;
 /// `disallow_any_unimported` / `disallow_any_explicit` +
 /// `is_typeshed_stub_file` before calling). Returns
 /// `(tag, unimported_emit, explicit_emit)` or `None` when a walk deferred.
-fn classify_configure_base_inner(
+pub(crate) fn classify_configure_base_inner(
     kind: i64,
     is_newtype: bool,
     disallow_subclassing_any: bool,
@@ -394,7 +409,7 @@ fn classify_configure_base_inner(
 /// ProperTypes (Python ran `get_proper_type` before calling), so the
 /// top-level variant decides the isinstance chain 1:1; every other variant
 /// falls into Python's `else` arm (INVALID_BASE).
-fn wire_base_kind(t: &Type) -> i64 {
+pub(crate) fn wire_base_kind(t: &Type) -> i64 {
     match t {
         Type::TupleType { .. } => KIND_TUPLE,
         Type::Instance { .. } => KIND_INSTANCE,
@@ -472,7 +487,7 @@ pub(crate) fn rust_classify_configure_bases(
 
 /// `has_any_from_unimported_type` walk over an already-decoded wire type
 /// (typeanal_queries keeps the byte-level wrapper).
-fn has_any_from_unimported_inner(t: &Type) -> Option<bool> {
+pub(crate) fn has_any_from_unimported_inner(t: &Type) -> Option<bool> {
     has_explicit_any_inner(t, FROM_UNIMPORTED_TYPE)
 }
 
@@ -485,7 +500,7 @@ fn decode_type(bytes: &[u8]) -> Option<Type> {
 /// `verify_base_classes` + `verify_duplicate_base_classes` folded into one
 /// 3-way tag. Cyclic bases win (dummy MRO, early return in Python), then a
 /// duplicate direct base (Any MRO), else proceed.
-fn configure_mro_tail_inner(
+pub(crate) fn configure_mro_tail_inner(
     cyclic: &[usize],
     dup: Option<&str>,
 ) -> (i64, Vec<usize>, Option<String>) {
