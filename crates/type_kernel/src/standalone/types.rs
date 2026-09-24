@@ -48,15 +48,23 @@
 //! (wave-1 rule 6). Nothing here converts a decline into a guess, and no
 //! wrapper below widens the set of cases the kernel decides.
 //!
-//! # Alias operands decline until a standalone alias store exists
+//! # Alias operands decline until a store can be installed
 //!
-//! `TypeResolver::install_aliases` is crate-private on `typeinfo.rs`, so a
-//! caller outside this crate cannot yet install alias snapshots. Any
-//! operation below that meets a `Type::TypeAliasType` therefore declines
-//! exactly as the hybrid does when no alias view is installed. Wave 2
-//! lifts that once `standalone::records` owns a Python-free alias
-//! producer.
+//! The alias fact store is public and constructible from outside this
+//! crate: `TypeAliasResolver`, `TypeAliasSnapshot` and `AliasTvar` are
+//! re-exported below, because `mod aliases` is crate-private in `lib.rs`
+//! and a `pub` item in a private module is not reachable. Kernel entries
+//! that take a `&TypeAliasResolver` directly are therefore usable by a
+//! standalone caller today.
+//!
+//! What is still missing is installation: `TypeResolver::install_aliases`
+//! is crate-private on `typeinfo.rs`, so a caller cannot attach a store to
+//! the resolver the set operations read. Every operation below that meets
+//! a `Type::TypeAliasType` consequently declines, exactly as the hybrid
+//! does when no alias view is installed. Wave 2 lifts that once
+//! `standalone::records` owns a Python-free alias producer.
 
+pub use crate::aliases::{AliasTvar, TypeAliasResolver, TypeAliasSnapshot};
 pub use crate::subtypes::{is_subtype, SubtypeContext};
 pub use crate::typeinfo::TypeResolver;
 pub use crate::wire::{ExtraAttrs, LiteralValue, Parameters, Type};

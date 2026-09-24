@@ -25,7 +25,7 @@ use std::collections::HashMap;
 /// distinction, nodes.py:4560).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) struct TypeAliasSnapshot {
+pub struct TypeAliasSnapshot {
     /// `TypeAlias._fullname` (nodes.py:4609). Equals the `type_ref` key.
     pub fullname: String,
     /// `TypeAlias.target` serialized as a wire-format `Type` blob
@@ -52,7 +52,7 @@ pub(crate) struct TypeAliasSnapshot {
 /// of `TypeAlias.alias_tvars`). Mirrors `TypeVarId` equality
 /// (types.py:574-576): `(raw_id, meta_level, namespace)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct AliasTvar {
+pub struct AliasTvar {
     /// `TypeVarLikeType.name` (nodes.py:4614), e.g. `"T"`.
     pub name: String,
     /// `TypeVarLikeType.id.raw_id`.
@@ -80,7 +80,7 @@ impl TypeAliasSnapshot {
 /// Single-threaded access: this is a build-local snapshot, owned by the
 /// pyclass, so the `RefCell` is safe.
 #[allow(dead_code)]
-pub(crate) struct TypeAliasResolver {
+pub struct TypeAliasResolver {
     snapshots: std::sync::Arc<HashMap<String, TypeAliasSnapshot>>,
 }
 

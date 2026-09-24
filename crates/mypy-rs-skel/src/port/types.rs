@@ -334,7 +334,9 @@ mod tests {
 
     use super::*;
     use type_kernel::skeleton_api::{encode_type, TypeInfoSnapshot};
-    use type_kernel::standalone::types::{make_union, union_length, LiteralValue};
+    use type_kernel::standalone::types::{
+        make_union, union_length, LiteralValue, TypeAliasResolver, TypeAliasSnapshot,
+    };
 
     fn ctx() -> SubtypeContext {
         SubtypeContext {
@@ -644,5 +646,25 @@ mod tests {
             panic!("an alias must decline, got {out:?}");
         };
         assert_eq!(report.operation, "try_expanding_sum_type_to_union");
+    }
+
+    #[test]
+    fn an_alias_store_is_constructible_outside_the_kernel() {
+        // Kernel entries taking a `&TypeAliasResolver` are only callable
+        // from here if the store is nameable outside the crate, which
+        // `mod aliases` being private in the kernel's lib.rs prevents.
+        let mut store = TypeAliasResolver::new();
+        assert!(store.is_empty());
+        let encoded = encode_type(&instance("builtins.int"));
+        let snapshot = TypeAliasSnapshot {
+            fullname: "mod.A".to_string(),
+            target: encoded.expect("an instance must encode"),
+            ..Default::default()
+        };
+        store.insert("mod.A".to_string(), snapshot);
+        assert_eq!(store.len(), 1);
+        let found = store.get("mod.A");
+        assert_eq!(found.map(|s| s.fullname.clone()), Some("mod.A".into()));
+        assert!(store.get("mod.Absent").is_none());
     }
 }
