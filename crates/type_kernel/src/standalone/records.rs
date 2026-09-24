@@ -975,7 +975,7 @@ impl RecordStore {
         let arrays = type_var_arrays(facts)?;
         let has_param_spec_type = facts.type_vars.iter().any(|tvar| tvar.kind == 1);
         let has_type_var_tuple_type = facts.type_vars.iter().any(|tvar| tvar.kind == 2);
-        let (member_info, member_definers) = member_maps(facts);
+        let members = member_maps(facts);
         Ok(TypeInfoSnapshot {
             is_protocol: facts.is_protocol,
             is_enum,
@@ -999,8 +999,8 @@ impl RecordStore {
             type_vars_with_variance: arrays.with_variance,
             type_var_upper_bounds: arrays.upper_bounds,
             type_var_raw_ids: arrays.raw_ids,
-            member_info,
-            member_definers,
+            member_info: members.info,
+            member_definers: members.definers,
             ..candidate
         })
     }
@@ -1034,7 +1034,7 @@ impl RecordStore {
             // class, or whose MRO already holds it, is a cycle. Stored
             // MROs are complete, so one pass decides it.
             let self_base = base.fullname == facts.fullname;
-            let in_base_mro = snapshot.mro.iter().any(|entry| *entry == facts.fullname);
+            let in_base_mro = snapshot.mro.contains(&facts.fullname);
             if self_base || in_base_mro {
                 return Err(cyclic_bases(&facts.fullname, &base.fullname));
             }
@@ -1401,28 +1401,29 @@ fn first_tuple_fallback(facts: &ClassFacts) -> Option<Type> {
     None
 }
 
+/// The two `TypeInfo.names` maps a snapshot carries.
+struct MemberMaps {
+    info: HashMap<String, (bool, bool)>,
+    definers: HashMap<String, (i64, String)>,
+}
+
 /// `TypeInfo.names` as the two snapshot maps `read_member_info`
 /// (typeinfo.rs:661) and `read_member_definers` (typeinfo.rs:695) produce:
 /// every name in `member_info`, only the FuncBase / Decorator / Var names
 /// in `member_definers`, and the definer of an own member is always the
 /// class itself.
-fn member_maps(
-    facts: &ClassFacts,
-) -> (
-    HashMap<String, (bool, bool)>,
-    HashMap<String, (i64, String)>,
-) {
-    let mut member_info = HashMap::with_capacity(facts.members.len());
-    let mut member_definers = HashMap::new();
+fn member_maps(facts: &ClassFacts) -> MemberMaps {
+    let mut info = HashMap::with_capacity(facts.members.len());
+    let mut definers = HashMap::new();
     for (name, member) in &facts.members {
-        let info = (member.implicit, member.has_explicit_value);
-        member_info.insert(name.clone(), info);
+        let flags = (member.implicit, member.has_explicit_value);
+        info.insert(name.clone(), flags);
         let kind = member.kind.node_kind();
         if kind >= 0 {
-            member_definers.insert(name.clone(), (kind, facts.fullname.clone()));
+            definers.insert(name.clone(), (kind, facts.fullname.clone()));
         }
     }
-    (member_info, member_definers)
+    MemberMaps { info, definers }
 }
 
 #[cfg(test)]
@@ -1738,7 +1739,7 @@ mod tests {
         let mut store = root_store();
         let facts = with_bases("builtins.int", &["builtins.object"]);
         let err = store.insert_class(facts).unwrap_err();
-        assert_eq!(err, unknown_symbol("builtins", "float"));
+        assert_eq!(err, unknown_module("builtins"));
     }
 
     #[test]
@@ -1876,6 +1877,9 @@ mod tests {
         let got = store.lookup(&scope, "float").unwrap().unwrap();
         assert_eq!(got.fullname, "builtins.float");
         assert!(store.lookup(&scope, "local").unwrap().is_none());
+        let scope = SymbolScope::Module("builtins".to_string());
+        let err = store.lookup(&scope, "absent").unwrap_err();
+        assert_eq!(err, unknown_symbol("builtins", "absent"));
         let scope = SymbolScope::Module("mymod".to_string());
         let err = store.lookup(&scope, "float").unwrap_err();
         assert_eq!(err, unknown_module("mymod"));
