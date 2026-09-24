@@ -68,7 +68,8 @@ fn decode_type(bytes: &[u8]) -> Option<Type> {
 
 /// Whether `op_name` is an operator method that shortcuts same-type args.
 /// Mirrors membership in `operators.op_methods_that_shortcut`.
-fn is_shortcut_op(op_name: &str) -> bool {
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`.
+pub(crate) fn is_shortcut_op(op_name: &str) -> bool {
     SHORTCUT_OPS.contains(&op_name)
 }
 
@@ -77,7 +78,13 @@ fn is_shortcut_op(op_name: &str) -> bool {
 /// Returns `Some(Some(fullname))` of the first MRO class defining `name`,
 /// `Some(None)` when no class defines it, and `None` (defer) when the
 /// class or any MRO ancestor snapshot is missing from the resolver.
-fn lookup_definer(resolver: &TypeResolver, type_ref: &str, name: &str) -> Option<Option<String>> {
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`, which
+/// splits the nested `Option` into `standalone::expr::OperatorDefiner`.
+pub(crate) fn lookup_definer(
+    resolver: &TypeResolver,
+    type_ref: &str,
+    name: &str,
+) -> Option<Option<String>> {
     let snap = resolver.get(type_ref)?;
     for base in &snap.mro {
         let b = resolver.get(base)?;

@@ -154,7 +154,9 @@ fn is_instance_of(t: &Type, fullname: &str) -> bool {
 /// defer means the right-hand side is a variant the nominal path cannot
 /// judge — e.g. a callable or a tuple/type-type/overloaded — and Python must
 /// decide).
-fn is_generator_return_type(
+///
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`.
+pub(crate) fn is_generator_return_type(
     typ: &Type,
     is_coroutine: bool,
     strict_optional: bool,
@@ -175,7 +177,9 @@ fn is_generator_return_type(
 
 /// `is_async_generator_return_type` (checker.py:1441-1452). The `KeyError`
 /// guard is not applicable (see `async_generator_any`).
-fn is_async_generator_return_type(
+///
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`.
+pub(crate) fn is_async_generator_return_type(
     typ: &Type,
     strict_optional: bool,
     res: &TypeResolver,
@@ -210,7 +214,9 @@ fn is_any_generator_return_type(
 // ---------------------------------------------------------------------------
 
 /// `get_generator_yield_type` (checker.py:1454-1486), ty extraction.
-fn get_generator_yield_type_inner(
+///
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`.
+pub(crate) fn get_generator_yield_type_inner(
     return_type: &Type,
     is_coroutine: bool,
     strict_optional: bool,
@@ -258,7 +264,9 @@ fn get_generator_yield_type_inner(
 // ---------------------------------------------------------------------------
 
 /// `get_generator_receive_type` (checker.py:1488-1521), tc extraction.
-fn get_generator_receive_type_inner(
+///
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`.
+pub(crate) fn get_generator_receive_type_inner(
     return_type: &Type,
     is_coroutine: bool,
     strict_optional: bool,
