@@ -97,7 +97,7 @@ fn get_opt_str_attr(node: &PyAny, name: &str) -> Option<String> {
 /// true iff `typ` is an Instance whose class has a readable `__get__`, or
 /// a Union all of whose relevant items do. Defer (None) when any component
 /// cannot be decided from the resolver snapshots.
-fn is_descriptor_wire(typ: &Type, resolver: &TypeResolver) -> Option<bool> {
+pub(crate) fn is_descriptor_wire(typ: &Type, resolver: &TypeResolver) -> Option<bool> {
     let proper = get_proper_or_none(typ)?;
     match proper {
         Type::Instance { type_ref, .. } => {

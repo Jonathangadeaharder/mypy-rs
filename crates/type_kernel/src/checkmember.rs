@@ -109,7 +109,7 @@ fn get_proper_or_none(typ: &Type) -> Option<&Type> {
 /// Checks `fallback.type.is_metaclass()` via the resolver snapshot's
 /// `metaclass_fullname` field. Also requires `ret_type` not to be
 /// `UninhabitedType`.
-fn is_type_obj(fallback: &Type, ret_type: &Type, resolver: &TypeResolver) -> bool {
+pub(crate) fn is_type_obj(fallback: &Type, ret_type: &Type, resolver: &TypeResolver) -> bool {
     if matches!(ret_type, Type::UninhabitedType { .. }) {
         return false;
     }
@@ -161,7 +161,7 @@ fn is_type_obj(fallback: &Type, ret_type: &Type, resolver: &TypeResolver) -> boo
 /// now made explicit so inference semantics stay identical: binding a
 /// self/arg from a method whose signature still holds an ErasedType
 /// placeholder must go through the pure-Python `copy_modified` path.
-fn contains_erased(typ: &Type) -> bool {
+pub(crate) fn contains_erased(typ: &Type) -> bool {
     match typ {
         Type::ErasedType => true,
         Type::PartialType { .. } => false,
@@ -258,7 +258,7 @@ pub(crate) fn rust_bind_self_fast(method_bytes: &[u8]) -> PyResult<Option<Vec<u8
     }
 }
 
-fn bind_self_fast_inner(typ: &Type) -> Option<Type> {
+pub(crate) fn bind_self_fast_inner(typ: &Type) -> Option<Type> {
     match typ {
         Type::Overloaded { items } => {
             if items.is_empty() {
@@ -355,7 +355,7 @@ pub(crate) fn rust_instance_fallback(type_bytes: &[u8]) -> PyResult<Option<Vec<u
     Ok(encode_type(&fb))
 }
 
-fn instance_fallback_inner(typ: &Type) -> Option<Type> {
+pub(crate) fn instance_fallback_inner(typ: &Type) -> Option<Type> {
     match typ {
         Type::Instance { .. } => Some(typ.clone()),
         Type::TupleType {
@@ -413,7 +413,7 @@ pub(crate) fn rust_has_operator(
     ))
 }
 
-fn has_operator_inner(
+pub(crate) fn has_operator_inner(
     typ: &Type,
     op_method: &str,
     strict_optional: bool,
@@ -561,7 +561,11 @@ pub(crate) fn rust_meta_has_operator(
     ))
 }
 
-fn meta_has_operator_inner(item: &Type, op_method: &str, resolver: &TypeResolver) -> Option<bool> {
+pub(crate) fn meta_has_operator_inner(
+    item: &Type,
+    op_method: &str,
+    resolver: &TypeResolver,
+) -> Option<bool> {
     match item {
         Type::TypeAliasType { .. } => None,
         Type::AnyType { .. } => Some(true),
@@ -613,29 +617,44 @@ pub(crate) fn has_readable_member_by_ref(
 /// explicitly-valued variable in any superclass of `fullname`, mirroring
 /// checkmember.py:1650-1655. Defer (None) when the class or any superclass
 /// snapshot is missing from the resolver.
+///
+/// The pure MRO walk lives in `defined_in_superclass_inner` so the
+/// standalone path (standalone/member.rs) reaches it without an
+/// interpreter, following the `check_final_member_fold` precedent.
 #[pyfunction]
 pub(crate) fn rust_defined_in_superclass(
     resolver: &NativeTypeResolver,
     fullname: &str,
     name: &str,
 ) -> PyResult<Option<bool>> {
-    let r = resolver.resolver();
-    let snap = match r.get(fullname) {
-        Some(s) => s,
-        None => return Ok(None),
-    };
+    Ok(defined_in_superclass_inner(
+        resolver.resolver(),
+        fullname,
+        name,
+    ))
+}
+
+/// Interpreter-free core of `rust_defined_in_superclass`. `mro.iter().skip(1)`
+/// is the "in any superclass" half of checkmember.py:2468-2473: the class's
+/// own entry is excluded, and a member counts only when its symbol table
+/// node is a non-implicit `Var` with an explicit value, which is the
+/// class-attribute shape (`implicit=true` marks an instance attribute
+/// inferred from `self.x = ...`).
+pub(crate) fn defined_in_superclass_inner(
+    resolver: &TypeResolver,
+    fullname: &str,
+    name: &str,
+) -> Option<bool> {
+    let snap = resolver.get(fullname)?;
     for base in snap.mro.iter().skip(1) {
-        let b = match r.get(base) {
-            Some(b) => b,
-            None => return Ok(None),
-        };
+        let b = resolver.get(base)?;
         if let Some((implicit, var_explicit)) = b.member_info.get(name) {
             if !*implicit && *var_explicit {
-                return Ok(Some(true));
+                return Some(true);
             }
         }
     }
-    Ok(Some(false))
+    Some(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -2739,7 +2758,7 @@ pub(crate) fn rust_classify_member_access(
     )))
 }
 
-fn classify_member_access_inner(typ: &Type, resolver: &TypeResolver) -> i64 {
+pub(crate) fn classify_member_access_inner(typ: &Type, resolver: &TypeResolver) -> i64 {
     match typ {
         Type::Instance { .. } => MA_INSTANCE,
         Type::AnyType { .. } => MA_ANY,
@@ -3263,7 +3282,7 @@ pub(crate) fn rust_analyze_none_member_access(
     Ok(encode_type(&result).map(|b| (next_raw_id, changed, b)))
 }
 
-fn analyze_none_bool_type() -> Type {
+pub(crate) fn analyze_none_bool_type() -> Type {
     // LiteralType(False, fallback=builtins.bool)
     let bool_inst = Type::Instance {
         type_ref: "builtins.bool".to_string(),
@@ -3792,7 +3811,7 @@ fn check_self_arg_inner(
 
 /// `TypeType.make_normalized` (types.py:3710-3724): wraps a type in TypeType,
 /// expanding UnionType items into a Union of TypeType items.
-fn make_type_type_normalized(item: &Type) -> Type {
+pub(crate) fn make_type_type_normalized(item: &Type) -> Type {
     let proper = get_proper_or_none(item).unwrap_or(item);
     match proper {
         Type::UnionType {
