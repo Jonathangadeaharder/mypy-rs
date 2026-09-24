@@ -140,11 +140,14 @@ mod tests {
         }
     }
 
-    fn sig(params: &[&str]) -> Sig {
-        Sig {
-            params: params.iter().map(|p| ((*p).to_string(), int())).collect(),
-            ret: int(),
-        }
+    fn param_pair(name: &&str) -> (String, Type) {
+        ((*name).to_string(), int())
+    }
+
+    fn sig(names: &[&str]) -> Sig {
+        let params = names.iter().map(param_pair).collect();
+        let ret = int();
+        Sig { params, ret }
     }
 
     fn expect_binding(binding: Option<Binding>) -> Binding {

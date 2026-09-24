@@ -753,8 +753,9 @@ pub fn map_actuals_to_formals_with_types(
                 let actualt = actual_types.actual_arg_type(ai)?;
                 if let Type::TypedDictType { items, .. } = actualt {
                     for (key, _) in items {
-                        let by_name =
-                            formal.iter().position(|p| p.name.as_deref() == Some(key.as_str()));
+                        let by_name = formal
+                            .iter()
+                            .position(|p| p.name.as_deref() == Some(key.as_str()));
                         match by_name {
                             Some(idx) => mapped[idx].push(ai64),
                             None => {
@@ -795,7 +796,10 @@ pub fn map_formals_to_actuals_with_types(
     actual_types: &dyn ActualArgType,
 ) -> Option<ActualToFormal> {
     let forward = map_actuals_to_formals_with_types(actual, formal, actual_types)?;
-    Some(ActualToFormal(reverse_mapping(forward.as_slices(), actual.len())))
+    Some(ActualToFormal(reverse_mapping(
+        forward.as_slices(),
+        actual.len(),
+    )))
 }
 
 /// mypy's ambiguous-kwargs pass (argmap.py:142-163): the formals an unknown
@@ -1097,8 +1101,7 @@ mod tests {
     }
 
     fn signature(callee: &Type) -> CallableSignature<'_> {
-        callable_signature(callee)
-            .expect("the callee is a CallableType in these tests")
+        callable_signature(callee).expect("the callee is a CallableType in these tests")
     }
 
     fn expect_type(typ: Option<Type>) -> Type {
@@ -1382,7 +1385,11 @@ mod tests {
     #[test]
     fn callable_signature_types_the_formal_params() {
         let callee = callable(vec![
-            (instance("builtins.int"), ArgKind::Pos, Some("a".to_string())),
+            (
+                instance("builtins.int"),
+                ArgKind::Pos,
+                Some("a".to_string()),
+            ),
             (any_type(), ArgKind::Star2, None),
         ]);
         let sig = signature(&callee);
@@ -1396,7 +1403,11 @@ mod tests {
     #[test]
     fn var_arg_and_kw_arg_find_the_star_formals() {
         let callee = callable(vec![
-            (instance("builtins.int"), ArgKind::Pos, Some("a".to_string())),
+            (
+                instance("builtins.int"),
+                ArgKind::Pos,
+                Some("a".to_string()),
+            ),
             (any_type(), ArgKind::Star, None),
             (any_type(), ArgKind::Star2, None),
         ]);
@@ -1419,7 +1430,11 @@ mod tests {
     #[test]
     fn formal_arguments_skips_star_formals() {
         let callee = callable(vec![
-            (instance("builtins.int"), ArgKind::Pos, Some("a".to_string())),
+            (
+                instance("builtins.int"),
+                ArgKind::Pos,
+                Some("a".to_string()),
+            ),
             (any_type(), ArgKind::Star, None),
             (any_type(), ArgKind::Star2, None),
         ]);
@@ -1564,7 +1579,10 @@ mod tests {
         let actual = vec![ActualArg::named("z")];
         let formal = vec![FormalParam::positional("x"), star2_formal()];
         let mapped = expect_mapped(map_actuals_to_formals(&actual, &formal));
-        assert_eq!(mapped.as_slices().to_vec(), vec![Vec::<i64>::new(), vec![0]]);
+        assert_eq!(
+            mapped.as_slices().to_vec(),
+            vec![Vec::<i64>::new(), vec![0]]
+        );
     }
 
     #[test]
@@ -1581,7 +1599,10 @@ mod tests {
         let types = StarTypes(vec![Some(tuple_of(vec![any_type(), any_type()]))]);
         let formal = formals(&["x", "y", "z"]);
         let mapped = expect_mapped(map_actuals_to_formals_with_types(&actual, &formal, &types));
-        assert_eq!(mapped.as_slices().to_vec(), vec![vec![0i64], vec![0i64], vec![]]);
+        assert_eq!(
+            mapped.as_slices().to_vec(),
+            vec![vec![0i64], vec![0i64], vec![]]
+        );
         let reverse = expect_reverse(map_formals_to_actuals_with_types(&actual, &formal, &types));
         assert_eq!(reverse.as_slices().to_vec(), vec![vec![0i64, 1i64]]);
     }
@@ -1657,4 +1678,3 @@ mod tests {
         assert!(!any_unpack_anywhere(&instance("mod.C")));
     }
 }
-
