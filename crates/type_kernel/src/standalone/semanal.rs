@@ -360,7 +360,10 @@ mod tests {
 
     fn any_import(t: &Type) -> Option<&str> {
         match t {
-            Type::AnyType { missing_import_name, .. } => missing_import_name.as_deref(),
+            Type::AnyType {
+                missing_import_name,
+                ..
+            } => missing_import_name.as_deref(),
             other => panic!("expected an AnyType, got {other:?}"),
         }
     }
