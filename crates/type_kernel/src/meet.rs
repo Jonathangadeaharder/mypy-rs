@@ -44,7 +44,7 @@ fn is_named_instance(t: &Type, name: &str) -> bool {
 }
 
 /// `mypy.typeops.is_tuple`: TupleType or `Instance[builtins.tuple]`.
-fn is_tuple(t: &Type) -> bool {
+pub(crate) fn is_tuple(t: &Type) -> bool {
     matches!(t, Type::TupleType { .. })
         || matches!(t, Type::Instance { type_ref, .. } if type_ref == "builtins.tuple")
 }
