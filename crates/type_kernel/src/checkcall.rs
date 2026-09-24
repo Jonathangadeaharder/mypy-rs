@@ -58,7 +58,7 @@ pub(crate) fn rust_classify_call(callee_bytes: &[u8]) -> Option<i64> {
 }
 
 /// Pure classification mirroring `check_call`'s isinstance chain.
-fn classify_call(callee: &Type) -> Result<i64, WireError> {
+pub(crate) fn classify_call(callee: &Type) -> Result<i64, WireError> {
     Ok(match callee {
         Type::CallableType { variables, .. } => {
             if variables.is_empty() {
@@ -393,7 +393,7 @@ pub(crate) fn rust_real_union(
 /// like Python's `typ = get_proper_type(typ)`, so an alias resolving to a
 /// union is counted; an unresolvable alias or a non-Union proper type
 /// incl. a union-bound TypeVar is Some(false).
-fn real_union(
+pub(crate) fn real_union(
     typ: &Type,
     strict_optional: bool,
     aliases: &crate::aliases::TypeAliasResolver,
@@ -447,7 +447,7 @@ pub(crate) fn rust_possible_none_type_var_overlap(
     possible_none_type_var_overlap(&arg_types, &targets, resolver.alias_resolver())
 }
 
-fn possible_none_type_var_overlap(
+pub(crate) fn possible_none_type_var_overlap(
     arg_types: &[Type],
     targets: &[Type],
     aliases: &crate::aliases::TypeAliasResolver,
@@ -629,7 +629,7 @@ pub(crate) fn rust_check_callable_call(
 /// Pure calibration/assemble decision shared by `rust_check_callable_call`
 /// (hook probing happens in the pyfunction). Returns the final callee, or
 /// `None` to defer the whole tail to Python.
-fn check_callable_call_tail(callee: &Type, arg_types: &[Type]) -> Option<Type> {
+pub(crate) fn check_callable_call_tail(callee: &Type, arg_types: &[Type]) -> Option<Type> {
     let Type::CallableType {
         ret_type,
         instance_type,

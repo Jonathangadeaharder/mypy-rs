@@ -63,12 +63,12 @@ pub(crate) fn kind_is_named(kind: i64, star: bool) -> bool {
 }
 
 /// `mypy.nodes.ArgKind.is_required` (nodes.py:2492-2494).
-fn kind_is_required(kind: i64) -> bool {
+pub(crate) fn kind_is_required(kind: i64) -> bool {
     kind == ARG_POS || kind == ARG_NAMED
 }
 
 /// `mypy.nodes.ArgKind.is_optional` (nodes.py:2496-2498).
-fn kind_is_optional(kind: i64) -> bool {
+pub(crate) fn kind_is_optional(kind: i64) -> bool {
     kind == ARG_OPT || kind == ARG_NAMED_OPT
 }
 
