@@ -79,7 +79,7 @@ pub(crate) fn rust_type_requires_usage(
     ))
 }
 
-fn type_requires_usage_inner(
+pub(crate) fn type_requires_usage_inner(
     typ: &Type,
     resolver: &TypeResolver,
     aliases: &crate::aliases::TypeAliasResolver,
@@ -168,7 +168,7 @@ pub(crate) fn rust_is_unreachable_map(type_bytes_list: Vec<Vec<u8>>) -> PyResult
     Ok(is_unreachable_map_inner(&types))
 }
 
-fn is_unreachable_map_inner(types: &[Type]) -> Option<bool> {
+pub(crate) fn is_unreachable_map_inner(types: &[Type]) -> Option<bool> {
     for typ in types {
         match typ {
             Type::TypeAliasType { .. } => return None,
@@ -248,7 +248,7 @@ pub(crate) fn rust_with_exit_suppresses(
     Ok(with_exit_suppresses_inner(&typ, strict_optional))
 }
 
-fn with_exit_suppresses_inner(typ: &Type, strict_optional: bool) -> bool {
+pub(crate) fn with_exit_suppresses_inner(typ: &Type, strict_optional: bool) -> bool {
     if matches!(typ, Type::TypeAliasType { .. }) {
         return false;
     }
@@ -315,7 +315,7 @@ pub(crate) fn rust_try_handler_union<'py>(
     Ok(Some(out))
 }
 
-fn try_handler_union_inner(typ: &Type, strict_optional: bool) -> Vec<Type> {
+pub(crate) fn try_handler_union_inner(typ: &Type, strict_optional: bool) -> Vec<Type> {
     match typ {
         // Ordinary tuple: mirror make_simplified_union(typ.items), which
         // keeps nested tuples as tuples (invalid exception types) and only
@@ -468,7 +468,7 @@ fn is_valid_inferred_type_inner(
     )
 }
 
-fn is_valid_inferred_type_with_aliases(
+pub(crate) fn is_valid_inferred_type_with_aliases(
     typ: &Type,
     is_lvalue_final: bool,
     is_lvalue_member: bool,
@@ -908,7 +908,7 @@ pub(crate) fn rust_narrow_type_by_identity_equality(
 /// wire (a `TypeAliasType` test — Python `get_proper_types` would expand
 /// it — or a type-object whose metaclass is not in the resolver).
 #[derive(Debug)]
-enum HandlerTestClass {
+pub(crate) enum HandlerTestClass {
     /// `AnyType`: Python appends the type as-is (tag 0).
     Any(Type),
     /// `UninhabitedType`: Python continues without appending (tag 1).
@@ -973,7 +973,7 @@ fn exception_type_of_callable(first: &Type, resolver: &TypeResolver) -> Option<H
 
 /// Classify a single handler test type (checker.py:5941-5965), or `None`
 /// to defer the whole native call to the pure-Python path.
-fn classify_except_handler_test_inner(
+pub(crate) fn classify_except_handler_test_inner(
     t: &Type,
     resolver: &TypeResolver,
 ) -> Option<HandlerTestClass> {

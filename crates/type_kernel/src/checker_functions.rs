@@ -1971,14 +1971,14 @@ mod final_enum_value_tests {
 // ---------------------------------------------------------------------------
 
 /// Decision tags; values must match `NATIVE_LVALUE_*` in mypy/checker.py.
-const KIND_LVALUE_NAME_DEF: i64 = 0;
-const KIND_LVALUE_MEMBER_DEF: i64 = 1;
-const KIND_LVALUE_INDEX: i64 = 2;
-const KIND_LVALUE_MEMBER: i64 = 3;
-const KIND_LVALUE_NAME: i64 = 4;
-const KIND_LVALUE_TUPLE_LIST: i64 = 5;
-const KIND_LVALUE_STAR: i64 = 6;
-const KIND_LVALUE_ELSE: i64 = 7;
+pub(crate) const KIND_LVALUE_NAME_DEF: i64 = 0;
+pub(crate) const KIND_LVALUE_MEMBER_DEF: i64 = 1;
+pub(crate) const KIND_LVALUE_INDEX: i64 = 2;
+pub(crate) const KIND_LVALUE_MEMBER: i64 = 3;
+pub(crate) const KIND_LVALUE_NAME: i64 = 4;
+pub(crate) const KIND_LVALUE_TUPLE_LIST: i64 = 5;
+pub(crate) const KIND_LVALUE_STAR: i64 = 6;
+pub(crate) const KIND_LVALUE_ELSE: i64 = 7;
 
 /// The pure decision over resolved facts. Kept separate from the PyO3
 /// entry so the branch algebra is unit-testable without a Python runtime.
@@ -1989,7 +1989,7 @@ const KIND_LVALUE_ELSE: i64 = 7;
 /// Var)` (meaningful only when `is_name`); `skip_definition` mirrors the
 /// Python conjunction. Branch order matches the Python `if/elif` chain.
 #[allow(clippy::too_many_arguments)]
-fn classify_check_lvalue(
+pub(crate) fn classify_check_lvalue(
     is_definition: bool,
     is_name: bool,
     is_member: bool,
@@ -2487,19 +2487,19 @@ mod classify_enum_tests {
 
 /// Decision tags for `check_rvalue_count_in_assignment`; must match
 /// `NATIVE_RVALUE_COUNT_*` in mypy/checker.py.
-const RVALUE_COUNT_PASS: i64 = 0;
-const RVALUE_COUNT_FAIL_STAR_REQUIRED: i64 = 1;
-const RVALUE_COUNT_FAIL_TOO_MANY: i64 = 2;
-const RVALUE_COUNT_WARN_TOO_MANY: i64 = 3;
-const RVALUE_COUNT_FAIL_WRONG_STAR: i64 = 4;
-const RVALUE_COUNT_FAIL_WRONG: i64 = 5;
+pub(crate) const RVALUE_COUNT_PASS: i64 = 0;
+pub(crate) const RVALUE_COUNT_FAIL_STAR_REQUIRED: i64 = 1;
+pub(crate) const RVALUE_COUNT_FAIL_TOO_MANY: i64 = 2;
+pub(crate) const RVALUE_COUNT_WARN_TOO_MANY: i64 = 3;
+pub(crate) const RVALUE_COUNT_FAIL_WRONG_STAR: i64 = 4;
+pub(crate) const RVALUE_COUNT_FAIL_WRONG: i64 = 5;
 
 /// Pure decision mirroring `TypeChecker.check_rvalue_count_in_assignment`
 /// (checker.py:5319-5354). The variadic arm (`rvalue_unpack` set) requires
 /// a star target, rejects too many targets, and flags asymmetric
 /// prefix/suffix unpack while still succeeding. The plain arms check the
 /// star-lvalue count (`len - 1`) or the exact count.
-fn classify_rvalue_count(
+pub(crate) fn classify_rvalue_count(
     has_star: bool,
     star_index: i64,
     lvalues_len: i64,
@@ -3588,14 +3588,14 @@ const RETURN_VARIANT_GENERATOR: i64 = 1;
 const RETURN_VARIANT_COROUTINE: i64 = 2;
 const RETURN_VARIANT_PLAIN: i64 = 3;
 
-const RETURN_TAG_ASYNC_GEN_FAIL: i64 = 2;
-const RETURN_TAG_WARN_ANY: i64 = 3;
-const RETURN_TAG_ANY_RETURN: i64 = 4;
-const RETURN_TAG_NONE_OK: i64 = 5;
-const RETURN_TAG_NONE_FAIL: i64 = 6;
-const RETURN_TAG_CHECK_SUBTYPE: i64 = 7;
-const RETURN_TAG_EMPTY_OK: i64 = 8;
-const RETURN_TAG_EMPTY_FAIL: i64 = 9;
+pub(crate) const RETURN_TAG_ASYNC_GEN_FAIL: i64 = 2;
+pub(crate) const RETURN_TAG_WARN_ANY: i64 = 3;
+pub(crate) const RETURN_TAG_ANY_RETURN: i64 = 4;
+pub(crate) const RETURN_TAG_NONE_OK: i64 = 5;
+pub(crate) const RETURN_TAG_NONE_FAIL: i64 = 6;
+pub(crate) const RETURN_TAG_CHECK_SUBTYPE: i64 = 7;
+pub(crate) const RETURN_TAG_EMPTY_OK: i64 = 8;
+pub(crate) const RETURN_TAG_EMPTY_FAIL: i64 = 9;
 
 /// Pure phase-1 decision mirroring the return-type variant dispatch of
 /// `TypeChecker.check_return_stmt` (checker.py:6441-6452). The variant
@@ -3621,7 +3621,7 @@ pub(crate) fn rust_classify_return_stmt_variant(
 /// (which suppress the extra message for failed inference). Returns
 /// `Some(true)` when the shim must emit the fail and return; `Some(false)`
 /// to proceed.
-fn classify_return_stmt_pre(ret: &Type, is_lambda: bool) -> bool {
+pub(crate) fn classify_return_stmt_pre(ret: &Type, is_lambda: bool) -> bool {
     match ret {
         Type::UninhabitedType { ambiguous } => !is_lambda && !ambiguous,
         _ => false,
@@ -3651,7 +3651,7 @@ pub(crate) fn rust_classify_return_stmt_pre(
 /// visitor). `return_type` is always a proper type here (the shim ran
 /// `get_proper_type` before serializing), so `TypeAliasType` and non-union
 /// nesting are not reachable.
-fn any_is_proper_subtype_of(ret: &Type) -> bool {
+pub(crate) fn any_is_proper_subtype_of(ret: &Type) -> bool {
     match ret {
         Type::AnyType { .. } => true,
         Type::UnionType { items, .. } => items.iter().any(any_is_proper_subtype_of),
@@ -3668,7 +3668,7 @@ fn any_is_proper_subtype_of(ret: &Type) -> bool {
 /// clause is decided structurally by `any_is_proper_subtype_of` (AnyType +
 /// union-item decomposition).
 #[allow(clippy::too_many_arguments)]
-fn classify_return_stmt_post(
+pub(crate) fn classify_return_stmt_post(
     typ: Option<&Type>,
     ret: &Type,
     is_async_generator: bool,
@@ -4721,9 +4721,9 @@ mod return_stmt_tests {
 
 /// Decision tags for `type_check_raise`; must match `NATIVE_RAISE_*`
 /// in mypy/checker.py.
-const RAISE_DELETED: i64 = 0;
-const RAISE_PLAIN: i64 = 1;
-const RAISE_NOT_IMPLEMENTED: i64 = 2;
+pub(crate) const RAISE_DELETED: i64 = 0;
+pub(crate) const RAISE_PLAIN: i64 = 1;
+pub(crate) const RAISE_NOT_IMPLEMENTED: i64 = 2;
 
 /// `mypy.types.NOT_IMPLEMENTED_TYPE_NAMES` (types.py:288).
 const NOT_IMPLEMENTED_TYPE_NAMES: [&str; 2] =
@@ -4738,7 +4738,7 @@ const NOT_IMPLEMENTED_TYPE_NAMES: [&str; 2] =
 /// BaseException subtype check and the zero-arg `check_call` on a
 /// FunctionLike stay Python-side (the subtype resolver is already
 /// native; check_call recursion stays Python).
-fn classify_type_check_raise(typ: &Type, callee_fullname: Option<&str>) -> i64 {
+pub(crate) fn classify_type_check_raise(typ: &Type, callee_fullname: Option<&str>) -> i64 {
     if matches!(typ, Type::DeletedType { .. }) {
         return RAISE_DELETED;
     }
@@ -4854,10 +4854,10 @@ mod classify_type_check_raise_tests {
 
 /// Decision tags for `check_simple_assignment`; must match
 /// `NATIVE_SA_*` in mypy/checker.py.
-const SIMPLE_ASSIGNMENT_STUB: i64 = 0;
-const SIMPLE_ASSIGNMENT_DIRECT: i64 = 1;
-const SIMPLE_ASSIGNMENT_FALLBACK_NO_PREFERRED: i64 = 2;
-const SIMPLE_ASSIGNMENT_FALLBACK_LVALUE_PREFERRED: i64 = 3;
+pub(crate) const SIMPLE_ASSIGNMENT_STUB: i64 = 0;
+pub(crate) const SIMPLE_ASSIGNMENT_DIRECT: i64 = 1;
+pub(crate) const SIMPLE_ASSIGNMENT_FALLBACK_NO_PREFERRED: i64 = 2;
+pub(crate) const SIMPLE_ASSIGNMENT_FALLBACK_LVALUE_PREFERRED: i64 = 3;
 
 /// Pure 4-way dispatch of the `TypeChecker.check_simple_assignment`
 /// (checker.py:6325-6436) head. `lvalue` is the decoded wire form of the
@@ -4877,7 +4877,7 @@ const SIMPLE_ASSIGNMENT_FALLBACK_LVALUE_PREFERRED: i64 = 3;
 /// The need-annotation block and the widening/check_subtype tail stay in
 /// Python: they consume the post-accept rvalue_type, which the shim only
 /// has after running the classified branch body.
-fn classify_simple_assignment(
+pub(crate) fn classify_simple_assignment(
     lvalue: Option<&Type>,
     is_stub: bool,
     rvalue_is_ellipsis: bool,
@@ -4984,7 +4984,7 @@ pub(crate) const CA_BRANCH_SIMPLE: i64 = 3;
 /// the PyO3 entry so the branch algebra is unit-tested without a Python
 /// runtime. `node_name` / `lvalue_name` are `None` when the fact is not
 /// needed (or the node is falsy for a NameExpr).
-fn classify_check_assignment_special(
+pub(crate) fn classify_check_assignment_special(
     is_name_expr: bool,
     node_truthy: bool,
     node_name: Option<&str>,
@@ -5016,7 +5016,7 @@ fn classify_check_assignment_special(
 /// Pure branch decision of `check_assignment`: the `lvalue_type` dispatch
 /// (partial-None vs member vs simple vs no-type). Kept separate from the
 /// PyO3 entry for unit tests.
-fn classify_check_assignment_branch(
+pub(crate) fn classify_check_assignment_branch(
     lvalue_type_present: bool,
     partial_none: bool,
     is_member_expr: bool,
@@ -5137,14 +5137,14 @@ pub(crate) fn rust_classify_check_assignment(
 /// The `"__i" + method[2:]` name computation of `_find_inplace_method`
 /// (checker.py:11514). Every `operators.op_methods` value is a dunder
 /// name, so `chars().skip(2)` matches the Python slice exactly.
-fn inplace_method_name(method: &str) -> String {
+pub(crate) fn inplace_method_name(method: &str) -> String {
     format!("__i{}", method.chars().skip(2).collect::<String>())
 }
 
 /// Pure decision core of `infer_operator_assignment_method`
 /// (checker.py:11498-11520): in-place iff the operator admits an inplace
 /// method and the type's class has a readable `__i<rest>` member.
-fn infer_operator_assignment_method_inner(
+pub(crate) fn infer_operator_assignment_method_inner(
     in_ops: bool,
     has_inplace: bool,
     method: &str,
