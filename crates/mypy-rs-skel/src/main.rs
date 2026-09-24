@@ -8,6 +8,7 @@
 mod check;
 mod fixtures;
 mod model;
+mod port;
 mod python_stubs;
 mod render;
 mod subset;
