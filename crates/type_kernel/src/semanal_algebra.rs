@@ -56,7 +56,7 @@ pub(crate) fn rust_make_any_non_explicit(type_bytes: &[u8]) -> PyResult<Option<V
     Ok(encode_type(&result))
 }
 
-fn make_any_non_explicit_inner(t: Type) -> Type {
+pub(crate) fn make_any_non_explicit_inner(t: Type) -> Type {
     match t {
         Type::AnyType {
             type_of_any,
@@ -110,7 +110,7 @@ pub(crate) fn rust_make_any_non_unimported(type_bytes: &[u8]) -> PyResult<Option
     Ok(encode_type(&result))
 }
 
-fn make_any_non_unimported_inner(t: Type) -> Type {
+pub(crate) fn make_any_non_unimported_inner(t: Type) -> Type {
     match t {
         Type::AnyType {
             type_of_any,
@@ -184,7 +184,7 @@ pub(crate) fn rust_replace_implicit_first_type(
     }
 }
 
-fn replace_implicit_first_type_inner(sig: Type, new: &Type) -> Option<Type> {
+pub(crate) fn replace_implicit_first_type_inner(sig: Type, new: &Type) -> Option<Type> {
     match sig {
         Type::CallableType {
             fallback,

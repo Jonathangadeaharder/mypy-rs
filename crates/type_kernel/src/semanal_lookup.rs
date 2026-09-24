@@ -198,7 +198,7 @@ pub(crate) fn rust_lookup_qualified(
 /// entry's `member_info` (name -> (implicit, has_explicit_value)).
 /// Returns the fullname of the MRO entry where the member was found,
 /// or `None` if not found. Mirrors `TypeInfo.get(part)`.
-fn find_member_in_mro(
+pub(crate) fn find_member_in_mro(
     resolver: &crate::typeinfo::TypeResolver,
     snap: &TypeInfoSnapshot,
     part: &str,
@@ -214,7 +214,7 @@ fn find_member_in_mro(
 }
 
 /// Outcome of a native MypyFile-chain walk.
-enum WalkOutcome {
+pub(crate) enum WalkOutcome {
     /// Positively not found (a `module_hidden` name): Python emits the
     /// name-not-defined error.
     NotFound,
@@ -247,7 +247,7 @@ enum WalkOutcome {
 ///   fullname, so an aliased name resolves identically to Python).
 /// - anything else (non-module member mid-chain, module not snapshotted,
 ///   name absent from `names`): Defer.
-fn walk_mypyfile_chain(
+pub(crate) fn walk_mypyfile_chain(
     resolver: &crate::typeinfo::TypeResolver,
     parts: &[&str],
     first_fullname: &str,
