@@ -8,6 +8,9 @@
 mod check;
 mod fixtures;
 mod model;
+// Filled area by area in wave 1; the wave-2 integration lane wires it into
+// `Driver::check_main`, so nothing in the binary reaches it yet.
+#[allow(dead_code)]
 mod port;
 mod python_stubs;
 mod render;
