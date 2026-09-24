@@ -16,7 +16,7 @@
 //!
 //! # What this increment adapts
 //!
-//! Three driver-facing operations, each a skeleton record in and a
+//! Four driver-facing operations, each a skeleton record in and a
 //! skeleton answer out, with the decision left to the kernel:
 //!
 //! * [`class_member_owner`] resolves a class member through a
@@ -27,13 +27,17 @@
 //!   first name the records cannot decide (wave-1 rule 6).
 //! * [`rewrite_signature_any`] applies mypy's two `Any` rewrites to every
 //!   slot of a [`Sig`] record.
+//! * [`configure_class_bases`] validates every base of a [`ClassModel`],
+//!   owning the record-to-`Instance` rebuild and the `is_newtype` read.
 //!
 //! The kernel's `LookupOutcome::Deferred` never reaches the driver as a
 //! silent skip: each adapter either proves it unreachable or turns it into
 //! an `Err` naming the record or the clause the fixtures do not cover,
 //! which is the skeleton's exit-3 internal-error channel.
 
-use type_kernel::standalone::semanal::{self, LookupOutcome, Type, TypeResolver};
+use type_kernel::standalone::semanal::{
+    self, BaseClassOptions, BaseConfiguration, LookupOutcome, Type, TypeResolver,
+};
 
 use crate::model::{self, ClassModel, Sig};
 
@@ -147,11 +151,49 @@ pub fn rewrite_signature_any(sig: &Sig, rewrite: AnyRewrite) -> Sig {
     }
 }
 
+/// `mypy.semanal.SemanticAnalyzer.configure_base_classes` per-base
+/// validation (semanal.py:3348-3381), driven from a skeleton
+/// [`ClassModel`].
+///
+/// The adapter owns the record-to-type step: it rebuilds each base's
+/// `Instance` the same way `model::snapshot` does, and reads
+/// `is_newtype` from that base's snapshot, which is exactly the
+/// `base.type.is_newtype` mypy tests before failing 'Cannot subclass
+/// "NewType"'. The decision per base is `semanal::configure_base_class`;
+/// nothing here classifies anything itself.
+///
+/// `Err` is the internal-error channel, taken when a base has no snapshot
+/// (a fixture gap that cannot be proved harmless) or when the kernel
+/// defers on an alias the records cannot expand. Neither is skipped: a
+/// silently dropped base would change the hierarchy.
+pub fn configure_class_bases(
+    resolver: &TypeResolver,
+    class: &ClassModel,
+    opts: &BaseClassOptions,
+) -> Result<Vec<BaseConfiguration>, String> {
+    let mut configurations = Vec::with_capacity(class.bases.len());
+    for (fullname, args) in &class.bases {
+        let base = model::instance(fullname, args.clone());
+        let snapshot = match resolver.get(fullname) {
+            Some(snapshot) => snapshot,
+            None => return Err(format!("no snapshot for the base {fullname}")),
+        };
+        let decided = semanal::configure_base_class(&base, snapshot.is_newtype, opts);
+        let Some(configuration) = decided else {
+            return Err(format!("the base {fullname} holds an unexpandable alias"));
+        };
+        configurations.push(configuration);
+    }
+    Ok(configurations)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::{object_type, Member};
     use std::collections::{BTreeMap, HashMap};
+
+    use type_kernel::standalone::semanal::{BaseKind, TypeInfoSnapshot};
 
     /// `TypeOfAny.explicit` (mypy/types.py:213-239).
     const EXPLICIT: i64 = 2;
@@ -189,6 +231,14 @@ mod tests {
             mro: mro.iter().map(|m| m.to_string()).collect(),
             members: members_map,
         }
+    }
+
+    fn subclass_of(fullname: &str, bases: &[&str]) -> ClassModel {
+        let mut built = class_model(fullname, &[fullname], &[]);
+        for base in bases {
+            built.bases.push((base.to_string(), Vec::new()));
+        }
+        built
     }
 
     fn resolver_with_module(fullname: &str, names: &[&str]) -> TypeResolver {
@@ -274,5 +324,45 @@ mod tests {
         let unimported = sig_with(any(FROM_UNIMPORTED), any(FROM_UNIMPORTED));
         let rewritten = rewrite_signature_any(&unimported, AnyRewrite::NonUnimported);
         assert_eq!(any_kind(&rewritten.ret), SPECIAL_FORM);
+    }
+
+    #[test]
+    fn configure_class_bases_answers_every_base_in_source_order() {
+        let mut resolver = TypeResolver::new();
+        let left = class_model("mod.Left", &["mod.Left"], &[]);
+        model::refresh_snapshot(&left, &mut resolver).unwrap();
+        let right = class_model("mod.Right", &["mod.Right"], &[]);
+        model::refresh_snapshot(&right, &mut resolver).unwrap();
+        let sub = subclass_of("mod.Sub", &["mod.Left", "mod.Right"]);
+        let opts = BaseClassOptions::default();
+        let decided = configure_class_bases(&resolver, &sub, &opts).unwrap();
+        assert_eq!(decided.len(), 2);
+        assert_eq!(decided[0].kind, BaseKind::Instance);
+        assert_eq!(decided[1].kind, BaseKind::Instance);
+    }
+
+    #[test]
+    fn configure_class_bases_reads_is_newtype_from_the_base_record() {
+        let mut resolver = TypeResolver::new();
+        let snapshot = TypeInfoSnapshot {
+            fullname: "mod.New".to_string(),
+            is_newtype: true,
+            mro: vec!["mod.New".to_string()],
+            ..Default::default()
+        };
+        resolver.insert("mod.New".to_string(), snapshot);
+        let sub = subclass_of("mod.Sub", &["mod.New"]);
+        let opts = BaseClassOptions::default();
+        let decided = configure_class_bases(&resolver, &sub, &opts).unwrap();
+        assert_eq!(decided[0].kind, BaseKind::NewTypeFail);
+    }
+
+    #[test]
+    fn configure_class_bases_rejects_a_base_without_a_snapshot() {
+        let resolver = TypeResolver::new();
+        let sub = subclass_of("mod.Sub", &["mod.Missing"]);
+        let opts = BaseClassOptions::default();
+        let err = configure_class_bases(&resolver, &sub, &opts).unwrap_err();
+        assert!(err.contains("mod.Missing"), "message was: {err}");
     }
 }

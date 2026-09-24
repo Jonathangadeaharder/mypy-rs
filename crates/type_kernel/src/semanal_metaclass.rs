@@ -75,7 +75,7 @@ pub(crate) const RECALC_ENUM_GENERIC_FAIL: i64 = 3;
 /// isinstance on it failed), and the three metaclass-info facts (None when
 /// unreadable). Branch order mirrors Python exactly.
 #[allow(clippy::too_many_arguments)]
-fn classify_declared_metaclass_inner(
+pub(crate) fn classify_declared_metaclass_inner(
     mc_name: Option<&str>,
     sym_missing: bool,
     sym_is_var: Option<bool>,
@@ -207,7 +207,7 @@ pub(crate) fn rust_classify_declared_metaclass(
 /// when the named type is unavailable, so the enum scan never fires on the
 /// same class. Branch order mirrors Python: the protocol-MRO block runs
 /// before the enum scan, which reads the post-replacement metaclass.
-fn classify_recalculate_metaclass_inner(
+pub(crate) fn classify_recalculate_metaclass_inner(
     any_protocol_mro: bool,
     meta_present: bool,
     meta_is_builtins_type: Option<bool>,
