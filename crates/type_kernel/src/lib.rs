@@ -146,6 +146,10 @@ mod serverdeps;
 mod depswalk;
 mod setops;
 mod solve;
+/// Public Rust API of the standalone (Python-free) check path: the same
+/// ported logic the `#[pyfunction]` seams wrap, exposed for a caller with
+/// no interpreter and no wire round trip (`crates/mypy-rs-skel`).
+pub mod standalone;
 mod stubgen;
 // Issue #1635: native subexpr walk + aststrip helpers.
 mod subexpr_strip;
