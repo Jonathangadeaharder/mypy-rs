@@ -2527,7 +2527,8 @@ pub(crate) fn rust_tuple_context_matches(
     Ok(tuple_context_matches_inner(&elements_tags, &ctx))
 }
 
-fn tuple_context_matches_inner(elements_tags: &[i64], ctx: &Type) -> Option<bool> {
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`.
+pub(crate) fn tuple_context_matches_inner(elements_tags: &[i64], ctx: &Type) -> Option<bool> {
     let ctx = match ctx {
         Type::TupleType { items, .. } => items,
         Type::TypeAliasType { .. } => return None,
@@ -2869,7 +2870,8 @@ pub(crate) fn rust_try_getting_int_literals(type_bytes: &[u8]) -> PyResult<Optio
     Ok(try_getting_int_literals_inner(&typ))
 }
 
-fn try_getting_int_literals_inner(typ: &Type) -> Option<Vec<i64>> {
+/// `pub(crate)` for the standalone re-exposure in `standalone::expr`.
+pub(crate) fn try_getting_int_literals_inner(typ: &Type) -> Option<Vec<i64>> {
     match typ {
         Type::LiteralType {
             value: LiteralValue::Int(n),
