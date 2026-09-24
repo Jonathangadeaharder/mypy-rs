@@ -1356,10 +1356,18 @@ mod tests {
             from_type_type: true,
             fallback_to_any: false,
         };
+        // `Type[...]` exempts both arms at once.
         assert_eq!(classify_typeobj_gate(&facts), TypeobjGate::Pass);
+        // Without that exemption the protocol arm still beats the abstract
+        // one, which is mypy's `if` / `elif` order.
         facts.from_type_type = false;
+        assert_eq!(classify_typeobj_gate(&facts), TypeobjGate::Protocol);
+        // `fallback_to_any` exempts the abstract arm once protocol is out.
+        facts.is_protocol = false;
         facts.fallback_to_any = true;
         assert_eq!(classify_typeobj_gate(&facts), TypeobjGate::Pass);
+        // A callee that is not a type object never fails, whatever the
+        // other flags say.
         facts.is_type_obj = false;
         facts.fallback_to_any = false;
         assert_eq!(classify_typeobj_gate(&facts), TypeobjGate::Pass);
