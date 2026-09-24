@@ -76,39 +76,71 @@
 //! - [`get_coroutine_return_type`] (checker.py:1523)
 //! - [`get_generator_return_type`] (checker.py:1531)
 //!
+//! Format strings, `%`-interpolation and `str.format()` / f-strings
+//! (`mypy/checkstrformat.py`). These are the parsing and classification
+//! halves; the argument-type checking half (`StringFormatterChecker`) needs
+//! a checker and stays with the driver:
+//!
+//! - [`parse_conversion_specifiers`] (checkstrformat.py:309)
+//! - [`find_non_escaped_targets`] (checkstrformat.py:415)
+//! - [`parse_format_value`] (checkstrformat.py:323)
+//! - [`parse_placeholder_format`] (checkstrformat.py:178)
+//! - [`analyze_conversion_specifiers`] (checkstrformat.py:896)
+//! - [`is_numeric_format_type`] (checkstrformat.py:170)
+//!
+//! The kernel returns these as positional tuples and error integers, which
+//! is what a Python caller wants and what a Rust caller cannot read. Here
+//! they become named structs, and the five error integers become
+//! [`FormatStringError`], one variant per `msg.fail` call in mypy. The
+//! message text itself is deliberately not here: `standalone::diag` owns
+//! rendering, so this module only says which of the five mypy reports.
+//!
 //! # Recorded gaps, so the next increment does not rediscover them
 //!
-//! Five expression operations exist in the kernel but cannot be lifted
-//! without an edit outside this lane's write scope, and one has no
-//! Python-free logic to lift at all:
+//! Everything in the kernel's expression modules that is not exposed above
+//! is blocked, and each blocker is one of four kinds.
 //!
-//! - The conditional-expression join
-//!   (`checkexpr_functions::conditional_join_inner`, the port of
-//!   `join.join_types`) returns `Option<Vec<u8>>`: wire bytes. Reaching it
-//!   from here would put a wire decode in the standalone call path, which
-//!   plan rule 4 forbids. Turning it into `Option<Type>` and moving the
-//!   `encode_type` into its `#[pyfunction]` wrapper is behaviour-preserving
-//!   for the hybrid, but it is a signature change rather than a visibility
-//!   change. The general join is the `types` lane's deliverable, so the
-//!   right fix is probably to expose it there and compose here.
-//! - `has_any_type_inner`, `allow_fast_container_literal_inner` and
-//!   `is_duplicate_mapping_inner` all take
-//!   `&crate::aliases::TypeAliasResolver`, which is `pub(crate)` and so
-//!   cannot be named in a public signature. Making `TypeAliasResolver` and
-//!   `TypeAliasSnapshot` public (or re-exporting them from `skeleton_api`,
-//!   alongside `TypeResolver`) unblocks all three at once; alias snapshots
-//!   are semantic facts, so the `records` lane is the natural owner.
-//! - `classify_check_boolean_op` takes `Python<'_>` and
-//!   `&NativeTypeResolver`, so it is not Python-free and is not liftable as
-//!   written.
-//! - `compute_arg_context_indices_inner` (the index core of
-//!   `infer_arg_types_in_context`), `is_valid_var_arg_inner` and
-//!   `is_valid_keyword_var_arg_inner` are pure Rust and liftable, but they
-//!   are actual-to-formal argument mapping, which is the `call` lane's
-//!   first deliverable. Left there to keep one owner per operation.
-//! - `subexpr_strip.rs` is entirely a live-`PyAny` walk with no wire-format
-//!   twin, so it has nothing to lift. The standalone driver gets
-//!   subexpression enumeration from its own lowered AST instead.
+//! Blocked on `crate::aliases::TypeAliasResolver` visibility. Ten pure-Rust
+//! `checkexpr_functions` entries take `&TypeAliasResolver`, which is
+//! `pub(crate)` and so cannot be named in a public signature:
+//! `has_any_type_inner`, `has_uninhabited_component_inner`,
+//! `has_ambiguous_uninhabited_component_inner`, `has_erased_component_inner`,
+//! `has_bytes_component_inner`, `is_duplicate_mapping_inner`,
+//! `is_type_type_context_inner`, `is_typeddict_type_context_inner`,
+//! `allow_fast_container_literal_inner` and `combined_context_inner`. One
+//! edit unblocks all ten: make `TypeAliasResolver` and `TypeAliasSnapshot`
+//! public, or re-export them from `skeleton_api` next to `TypeResolver`.
+//! Alias snapshots are semantic facts, so the `records` lane is the natural
+//! owner. Most of the ten are type queries rather than expression checks,
+//! which is a second reason the fix belongs in that shared layer and not in
+//! any one area module.
+//!
+//! Blocked on a wire-byte return. `conditional_join_inner` (the port of
+//! `join.join_types`, the conditional-expression join),
+//! `visit_tuple_index_helper_inner` and `visit_tuple_slice_helper_inner`
+//! (tuple subscript and slice expressions) all return `Option<Vec<u8>>`, so
+//! reaching them would put a wire decode in the standalone call path, which
+//! plan rule 4 forbids. Returning `Option<Type>` and moving the
+//! `encode_type` into each `#[pyfunction]` wrapper is behaviour-preserving
+//! for the hybrid, but that is a signature change rather than a visibility
+//! change. The general join is the `types` lane's deliverable, so exposing
+//! it there and composing here is probably right for the first of the three.
+//!
+//! Blocked on pyo3 in the signature. `classify_check_boolean_op` takes
+//! `Python<'_>` and `&NativeTypeResolver`, so it is not Python-free and is
+//! not liftable as written.
+//!
+//! Owned elsewhere. `compute_arg_context_indices_inner` (the index core of
+//! `infer_arg_types_in_context`), `is_valid_var_arg_inner` and
+//! `is_valid_keyword_var_arg_inner` are pure Rust and liftable, but they are
+//! actual-to-formal argument mapping, which is the `call` lane's first
+//! deliverable. `is_typed_callable_inner` is pure and liftable but is
+//! callable and decorator typing rather than expression typing. Left alone
+//! so each operation keeps exactly one owner.
+//!
+//! Nothing to lift. `subexpr_strip.rs` is entirely a live-`PyAny` walk with
+//! no wire-format twin. The standalone driver gets subexpression
+//! enumeration from its own lowered AST instead.
 
 use crate::checkexpr_functions::is_string_literal_inner;
 use crate::checkexpr_functions::try_getting_int_literals_inner;
@@ -120,6 +152,17 @@ use crate::checkoperator::operator_plan_inner;
 use crate::checkoperator::OP_VARIANT_NORMAL;
 use crate::checkoperator::OP_VARIANT_REVERSE_FIRST;
 use crate::checkoperator::OP_VARIANT_SHORTCUT_SINGLE;
+use crate::checkstrformat::rust_analyze_conversion_specifiers;
+use crate::checkstrformat::rust_find_non_escaped_targets;
+use crate::checkstrformat::rust_is_numeric_format_type;
+use crate::checkstrformat::rust_parse_conversion_specifiers;
+use crate::checkstrformat::rust_parse_format_value;
+use crate::checkstrformat::rust_parse_placeholder_format;
+use crate::checkstrformat::ERR_INVALID_SPECIFIER;
+use crate::checkstrformat::ERR_KEY_HAS_BRACE;
+use crate::checkstrformat::ERR_NESTING_TOO_DEEP;
+use crate::checkstrformat::ERR_UNEXPECTED_CLOSE;
+use crate::checkstrformat::ERR_UNMATCHED_OPEN;
 use crate::generators::get_coroutine_return_type_inner;
 use crate::generators::get_generator_receive_type_inner;
 use crate::generators::get_generator_return_type_inner;
@@ -383,6 +426,337 @@ pub fn get_generator_return_type(
 /// violation (Python only calls this on a `Coroutine`).
 pub fn get_coroutine_return_type(return_type: &Type) -> Option<Type> {
     get_coroutine_return_type_inner(return_type)
+}
+
+/// One `%` conversion specifier of a printf-style format string.
+///
+/// The named form of the seven positional fields
+/// `checkstrformat::rust_parse_conversion_specifiers` returns, which mirror
+/// the attributes mypy's `ConversionSpecifier` carries for a `%` format
+/// (checkstrformat.py:309). `start_pos` is a character offset, not a byte
+/// offset, matching mypy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrintfSpecifier {
+    /// The whole specifier as written, for example `"%-10.2f"`.
+    pub whole_seq: String,
+    /// Character offset of the `%` in the format string.
+    pub start_pos: usize,
+    /// The mapping key of `"%(name)s"`. `None` when the specifier has no
+    /// key. An empty key (`"%()s"`) is `Some("")`, which mypy's
+    /// `ConversionSpecifier.has_key()` counts as present because it tests
+    /// `key is not None`, not truthiness.
+    pub key: Option<String>,
+    /// The conversion character, or `"%"` for a literal percent.
+    pub conv_type: String,
+    pub flags: String,
+    /// `"*"` when the width comes from an argument.
+    pub width: String,
+    /// `".NN"` or `".*"`, without the leading dot only if mypy omits it.
+    pub precision: String,
+}
+
+/// One `str.format()` or f-string replacement field.
+///
+/// The named form of the eleven positional fields
+/// `checkstrformat::rust_parse_format_value` returns, which mirror the
+/// attributes mypy's `ConversionSpecifier` carries for a new-style format
+/// (checkstrformat.py:323). Nested fields are flattened into the same list,
+/// in the order mypy produces them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FormatSpecifier {
+    /// The raw field text between the braces, for example `"name:d"`.
+    pub whole_seq: String,
+    /// Character offset of the field in the format string.
+    pub start_pos: usize,
+    /// The field name or index, when the field has one.
+    pub key: Option<String>,
+    pub conv_type: String,
+    pub flags: String,
+    pub width: String,
+    pub precision: String,
+    /// Everything after the `:` in the field, when there is one.
+    pub format_spec: Option<String>,
+    /// True when the field matched mypy's `FORMAT_RE_NEW_CUSTOM` rather
+    /// than the built-in grammar, so `format_spec` is unchecked text.
+    pub non_standard_format_spec: bool,
+    /// The `!r` / `!s` / `!a` conversion, with its leading `!`.
+    pub conversion: Option<String>,
+    /// The key plus any following attribute or index accesses.
+    pub field: Option<String>,
+}
+
+/// The decomposed format spec of one replacement field: the part after `:`.
+///
+/// The named form of the nine positional fields
+/// `checkstrformat::rust_parse_placeholder_format` returns, matching the
+/// `num_spec` groups of mypy's `FORMAT_RE_NEW` (checkstrformat.py:178).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaceholderFormat {
+    pub fill: Option<String>,
+    pub align: Option<String>,
+    pub sign: Option<String>,
+    /// The `#` flag was present.
+    pub alternate: bool,
+    /// The `0` flag was present after any `#`.
+    pub zero_pad: bool,
+    pub width: String,
+    /// The `_` or `,` thousands separator.
+    pub grouping: Option<String>,
+    /// `".NN"` including the dot.
+    pub precision: String,
+    pub conv_type: String,
+}
+
+/// A malformed format string, one variant per `msg.fail` call in mypy.
+///
+/// The kernel reports these as the integers 1 to 5
+/// (`checkstrformat::ERR_*`); this is the same set, named. Every variant is
+/// reported by mypy under `codes.STRING_FORMATTING`, so the diagnostic code
+/// is not part of the distinction. The message text lives in
+/// `standalone::diag`, not here: this module says which error occurred, the
+/// diag area owns how mypy words it (checkstrformat.py:334-364).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatStringError {
+    /// `Invalid conversion specifier in format string: unexpected }`
+    UnexpectedCloseBrace,
+    /// `Invalid conversion specifier in format string: unmatched {`
+    UnmatchedOpenBrace,
+    /// `Invalid conversion specifier in format string`
+    InvalidSpecifier,
+    /// `Conversion value must not contain { or }`
+    KeyContainsBrace,
+    /// `Formatting nesting must be at most two levels deep`
+    NestingTooDeep,
+}
+
+/// The three flags mypy's `analyze_conversion_specifiers` derives from a
+/// `%` format string (checkstrformat.py:896).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpecifierAnalysis {
+    /// Some specifier takes its width or precision from a `*` argument.
+    pub has_star: bool,
+    /// Some specifier has a mapping key. This is the value mypy's method
+    /// returns on success, and it decides keyed versus positional
+    /// replacement checking.
+    pub has_key: bool,
+    /// Every specifier either has a key or is a literal `%%`.
+    pub all_have_keys: bool,
+}
+
+/// Why a `%` format string's specifier list is rejected outright.
+///
+/// The two variants are mypy's two distinct messages
+/// (checkstrformat.py:908 and :910), which the kernel collapses into a
+/// single `None`; separating them here is what lets the driver name the
+/// right one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecifierAnalysisError {
+    /// A mapping key and a `*` width or precision in the same string:
+    /// `string_interpolation_with_star_and_key`.
+    StarWithKey,
+    /// Some specifiers have a key and some do not:
+    /// `string_interpolation_mixing_key_and_non_keys`.
+    MixedKeys,
+}
+
+/// Maps one of `checkstrformat`'s integer error codes onto
+/// [`FormatStringError`], or `None` for code 0, which means success.
+fn format_string_error(code: i32) -> Option<FormatStringError> {
+    match code {
+        ERR_UNEXPECTED_CLOSE => Some(FormatStringError::UnexpectedCloseBrace),
+        ERR_UNMATCHED_OPEN => Some(FormatStringError::UnmatchedOpenBrace),
+        ERR_INVALID_SPECIFIER => Some(FormatStringError::InvalidSpecifier),
+        ERR_KEY_HAS_BRACE => Some(FormatStringError::KeyContainsBrace),
+        ERR_NESTING_TOO_DEEP => Some(FormatStringError::NestingTooDeep),
+        _ => None,
+    }
+}
+
+/// The error for a nonzero code the five constants do not cover.
+///
+/// Unreachable: the kernel only ever returns its own `ERR_*` constants. It
+/// falls back to mypy's generic `InvalidSpecifier` message rather than
+/// guessing at a more specific complaint, and rather than panicking inside
+/// a checker.
+fn unknown_format_code(code: i32) -> FormatStringError {
+    format_string_error(code).unwrap_or(FormatStringError::InvalidSpecifier)
+}
+
+/// Whether a conversion character is numeric.
+///
+/// Lifts `checkstrformat::rust_is_numeric_format_type`, the port of
+/// `mypy.checkstrformat.is_numeric_format_type` (checkstrformat.py:170).
+/// `is_new_style` selects the `str.format()` table over the `%` table; they
+/// differ on `b`, `n` and `%`.
+pub fn is_numeric_format_type(conv_type: &str, is_new_style: bool) -> bool {
+    rust_is_numeric_format_type(conv_type, is_new_style)
+}
+
+/// The `%` conversion specifiers of a printf-style format string.
+///
+/// Lifts `checkstrformat::rust_parse_conversion_specifiers`, the port of
+/// `mypy.checkstrformat.parse_conversion_specifiers`
+/// (checkstrformat.py:309). Never fails: a string with no specifier yields
+/// an empty list, and mypy reports a bad specifier later, when it checks the
+/// replacement values.
+pub fn parse_conversion_specifiers(format_str: &str) -> Vec<PrintfSpecifier> {
+    let raw = rust_parse_conversion_specifiers(format_str);
+    let mut out = Vec::with_capacity(raw.len());
+    for (whole_seq, start_pos, key, conv_type, flags, width, precision) in raw {
+        out.push(PrintfSpecifier {
+            whole_seq,
+            start_pos,
+            key,
+            conv_type,
+            flags,
+            width,
+            precision,
+        });
+    }
+    out
+}
+
+/// The raw, unparsed replacement fields of a `str.format()` template.
+///
+/// Lifts `checkstrformat::rust_find_non_escaped_targets`, the port of
+/// `mypy.checkstrformat.find_non_escaped_targets` (checkstrformat.py:415).
+/// Each entry is the field text without its braces plus its character
+/// offset. Paired `{{` and `}}` are escapes and produce nothing.
+///
+/// # Errors
+///
+/// [`FormatStringError::UnexpectedCloseBrace`] or
+/// [`FormatStringError::UnmatchedOpenBrace`], the only two this function can
+/// report.
+pub fn find_non_escaped_targets(
+    format_value: &str,
+) -> Result<Vec<(String, usize)>, FormatStringError> {
+    let (code, targets) = rust_find_non_escaped_targets(format_value);
+    if code != 0 {
+        return Err(unknown_format_code(code));
+    }
+    Ok(targets)
+}
+
+/// The parsed replacement fields of a `str.format()` template or f-string.
+///
+/// Lifts `checkstrformat::rust_parse_format_value`, the port of
+/// `mypy.checkstrformat.parse_format_value` (checkstrformat.py:323). Fields
+/// nested inside a non-standard format spec are flattened into the same
+/// list, at most two levels deep, in mypy's order.
+///
+/// # Errors
+///
+/// Any of the five [`FormatStringError`] variants, which are exactly the
+/// five `msg.fail` calls mypy makes here.
+pub fn parse_format_value(format_value: &str) -> Result<Vec<FormatSpecifier>, FormatStringError> {
+    let (code, raw) = rust_parse_format_value(format_value);
+    if code != 0 {
+        return Err(unknown_format_code(code));
+    }
+    let mut out = Vec::with_capacity(raw.len());
+    for spec in raw {
+        let (
+            whole_seq,
+            start_pos,
+            key,
+            conv_type,
+            flags,
+            width,
+            precision,
+            format_spec,
+            non_standard_format_spec,
+            conversion,
+            field,
+        ) = spec;
+        out.push(FormatSpecifier {
+            whole_seq,
+            start_pos,
+            key,
+            conv_type,
+            flags,
+            width,
+            precision,
+            format_spec,
+            non_standard_format_spec,
+            conversion,
+            field,
+        });
+    }
+    Ok(out)
+}
+
+/// The decomposed format spec of one replacement field.
+///
+/// Lifts `checkstrformat::rust_parse_placeholder_format`, the port of
+/// `mypy.checkstrformat.parse_placeholder_format` (checkstrformat.py:178).
+/// `format_spec` is the text after the `:`, without the colon.
+///
+/// `None` is mypy's "this does not match the built-in grammar", which sends
+/// the field down the custom `__format__` path rather than reporting an
+/// error.
+pub fn parse_placeholder_format(format_spec: &str) -> Option<PlaceholderFormat> {
+    let raw = rust_parse_placeholder_format(format_spec)?;
+    let (fill, align, sign, alternate, zero_pad, width, grouping, precision, conv_type) = raw;
+    Some(PlaceholderFormat {
+        fill,
+        align,
+        sign,
+        alternate,
+        zero_pad,
+        width,
+        grouping,
+        precision,
+        conv_type,
+    })
+}
+
+/// Whether a `%` format string's specifiers are usable, and how.
+///
+/// Lifts `checkstrformat::rust_analyze_conversion_specifiers`, the port of
+/// `StringFormatterChecker.analyze_conversion_specifiers`
+/// (checkstrformat.py:896). The success value's `has_key` is what mypy
+/// returns to pick keyed over positional replacement checking.
+///
+/// `key_present` is `key.is_some()`, not key non-emptiness: mypy's
+/// `ConversionSpecifier.has_key()` is `self.key is not None`
+/// (checkstrformat.py:272), so an empty `"%()s"` key counts as present.
+///
+/// # Errors
+///
+/// [`SpecifierAnalysisError::StarWithKey`] or
+/// [`SpecifierAnalysisError::MixedKeys`]. The kernel declines without saying
+/// which, so the two flags are recomputed here exactly as mypy's own Python
+/// fallback does (checkstrformat.py:905).
+pub fn analyze_conversion_specifiers(
+    specifiers: &[PrintfSpecifier],
+) -> Result<SpecifierAnalysis, SpecifierAnalysisError> {
+    let infos: Vec<(bool, String, String, String)> = specifiers
+        .iter()
+        .map(|s| {
+            (
+                s.key.is_some(),
+                s.conv_type.clone(),
+                s.width.clone(),
+                s.precision.clone(),
+            )
+        })
+        .collect();
+    if let Some((has_star, has_key, all_have_keys)) = rust_analyze_conversion_specifiers(infos) {
+        return Ok(SpecifierAnalysis {
+            has_star,
+            has_key,
+            all_have_keys,
+        });
+    }
+    let has_star = specifiers
+        .iter()
+        .any(|s| s.width == "*" || s.precision == "*");
+    let has_key = specifiers.iter().any(|s| s.key.is_some());
+    if has_star && has_key {
+        return Err(SpecifierAnalysisError::StarWithKey);
+    }
+    Err(SpecifierAnalysisError::MixedKeys)
 }
 
 #[cfg(test)]
@@ -738,5 +1112,190 @@ mod tests {
             vec![special_form_any(), special_form_any()],
         );
         assert_eq!(get_coroutine_return_type(&c), None);
+    }
+
+    // -- format strings --
+
+    #[test]
+    fn the_numeric_format_tables_differ_between_the_two_styles() {
+        assert!(is_numeric_format_type("d", false));
+        assert!(is_numeric_format_type("%", true));
+        assert!(!is_numeric_format_type("%", false));
+        assert!(!is_numeric_format_type("s", true));
+    }
+
+    #[test]
+    fn printf_specifiers_keep_the_key_apart_from_the_conversion() {
+        let specs = parse_conversion_specifiers("%(name)s");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].whole_seq, "%(name)s");
+        assert_eq!(specs[0].start_pos, 0);
+        assert_eq!(specs[0].key, Some("name".to_string()));
+        assert_eq!(specs[0].conv_type, "s");
+    }
+
+    #[test]
+    fn a_star_width_stays_a_star_and_a_percent_literal_stays_a_type() {
+        let star = parse_conversion_specifiers("%*d");
+        assert_eq!(star.len(), 1);
+        assert_eq!(star[0].width, "*");
+        assert_eq!(star[0].conv_type, "d");
+        assert_eq!(star[0].key, None);
+
+        let pct = parse_conversion_specifiers("100%%");
+        assert_eq!(pct.len(), 1);
+        assert_eq!(pct[0].conv_type, "%");
+    }
+
+    #[test]
+    fn a_format_string_without_specifiers_parses_to_nothing() {
+        assert!(parse_conversion_specifiers("no specifiers here").is_empty());
+    }
+
+    #[test]
+    fn non_escaped_targets_are_raw_field_text_at_character_offsets() {
+        // The offset is the closing brace's index minus the field length, so
+        // it points at the first character inside the braces, not at `{`.
+        assert_eq!(
+            find_non_escaped_targets("{name}"),
+            Ok(vec![("name".to_string(), 1)])
+        );
+        // A multibyte prefix shifts the character offset, which is what mypy
+        // reports, not the byte offset.
+        assert_eq!(
+            find_non_escaped_targets("ā{}"),
+            Ok(vec![(String::new(), 2)])
+        );
+        // Paired braces are escapes and produce no field at all.
+        assert_eq!(find_non_escaped_targets("{{}}"), Ok(vec![]));
+    }
+
+    #[test]
+    fn an_unbalanced_brace_is_a_named_error_not_an_empty_field_list() {
+        assert_eq!(
+            find_non_escaped_targets("}"),
+            Err(FormatStringError::UnexpectedCloseBrace)
+        );
+        assert_eq!(
+            find_non_escaped_targets("{"),
+            Err(FormatStringError::UnmatchedOpenBrace)
+        );
+    }
+
+    #[test]
+    fn a_new_style_field_decomposes_into_key_conversion_and_spec() {
+        let specs = parse_format_value("{name:d}").expect("a builtin field must parse");
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].whole_seq, "name:d");
+        assert_eq!(specs[0].key, Some("name".to_string()));
+        assert_eq!(specs[0].conv_type, "d");
+        assert!(!specs[0].non_standard_format_spec);
+    }
+
+    #[test]
+    fn a_bang_conversion_keeps_its_bang() {
+        let specs = parse_format_value("{!r}").expect("a builtin field must parse");
+        assert_eq!(specs[0].conversion, Some("!r".to_string()));
+    }
+
+    #[test]
+    fn a_malformed_template_names_its_error_instead_of_parsing() {
+        assert_eq!(
+            parse_format_value("}"),
+            Err(FormatStringError::UnexpectedCloseBrace)
+        );
+        assert_eq!(
+            parse_format_value("{"),
+            Err(FormatStringError::UnmatchedOpenBrace)
+        );
+    }
+
+    #[test]
+    fn every_mypy_format_error_code_maps_to_its_own_variant() {
+        assert_eq!(
+            format_string_error(ERR_UNEXPECTED_CLOSE),
+            Some(FormatStringError::UnexpectedCloseBrace)
+        );
+        assert_eq!(
+            format_string_error(ERR_UNMATCHED_OPEN),
+            Some(FormatStringError::UnmatchedOpenBrace)
+        );
+        assert_eq!(
+            format_string_error(ERR_INVALID_SPECIFIER),
+            Some(FormatStringError::InvalidSpecifier)
+        );
+        assert_eq!(
+            format_string_error(ERR_KEY_HAS_BRACE),
+            Some(FormatStringError::KeyContainsBrace)
+        );
+        assert_eq!(
+            format_string_error(ERR_NESTING_TOO_DEEP),
+            Some(FormatStringError::NestingTooDeep)
+        );
+        assert_eq!(format_string_error(0), None);
+        assert_eq!(unknown_format_code(99), FormatStringError::InvalidSpecifier);
+    }
+
+    #[test]
+    fn a_placeholder_spec_decomposes_into_all_nine_parts() {
+        let p = parse_placeholder_format("x<+#012,.3f").expect("a builtin spec must parse");
+        assert_eq!(p.fill, Some("x".to_string()));
+        assert_eq!(p.align, Some("<".to_string()));
+        assert_eq!(p.sign, Some("+".to_string()));
+        assert!(p.alternate);
+        assert!(p.zero_pad);
+        assert_eq!(p.width, "12");
+        assert_eq!(p.grouping, Some(",".to_string()));
+        assert_eq!(p.precision, ".3");
+        assert_eq!(p.conv_type, "f");
+    }
+
+    #[test]
+    fn a_spec_outside_the_builtin_grammar_is_not_a_builtin_spec() {
+        assert_eq!(parse_placeholder_format("d extra"), None);
+    }
+
+    #[test]
+    fn keyed_specifiers_analyze_as_keyed() {
+        let specs = parse_conversion_specifiers("%(a)s %(b)d");
+        assert_eq!(
+            analyze_conversion_specifiers(&specs),
+            Ok(SpecifierAnalysis {
+                has_star: false,
+                has_key: true,
+                all_have_keys: true,
+            })
+        );
+    }
+
+    #[test]
+    fn positional_specifiers_analyze_as_unkeyed() {
+        let specs = parse_conversion_specifiers("%d %s");
+        assert_eq!(
+            analyze_conversion_specifiers(&specs),
+            Ok(SpecifierAnalysis {
+                has_star: false,
+                has_key: false,
+                all_have_keys: false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_star_beside_a_key_is_rejected_as_star_with_key() {
+        let specs = parse_conversion_specifiers("%(a)*d");
+        assert_eq!(
+            analyze_conversion_specifiers(&specs),
+            Err(SpecifierAnalysisError::StarWithKey)
+        );
+    }
+
+    #[test]
+    fn mixing_keyed_and_unkeyed_specifiers_is_rejected_as_mixed_keys() {
+        let specs = parse_conversion_specifiers("%(a)s %d");
+        assert_eq!(
+            analyze_conversion_specifiers(&specs),
+            Err(SpecifierAnalysisError::MixedKeys)
+        );
     }
 }
