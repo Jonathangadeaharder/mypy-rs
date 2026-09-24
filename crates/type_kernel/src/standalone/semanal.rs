@@ -1188,22 +1188,46 @@ mod tests {
 
     #[test]
     fn compat_helper_with_metaclass_rejects_a_bad_arity_or_kind() {
-        assert!(!compat_helper_with_metaclass(Some("six.with_metaclass"), 0, true));
-        assert!(!compat_helper_with_metaclass(Some("six.with_metaclass"), 2, false));
+        assert!(!compat_helper_with_metaclass(
+            Some("six.with_metaclass"),
+            0,
+            true
+        ));
+        assert!(!compat_helper_with_metaclass(
+            Some("six.with_metaclass"),
+            2,
+            false
+        ));
         assert!(!compat_helper_with_metaclass(Some("mod.NotMeta"), 2, true));
         assert!(!compat_helper_with_metaclass(None, 2, true));
     }
 
     #[test]
     fn compat_helper_add_metaclass_matches_only_six_add_metaclass() {
-        assert!(compat_helper_add_metaclass(Some("six.add_metaclass"), 1, true));
+        assert!(compat_helper_add_metaclass(
+            Some("six.add_metaclass"),
+            1,
+            true
+        ));
     }
 
     #[test]
     fn compat_helper_add_metaclass_rejects_arity_kind_and_name() {
-        assert!(!compat_helper_add_metaclass(Some("six.add_metaclass"), 2, true));
-        assert!(!compat_helper_add_metaclass(Some("six.add_metaclass"), 1, false));
-        assert!(!compat_helper_add_metaclass(Some("six.with_metaclass"), 1, true));
+        assert!(!compat_helper_add_metaclass(
+            Some("six.add_metaclass"),
+            2,
+            true
+        ));
+        assert!(!compat_helper_add_metaclass(
+            Some("six.add_metaclass"),
+            1,
+            false
+        ));
+        assert!(!compat_helper_add_metaclass(
+            Some("six.with_metaclass"),
+            1,
+            true
+        ));
     }
 
     #[test]
