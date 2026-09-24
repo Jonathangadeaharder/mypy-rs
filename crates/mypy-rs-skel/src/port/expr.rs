@@ -32,18 +32,37 @@
 //!
 //! Nothing here is wired into `Driver` yet. Wave 2 replaces the private
 //! variant engine in `check.rs::binop_typed` and the dunder table inlined in
-//! `check.rs::type_unary` with calls into this module; until then the two
-//! copies of the unary table coexist on purpose, and deleting the
-//! `check.rs` one is part of that wiring, not of this lane.
+//! `check.rs::type_unary` with calls into this module.
+//!
+//! # Format strings
+//!
+//! The `%` and `str.format()` entry points take a `subset::Lit`, because that
+//! is what the lowered tree hands the driver: `"..." % x` is an
+//! `ExprKind::BinOp` with `Mod` and a `Lit::Str` left operand, and
+//! `"...".format(x)` is an `ExprKind::Call` whose `func` is an
+//! `ExprKind::Attr` over a `Lit::Str`. A non-string template is not an error
+//! here; it is the case where mypy has nothing to parse at check time.
+//! F-strings are not representable in the current subset at all (it has no
+//! joined-string node), so growing the subset comes before wiring them.
+//!
+//! Error text stays out of this module too. A malformed template is reported
+//! as a `FormatStringError` variant, and turning that variant into mypy's
+//! message is `port::diag`'s job.
 
 use type_kernel::skeleton_api::Type;
 use type_kernel::skeleton_api::TypeResolver;
 use type_kernel::standalone::expr::check_op_reversible_variant_order;
 use type_kernel::standalone::expr::lookup_operator_definer;
+use type_kernel::standalone::expr::parse_conversion_specifiers;
+use type_kernel::standalone::expr::parse_format_value;
+use type_kernel::standalone::expr::FormatSpecifier;
+use type_kernel::standalone::expr::FormatStringError;
 use type_kernel::standalone::expr::OperatorDefiner;
 use type_kernel::standalone::expr::OperatorVariantOrder;
+use type_kernel::standalone::expr::PrintfSpecifier;
 
 use crate::subset::BinOpKind;
+use crate::subset::Lit;
 use crate::subset::UnaryOpKind;
 
 /// An expression the standalone path cannot type, because the kernel
@@ -151,6 +170,58 @@ pub fn unary_op_dunder(op: UnaryOpKind) -> Option<&'static str> {
         UnaryOpKind::USub => Some("__neg__"),
         UnaryOpKind::UAdd => Some("__pos__"),
         UnaryOpKind::Not => None,
+    }
+}
+
+/// What a skeleton literal used as a `str.format()` template turns out to be.
+///
+/// The three cases have three different consequences for the driver, which
+/// is why they are variants and not an `Option<Result<..>>`: only
+/// [`FormatTemplate::Fields`] has replacement values to check,
+/// [`FormatTemplate::Malformed`] is one `string-formatting` diagnostic and no
+/// checking, and [`FormatTemplate::NotALiteral`] is neither.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FormatTemplate {
+    /// The replacement fields mypy would check, in source order.
+    Fields(Vec<FormatSpecifier>),
+    /// The template is malformed. mypy reports one error and checks no
+    /// replacement values at all.
+    Malformed(FormatStringError),
+    /// The template is not a string literal, so there is nothing to parse at
+    /// check time.
+    NotALiteral,
+}
+
+/// The `%` specifiers of a skeleton interpolation's template.
+///
+/// Adapts a `subset::Lit` to
+/// `type_kernel::standalone::expr::parse_conversion_specifiers`, the port of
+/// `mypy.checkstrformat.parse_conversion_specifiers`. Parsing never fails: a
+/// template with no specifier yields an empty list, and mypy reports a bad
+/// specifier later, while checking the replacement values.
+///
+/// `None` when the template is not a string literal, which is mypy's
+/// runtime-checked-format case rather than an error.
+pub fn percent_specifiers(template: &Lit) -> Option<Vec<PrintfSpecifier>> {
+    match template {
+        Lit::Str(text) => Some(parse_conversion_specifiers(text)),
+        _ => None,
+    }
+}
+
+/// The replacement fields of a skeleton `str.format()` template.
+///
+/// Adapts a `subset::Lit` to
+/// `type_kernel::standalone::expr::parse_format_value`, the port of
+/// `mypy.checkstrformat.parse_format_value`. See [`FormatTemplate`] for why
+/// the three outcomes are variants.
+pub fn format_template(template: &Lit) -> FormatTemplate {
+    let Lit::Str(text) = template else {
+        return FormatTemplate::NotALiteral;
+    };
+    match parse_format_value(text) {
+        Ok(fields) => FormatTemplate::Fields(fields),
+        Err(err) => FormatTemplate::Malformed(err),
     }
 }
 
@@ -273,5 +344,46 @@ mod tests {
         assert_eq!(unary_op_dunder(UnaryOpKind::USub), Some("__neg__"));
         assert_eq!(unary_op_dunder(UnaryOpKind::UAdd), Some("__pos__"));
         assert_eq!(unary_op_dunder(UnaryOpKind::Not), None);
+    }
+
+    #[test]
+    fn a_percent_template_yields_its_specifiers() {
+        let template = Lit::Str("%(a)s %d".to_string());
+        let specs = percent_specifiers(&template).expect("a string literal is a template");
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].key, Some("a".to_string()));
+        assert_eq!(specs[1].key, None);
+        assert_eq!(specs[1].conv_type, "d");
+    }
+
+    #[test]
+    fn a_non_string_left_operand_is_not_a_percent_template() {
+        assert_eq!(percent_specifiers(&Lit::Int(3)), None);
+    }
+
+    #[test]
+    fn a_format_template_yields_its_replacement_fields() {
+        let template = Lit::Str("{name:d}".to_string());
+        let fields = match format_template(&template) {
+            FormatTemplate::Fields(fields) => fields,
+            other => panic!("expected replacement fields, got {other:?}"),
+        };
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].key, Some("name".to_string()));
+        assert_eq!(fields[0].conv_type, "d");
+    }
+
+    #[test]
+    fn a_malformed_template_is_reported_rather_than_silently_emptied() {
+        let template = Lit::Str("}".to_string());
+        assert_eq!(
+            format_template(&template),
+            FormatTemplate::Malformed(FormatStringError::UnexpectedCloseBrace)
+        );
+    }
+
+    #[test]
+    fn a_non_string_template_is_neither_fields_nor_malformed() {
+        assert_eq!(format_template(&Lit::Int(3)), FormatTemplate::NotALiteral);
     }
 }

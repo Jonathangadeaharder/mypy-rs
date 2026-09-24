@@ -183,11 +183,12 @@ pub fn rust_parse_conversion_specifiers(format_str: &str) -> Vec<PrintfSpecTuple
 // ===== str.format() brace-matching =====
 
 // Error codes matching the Python error messages.
-const ERR_UNEXPECTED_CLOSE: i32 = 1;
-const ERR_UNMATCHED_OPEN: i32 = 2;
-const ERR_INVALID_SPECIFIER: i32 = 3;
-const ERR_KEY_HAS_BRACE: i32 = 4;
-const ERR_NESTING_TOO_DEEP: i32 = 5;
+// `pub(crate)` so `standalone::expr` can map them onto a named error type.
+pub(crate) const ERR_UNEXPECTED_CLOSE: i32 = 1;
+pub(crate) const ERR_UNMATCHED_OPEN: i32 = 2;
+pub(crate) const ERR_INVALID_SPECIFIER: i32 = 3;
+pub(crate) const ERR_KEY_HAS_BRACE: i32 = 4;
+pub(crate) const ERR_NESTING_TOO_DEEP: i32 = 5;
 
 /// Find non-escaped format targets in a str.format() format string.
 /// Returns `(error_code, targets)`: `(0, [(target, start_pos), ...])` on
