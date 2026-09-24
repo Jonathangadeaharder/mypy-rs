@@ -1,0 +1,2179 @@
+{
+  "typeinfos": [
+    {
+      "alt_promote_fullname": null,
+      "bases": [
+        "5055"
+      ],
+      "enum_members": [],
+      "fallback_to_any": false,
+      "fullname": "builtins.bool",
+      "has_param_spec_type": false,
+      "has_type_var_tuple_type": false,
+      "is_abstract": false,
+      "is_enum": false,
+      "is_named_tuple": false,
+      "is_newtype": false,
+      "is_protocol": false,
+      "member_definers": {
+        "__and__": [
+          0,
+          "builtins.bool"
+        ],
+        "__getnewargs__": [
+          0,
+          "builtins.bool"
+        ],
+        "__invert__": [
+          1,
+          "builtins.bool"
+        ],
+        "__new__": [
+          0,
+          "builtins.bool"
+        ],
+        "__or__": [
+          0,
+          "builtins.bool"
+        ],
+        "__rand__": [
+          0,
+          "builtins.bool"
+        ],
+        "__ror__": [
+          0,
+          "builtins.bool"
+        ],
+        "__rxor__": [
+          0,
+          "builtins.bool"
+        ],
+        "__xor__": [
+          0,
+          "builtins.bool"
+        ]
+      },
+      "member_info": {
+        "__and__": [
+          false,
+          false
+        ],
+        "__getnewargs__": [
+          false,
+          false
+        ],
+        "__invert__": [
+          false,
+          false
+        ],
+        "__new__": [
+          false,
+          false
+        ],
+        "__or__": [
+          false,
+          false
+        ],
+        "__rand__": [
+          false,
+          false
+        ],
+        "__ror__": [
+          false,
+          false
+        ],
+        "__rxor__": [
+          false,
+          false
+        ],
+        "__xor__": [
+          false,
+          false
+        ]
+      },
+      "meta_fallback_to_any": false,
+      "metaclass_fullname": "",
+      "mro": [
+        "builtins.bool",
+        "builtins.int",
+        "builtins.object"
+      ],
+      "name": "bool",
+      "promote_bytes": [],
+      "protocol_members": [],
+      "tuple_type": null,
+      "type_var_raw_ids": [],
+      "type_var_tuple_fallback": null,
+      "type_var_tuple_prefix": null,
+      "type_var_tuple_suffix": null,
+      "type_var_upper_bounds": [],
+      "type_vars": [],
+      "type_vars_with_variance": []
+    },
+    {
+      "alt_promote_fullname": null,
+      "bases": [
+        "5057"
+      ],
+      "enum_members": [],
+      "fallback_to_any": false,
+      "fullname": "builtins.float",
+      "has_param_spec_type": false,
+      "has_type_var_tuple_type": false,
+      "is_abstract": false,
+      "is_enum": false,
+      "is_named_tuple": false,
+      "is_newtype": false,
+      "is_protocol": false,
+      "member_definers": {
+        "__abs__": [
+          0,
+          "builtins.float"
+        ],
+        "__add__": [
+          0,
+          "builtins.float"
+        ],
+        "__bool__": [
+          0,
+          "builtins.float"
+        ],
+        "__ceil__": [
+          0,
+          "builtins.float"
+        ],
+        "__divmod__": [
+          0,
+          "builtins.float"
+        ],
+        "__eq__": [
+          0,
+          "builtins.float"
+        ],
+        "__float__": [
+          0,
+          "builtins.float"
+        ],
+        "__floor__": [
+          0,
+          "builtins.float"
+        ],
+        "__floordiv__": [
+          0,
+          "builtins.float"
+        ],
+        "__format__": [
+          0,
+          "builtins.float"
+        ],
+        "__ge__": [
+          0,
+          "builtins.float"
+        ],
+        "__getnewargs__": [
+          0,
+          "builtins.float"
+        ],
+        "__gt__": [
+          0,
+          "builtins.float"
+        ],
+        "__hash__": [
+          0,
+          "builtins.float"
+        ],
+        "__int__": [
+          0,
+          "builtins.float"
+        ],
+        "__le__": [
+          0,
+          "builtins.float"
+        ],
+        "__lt__": [
+          0,
+          "builtins.float"
+        ],
+        "__mod__": [
+          0,
+          "builtins.float"
+        ],
+        "__mul__": [
+          0,
+          "builtins.float"
+        ],
+        "__ne__": [
+          0,
+          "builtins.float"
+        ],
+        "__neg__": [
+          0,
+          "builtins.float"
+        ],
+        "__new__": [
+          0,
+          "builtins.float"
+        ],
+        "__pos__": [
+          0,
+          "builtins.float"
+        ],
+        "__pow__": [
+          0,
+          "builtins.float"
+        ],
+        "__radd__": [
+          0,
+          "builtins.float"
+        ],
+        "__rdivmod__": [
+          0,
+          "builtins.float"
+        ],
+        "__rfloordiv__": [
+          0,
+          "builtins.float"
+        ],
+        "__rmod__": [
+          0,
+          "builtins.float"
+        ],
+        "__rmul__": [
+          0,
+          "builtins.float"
+        ],
+        "__round__": [
+          0,
+          "builtins.float"
+        ],
+        "__rpow__": [
+          0,
+          "builtins.float"
+        ],
+        "__rsub__": [
+          0,
+          "builtins.float"
+        ],
+        "__rtruediv__": [
+          0,
+          "builtins.float"
+        ],
+        "__sub__": [
+          0,
+          "builtins.float"
+        ],
+        "__truediv__": [
+          0,
+          "builtins.float"
+        ],
+        "__trunc__": [
+          0,
+          "builtins.float"
+        ],
+        "as_integer_ratio": [
+          0,
+          "builtins.float"
+        ],
+        "conjugate": [
+          0,
+          "builtins.float"
+        ],
+        "fromhex": [
+          1,
+          "builtins.float"
+        ],
+        "hex": [
+          0,
+          "builtins.float"
+        ],
+        "imag": [
+          1,
+          "builtins.float"
+        ],
+        "is_integer": [
+          0,
+          "builtins.float"
+        ],
+        "real": [
+          1,
+          "builtins.float"
+        ]
+      },
+      "member_info": {
+        "__abs__": [
+          false,
+          false
+        ],
+        "__add__": [
+          false,
+          false
+        ],
+        "__bool__": [
+          false,
+          false
+        ],
+        "__ceil__": [
+          false,
+          false
+        ],
+        "__divmod__": [
+          false,
+          false
+        ],
+        "__eq__": [
+          false,
+          false
+        ],
+        "__float__": [
+          false,
+          false
+        ],
+        "__floor__": [
+          false,
+          false
+        ],
+        "__floordiv__": [
+          false,
+          false
+        ],
+        "__format__": [
+          false,
+          false
+        ],
+        "__ge__": [
+          false,
+          false
+        ],
+        "__getnewargs__": [
+          false,
+          false
+        ],
+        "__gt__": [
+          false,
+          false
+        ],
+        "__hash__": [
+          false,
+          false
+        ],
+        "__int__": [
+          false,
+          false
+        ],
+        "__le__": [
+          false,
+          false
+        ],
+        "__lt__": [
+          false,
+          false
+        ],
+        "__mod__": [
+          false,
+          false
+        ],
+        "__mul__": [
+          false,
+          false
+        ],
+        "__ne__": [
+          false,
+          false
+        ],
+        "__neg__": [
+          false,
+          false
+        ],
+        "__new__": [
+          false,
+          false
+        ],
+        "__pos__": [
+          false,
+          false
+        ],
+        "__pow__": [
+          false,
+          false
+        ],
+        "__radd__": [
+          false,
+          false
+        ],
+        "__rdivmod__": [
+          false,
+          false
+        ],
+        "__rfloordiv__": [
+          false,
+          false
+        ],
+        "__rmod__": [
+          false,
+          false
+        ],
+        "__rmul__": [
+          false,
+          false
+        ],
+        "__round__": [
+          false,
+          false
+        ],
+        "__rpow__": [
+          false,
+          false
+        ],
+        "__rsub__": [
+          false,
+          false
+        ],
+        "__rtruediv__": [
+          false,
+          false
+        ],
+        "__sub__": [
+          false,
+          false
+        ],
+        "__truediv__": [
+          false,
+          false
+        ],
+        "__trunc__": [
+          false,
+          false
+        ],
+        "as_integer_ratio": [
+          false,
+          false
+        ],
+        "conjugate": [
+          false,
+          false
+        ],
+        "fromhex": [
+          false,
+          false
+        ],
+        "hex": [
+          false,
+          false
+        ],
+        "imag": [
+          false,
+          false
+        ],
+        "is_integer": [
+          false,
+          false
+        ],
+        "real": [
+          false,
+          false
+        ]
+      },
+      "meta_fallback_to_any": false,
+      "metaclass_fullname": "",
+      "mro": [
+        "builtins.float",
+        "builtins.object"
+      ],
+      "name": "float",
+      "promote_bytes": [
+        "5051346275696c74696e732e636f6d706c6578"
+      ],
+      "protocol_members": [],
+      "tuple_type": null,
+      "type_var_raw_ids": [],
+      "type_var_tuple_fallback": null,
+      "type_var_tuple_prefix": null,
+      "type_var_tuple_suffix": null,
+      "type_var_upper_bounds": [],
+      "type_vars": [],
+      "type_vars_with_variance": []
+    },
+    {
+      "alt_promote_fullname": null,
+      "bases": [
+        "5057"
+      ],
+      "enum_members": [],
+      "fallback_to_any": false,
+      "fullname": "builtins.function",
+      "has_param_spec_type": false,
+      "has_type_var_tuple_type": false,
+      "is_abstract": false,
+      "is_enum": false,
+      "is_named_tuple": false,
+      "is_newtype": false,
+      "is_protocol": false,
+      "member_definers": {
+        "__annotations__": [
+          2,
+          "builtins.function"
+        ],
+        "__builtins__": [
+          1,
+          "builtins.function"
+        ],
+        "__closure__": [
+          1,
+          "builtins.function"
+        ],
+        "__code__": [
+          2,
+          "builtins.function"
+        ],
+        "__defaults__": [
+          2,
+          "builtins.function"
+        ],
+        "__dict__": [
+          2,
+          "builtins.function"
+        ],
+        "__get__": [
+          0,
+          "builtins.function"
+        ],
+        "__globals__": [
+          1,
+          "builtins.function"
+        ],
+        "__kwdefaults__": [
+          2,
+          "builtins.function"
+        ],
+        "__module__": [
+          2,
+          "builtins.function"
+        ],
+        "__name__": [
+          2,
+          "builtins.function"
+        ],
+        "__new__": [
+          0,
+          "builtins.function"
+        ],
+        "__qualname__": [
+          2,
+          "builtins.function"
+        ],
+        "__type_params__": [
+          2,
+          "builtins.function"
+        ]
+      },
+      "member_info": {
+        "__annotations__": [
+          false,
+          false
+        ],
+        "__builtins__": [
+          false,
+          false
+        ],
+        "__closure__": [
+          false,
+          false
+        ],
+        "__code__": [
+          false,
+          false
+        ],
+        "__defaults__": [
+          false,
+          false
+        ],
+        "__dict__": [
+          false,
+          false
+        ],
+        "__get__": [
+          false,
+          false
+        ],
+        "__globals__": [
+          false,
+          false
+        ],
+        "__kwdefaults__": [
+          false,
+          false
+        ],
+        "__module__": [
+          false,
+          false
+        ],
+        "__name__": [
+          false,
+          false
+        ],
+        "__new__": [
+          false,
+          false
+        ],
+        "__qualname__": [
+          false,
+          false
+        ],
+        "__type_params__": [
+          false,
+          false
+        ]
+      },
+      "meta_fallback_to_any": false,
+      "metaclass_fullname": "",
+      "mro": [
+        "builtins.function",
+        "builtins.object"
+      ],
+      "name": "function",
+      "promote_bytes": [],
+      "protocol_members": [],
+      "tuple_type": null,
+      "type_var_raw_ids": [],
+      "type_var_tuple_fallback": null,
+      "type_var_tuple_prefix": null,
+      "type_var_tuple_suffix": null,
+      "type_var_upper_bounds": [],
+      "type_vars": [],
+      "type_vars_with_variance": []
+    },
+    {
+      "alt_promote_fullname": null,
+      "bases": [
+        "5057"
+      ],
+      "enum_members": [],
+      "fallback_to_any": false,
+      "fullname": "builtins.int",
+      "has_param_spec_type": false,
+      "has_type_var_tuple_type": false,
+      "is_abstract": false,
+      "is_enum": false,
+      "is_named_tuple": false,
+      "is_newtype": false,
+      "is_protocol": false,
+      "member_definers": {
+        "__abs__": [
+          0,
+          "builtins.int"
+        ],
+        "__add__": [
+          0,
+          "builtins.int"
+        ],
+        "__and__": [
+          0,
+          "builtins.int"
+        ],
+        "__bool__": [
+          0,
+          "builtins.int"
+        ],
+        "__ceil__": [
+          0,
+          "builtins.int"
+        ],
+        "__divmod__": [
+          0,
+          "builtins.int"
+        ],
+        "__eq__": [
+          0,
+          "builtins.int"
+        ],
+        "__float__": [
+          0,
+          "builtins.int"
+        ],
+        "__floor__": [
+          0,
+          "builtins.int"
+        ],
+        "__floordiv__": [
+          0,
+          "builtins.int"
+        ],
+        "__format__": [
+          0,
+          "builtins.int"
+        ],
+        "__ge__": [
+          0,
+          "builtins.int"
+        ],
+        "__getnewargs__": [
+          0,
+          "builtins.int"
+        ],
+        "__gt__": [
+          0,
+          "builtins.int"
+        ],
+        "__hash__": [
+          0,
+          "builtins.int"
+        ],
+        "__index__": [
+          0,
+          "builtins.int"
+        ],
+        "__int__": [
+          0,
+          "builtins.int"
+        ],
+        "__invert__": [
+          0,
+          "builtins.int"
+        ],
+        "__le__": [
+          0,
+          "builtins.int"
+        ],
+        "__lshift__": [
+          0,
+          "builtins.int"
+        ],
+        "__lt__": [
+          0,
+          "builtins.int"
+        ],
+        "__mod__": [
+          0,
+          "builtins.int"
+        ],
+        "__mul__": [
+          0,
+          "builtins.int"
+        ],
+        "__ne__": [
+          0,
+          "builtins.int"
+        ],
+        "__neg__": [
+          0,
+          "builtins.int"
+        ],
+        "__new__": [
+          0,
+          "builtins.int"
+        ],
+        "__or__": [
+          0,
+          "builtins.int"
+        ],
+        "__pos__": [
+          0,
+          "builtins.int"
+        ],
+        "__pow__": [
+          0,
+          "builtins.int"
+        ],
+        "__radd__": [
+          0,
+          "builtins.int"
+        ],
+        "__rand__": [
+          0,
+          "builtins.int"
+        ],
+        "__rdivmod__": [
+          0,
+          "builtins.int"
+        ],
+        "__rfloordiv__": [
+          0,
+          "builtins.int"
+        ],
+        "__rlshift__": [
+          0,
+          "builtins.int"
+        ],
+        "__rmod__": [
+          0,
+          "builtins.int"
+        ],
+        "__rmul__": [
+          0,
+          "builtins.int"
+        ],
+        "__ror__": [
+          0,
+          "builtins.int"
+        ],
+        "__round__": [
+          0,
+          "builtins.int"
+        ],
+        "__rpow__": [
+          0,
+          "builtins.int"
+        ],
+        "__rrshift__": [
+          0,
+          "builtins.int"
+        ],
+        "__rshift__": [
+          0,
+          "builtins.int"
+        ],
+        "__rsub__": [
+          0,
+          "builtins.int"
+        ],
+        "__rtruediv__": [
+          0,
+          "builtins.int"
+        ],
+        "__rxor__": [
+          0,
+          "builtins.int"
+        ],
+        "__sub__": [
+          0,
+          "builtins.int"
+        ],
+        "__truediv__": [
+          0,
+          "builtins.int"
+        ],
+        "__trunc__": [
+          0,
+          "builtins.int"
+        ],
+        "__xor__": [
+          0,
+          "builtins.int"
+        ],
+        "as_integer_ratio": [
+          0,
+          "builtins.int"
+        ],
+        "bit_count": [
+          0,
+          "builtins.int"
+        ],
+        "bit_length": [
+          0,
+          "builtins.int"
+        ],
+        "conjugate": [
+          0,
+          "builtins.int"
+        ],
+        "denominator": [
+          1,
+          "builtins.int"
+        ],
+        "from_bytes": [
+          1,
+          "builtins.int"
+        ],
+        "imag": [
+          1,
+          "builtins.int"
+        ],
+        "is_integer": [
+          0,
+          "builtins.int"
+        ],
+        "numerator": [
+          1,
+          "builtins.int"
+        ],
+        "real": [
+          1,
+          "builtins.int"
+        ],
+        "to_bytes": [
+          0,
+          "builtins.int"
+        ]
+      },
+      "member_info": {
+        "__abs__": [
+          false,
+          false
+        ],
+        "__add__": [
+          false,
+          false
+        ],
+        "__and__": [
+          false,
+          false
+        ],
+        "__bool__": [
+          false,
+          false
+        ],
+        "__ceil__": [
+          false,
+          false
+        ],
+        "__divmod__": [
+          false,
+          false
+        ],
+        "__eq__": [
+          false,
+          false
+        ],
+        "__float__": [
+          false,
+          false
+        ],
+        "__floor__": [
+          false,
+          false
+        ],
+        "__floordiv__": [
+          false,
+          false
+        ],
+        "__format__": [
+          false,
+          false
+        ],
+        "__ge__": [
+          false,
+          false
+        ],
+        "__getnewargs__": [
+          false,
+          false
+        ],
+        "__gt__": [
+          false,
+          false
+        ],
+        "__hash__": [
+          false,
+          false
+        ],
+        "__index__": [
+          false,
+          false
+        ],
+        "__int__": [
+          false,
+          false
+        ],
+        "__invert__": [
+          false,
+          false
+        ],
+        "__le__": [
+          false,
+          false
+        ],
+        "__lshift__": [
+          false,
+          false
+        ],
+        "__lt__": [
+          false,
+          false
+        ],
+        "__mod__": [
+          false,
+          false
+        ],
+        "__mul__": [
+          false,
+          false
+        ],
+        "__ne__": [
+          false,
+          false
+        ],
+        "__neg__": [
+          false,
+          false
+        ],
+        "__new__": [
+          false,
+          false
+        ],
+        "__or__": [
+          false,
+          false
+        ],
+        "__pos__": [
+          false,
+          false
+        ],
+        "__pow__": [
+          false,
+          false
+        ],
+        "__radd__": [
+          false,
+          false
+        ],
+        "__rand__": [
+          false,
+          false
+        ],
+        "__rdivmod__": [
+          false,
+          false
+        ],
+        "__rfloordiv__": [
+          false,
+          false
+        ],
+        "__rlshift__": [
+          false,
+          false
+        ],
+        "__rmod__": [
+          false,
+          false
+        ],
+        "__rmul__": [
+          false,
+          false
+        ],
+        "__ror__": [
+          false,
+          false
+        ],
+        "__round__": [
+          false,
+          false
+        ],
+        "__rpow__": [
+          false,
+          false
+        ],
+        "__rrshift__": [
+          false,
+          false
+        ],
+        "__rshift__": [
+          false,
+          false
+        ],
+        "__rsub__": [
+          false,
+          false
+        ],
+        "__rtruediv__": [
+          false,
+          false
+        ],
+        "__rxor__": [
+          false,
+          false
+        ],
+        "__sub__": [
+          false,
+          false
+        ],
+        "__truediv__": [
+          false,
+          false
+        ],
+        "__trunc__": [
+          false,
+          false
+        ],
+        "__xor__": [
+          false,
+          false
+        ],
+        "as_integer_ratio": [
+          false,
+          false
+        ],
+        "bit_count": [
+          false,
+          false
+        ],
+        "bit_length": [
+          false,
+          false
+        ],
+        "conjugate": [
+          false,
+          false
+        ],
+        "denominator": [
+          false,
+          false
+        ],
+        "from_bytes": [
+          false,
+          false
+        ],
+        "imag": [
+          false,
+          false
+        ],
+        "is_integer": [
+          false,
+          false
+        ],
+        "numerator": [
+          false,
+          false
+        ],
+        "real": [
+          false,
+          false
+        ],
+        "to_bytes": [
+          false,
+          false
+        ]
+      },
+      "meta_fallback_to_any": false,
+      "metaclass_fullname": "",
+      "mro": [
+        "builtins.int",
+        "builtins.object"
+      ],
+      "name": "int",
+      "promote_bytes": [
+        "5051306275696c74696e732e666c6f6174"
+      ],
+      "protocol_members": [],
+      "tuple_type": null,
+      "type_var_raw_ids": [],
+      "type_var_tuple_fallback": null,
+      "type_var_tuple_prefix": null,
+      "type_var_tuple_suffix": null,
+      "type_var_upper_bounds": [],
+      "type_vars": [],
+      "type_vars_with_variance": []
+    },
+    {
+      "alt_promote_fullname": null,
+      "bases": [],
+      "enum_members": [],
+      "fallback_to_any": false,
+      "fullname": "builtins.object",
+      "has_param_spec_type": false,
+      "has_type_var_tuple_type": false,
+      "is_abstract": false,
+      "is_enum": false,
+      "is_named_tuple": false,
+      "is_newtype": false,
+      "is_protocol": false,
+      "member_definers": {
+        "__annotations__": [
+          2,
+          "builtins.object"
+        ],
+        "__class__": [
+          0,
+          "builtins.object"
+        ],
+        "__delattr__": [
+          0,
+          "builtins.object"
+        ],
+        "__dict__": [
+          2,
+          "builtins.object"
+        ],
+        "__dir__": [
+          0,
+          "builtins.object"
+        ],
+        "__doc__": [
+          2,
+          "builtins.object"
+        ],
+        "__eq__": [
+          0,
+          "builtins.object"
+        ],
+        "__format__": [
+          0,
+          "builtins.object"
+        ],
+        "__getattribute__": [
+          0,
+          "builtins.object"
+        ],
+        "__getstate__": [
+          0,
+          "builtins.object"
+        ],
+        "__hash__": [
+          0,
+          "builtins.object"
+        ],
+        "__init__": [
+          0,
+          "builtins.object"
+        ],
+        "__init_subclass__": [
+          0,
+          "builtins.object"
+        ],
+        "__module__": [
+          2,
+          "builtins.object"
+        ],
+        "__ne__": [
+          0,
+          "builtins.object"
+        ],
+        "__new__": [
+          0,
+          "builtins.object"
+        ],
+        "__reduce__": [
+          0,
+          "builtins.object"
+        ],
+        "__reduce_ex__": [
+          0,
+          "builtins.object"
+        ],
+        "__repr__": [
+          0,
+          "builtins.object"
+        ],
+        "__setattr__": [
+          0,
+          "builtins.object"
+        ],
+        "__sizeof__": [
+          0,
+          "builtins.object"
+        ],
+        "__str__": [
+          0,
+          "builtins.object"
+        ],
+        "__subclasshook__": [
+          1,
+          "builtins.object"
+        ]
+      },
+      "member_info": {
+        "__annotations__": [
+          false,
+          false
+        ],
+        "__class__": [
+          false,
+          false
+        ],
+        "__delattr__": [
+          false,
+          false
+        ],
+        "__dict__": [
+          false,
+          false
+        ],
+        "__dir__": [
+          false,
+          false
+        ],
+        "__doc__": [
+          false,
+          false
+        ],
+        "__eq__": [
+          false,
+          false
+        ],
+        "__format__": [
+          false,
+          false
+        ],
+        "__getattribute__": [
+          false,
+          false
+        ],
+        "__getstate__": [
+          false,
+          false
+        ],
+        "__hash__": [
+          false,
+          false
+        ],
+        "__init__": [
+          false,
+          false
+        ],
+        "__init_subclass__": [
+          false,
+          false
+        ],
+        "__module__": [
+          false,
+          false
+        ],
+        "__ne__": [
+          false,
+          false
+        ],
+        "__new__": [
+          false,
+          false
+        ],
+        "__reduce__": [
+          false,
+          false
+        ],
+        "__reduce_ex__": [
+          false,
+          false
+        ],
+        "__repr__": [
+          false,
+          false
+        ],
+        "__setattr__": [
+          false,
+          false
+        ],
+        "__sizeof__": [
+          false,
+          false
+        ],
+        "__str__": [
+          false,
+          false
+        ],
+        "__subclasshook__": [
+          false,
+          false
+        ]
+      },
+      "meta_fallback_to_any": false,
+      "metaclass_fullname": "",
+      "mro": [
+        "builtins.object"
+      ],
+      "name": "object",
+      "promote_bytes": [],
+      "protocol_members": [],
+      "tuple_type": null,
+      "type_var_raw_ids": [],
+      "type_var_tuple_fallback": null,
+      "type_var_tuple_prefix": null,
+      "type_var_tuple_suffix": null,
+      "type_var_upper_bounds": [],
+      "type_vars": [],
+      "type_vars_with_variance": []
+    },
+    {
+      "alt_promote_fullname": null,
+      "bases": [
+        "50520432747970696e672e53657175656e6365141650530202ff"
+      ],
+      "enum_members": [],
+      "fallback_to_any": false,
+      "fullname": "builtins.str",
+      "has_param_spec_type": false,
+      "has_type_var_tuple_type": false,
+      "is_abstract": false,
+      "is_enum": false,
+      "is_named_tuple": false,
+      "is_newtype": false,
+      "is_protocol": false,
+      "member_definers": {
+        "__add__": [
+          0,
+          "builtins.str"
+        ],
+        "__contains__": [
+          0,
+          "builtins.str"
+        ],
+        "__eq__": [
+          0,
+          "builtins.str"
+        ],
+        "__format__": [
+          0,
+          "builtins.str"
+        ],
+        "__ge__": [
+          0,
+          "builtins.str"
+        ],
+        "__getitem__": [
+          0,
+          "builtins.str"
+        ],
+        "__getnewargs__": [
+          0,
+          "builtins.str"
+        ],
+        "__gt__": [
+          0,
+          "builtins.str"
+        ],
+        "__hash__": [
+          0,
+          "builtins.str"
+        ],
+        "__iter__": [
+          0,
+          "builtins.str"
+        ],
+        "__le__": [
+          0,
+          "builtins.str"
+        ],
+        "__len__": [
+          0,
+          "builtins.str"
+        ],
+        "__lt__": [
+          0,
+          "builtins.str"
+        ],
+        "__mod__": [
+          0,
+          "builtins.str"
+        ],
+        "__mul__": [
+          0,
+          "builtins.str"
+        ],
+        "__ne__": [
+          0,
+          "builtins.str"
+        ],
+        "__new__": [
+          0,
+          "builtins.str"
+        ],
+        "__rmul__": [
+          0,
+          "builtins.str"
+        ],
+        "capitalize": [
+          0,
+          "builtins.str"
+        ],
+        "casefold": [
+          0,
+          "builtins.str"
+        ],
+        "center": [
+          0,
+          "builtins.str"
+        ],
+        "count": [
+          0,
+          "builtins.str"
+        ],
+        "encode": [
+          0,
+          "builtins.str"
+        ],
+        "endswith": [
+          0,
+          "builtins.str"
+        ],
+        "expandtabs": [
+          0,
+          "builtins.str"
+        ],
+        "find": [
+          0,
+          "builtins.str"
+        ],
+        "format": [
+          0,
+          "builtins.str"
+        ],
+        "format_map": [
+          0,
+          "builtins.str"
+        ],
+        "index": [
+          0,
+          "builtins.str"
+        ],
+        "isalnum": [
+          0,
+          "builtins.str"
+        ],
+        "isalpha": [
+          0,
+          "builtins.str"
+        ],
+        "isascii": [
+          0,
+          "builtins.str"
+        ],
+        "isdecimal": [
+          0,
+          "builtins.str"
+        ],
+        "isdigit": [
+          0,
+          "builtins.str"
+        ],
+        "isidentifier": [
+          0,
+          "builtins.str"
+        ],
+        "islower": [
+          0,
+          "builtins.str"
+        ],
+        "isnumeric": [
+          0,
+          "builtins.str"
+        ],
+        "isprintable": [
+          0,
+          "builtins.str"
+        ],
+        "isspace": [
+          0,
+          "builtins.str"
+        ],
+        "istitle": [
+          0,
+          "builtins.str"
+        ],
+        "isupper": [
+          0,
+          "builtins.str"
+        ],
+        "join": [
+          0,
+          "builtins.str"
+        ],
+        "ljust": [
+          0,
+          "builtins.str"
+        ],
+        "lower": [
+          0,
+          "builtins.str"
+        ],
+        "lstrip": [
+          0,
+          "builtins.str"
+        ],
+        "maketrans": [
+          0,
+          "builtins.str"
+        ],
+        "partition": [
+          0,
+          "builtins.str"
+        ],
+        "removeprefix": [
+          0,
+          "builtins.str"
+        ],
+        "removesuffix": [
+          0,
+          "builtins.str"
+        ],
+        "replace": [
+          0,
+          "builtins.str"
+        ],
+        "rfind": [
+          0,
+          "builtins.str"
+        ],
+        "rindex": [
+          0,
+          "builtins.str"
+        ],
+        "rjust": [
+          0,
+          "builtins.str"
+        ],
+        "rpartition": [
+          0,
+          "builtins.str"
+        ],
+        "rsplit": [
+          0,
+          "builtins.str"
+        ],
+        "rstrip": [
+          0,
+          "builtins.str"
+        ],
+        "split": [
+          0,
+          "builtins.str"
+        ],
+        "splitlines": [
+          0,
+          "builtins.str"
+        ],
+        "startswith": [
+          0,
+          "builtins.str"
+        ],
+        "strip": [
+          0,
+          "builtins.str"
+        ],
+        "swapcase": [
+          0,
+          "builtins.str"
+        ],
+        "title": [
+          0,
+          "builtins.str"
+        ],
+        "translate": [
+          0,
+          "builtins.str"
+        ],
+        "upper": [
+          0,
+          "builtins.str"
+        ],
+        "zfill": [
+          0,
+          "builtins.str"
+        ]
+      },
+      "member_info": {
+        "__add__": [
+          false,
+          false
+        ],
+        "__contains__": [
+          false,
+          false
+        ],
+        "__eq__": [
+          false,
+          false
+        ],
+        "__format__": [
+          false,
+          false
+        ],
+        "__ge__": [
+          false,
+          false
+        ],
+        "__getitem__": [
+          false,
+          false
+        ],
+        "__getnewargs__": [
+          false,
+          false
+        ],
+        "__gt__": [
+          false,
+          false
+        ],
+        "__hash__": [
+          false,
+          false
+        ],
+        "__iter__": [
+          false,
+          false
+        ],
+        "__le__": [
+          false,
+          false
+        ],
+        "__len__": [
+          false,
+          false
+        ],
+        "__lt__": [
+          false,
+          false
+        ],
+        "__mod__": [
+          false,
+          false
+        ],
+        "__mul__": [
+          false,
+          false
+        ],
+        "__ne__": [
+          false,
+          false
+        ],
+        "__new__": [
+          false,
+          false
+        ],
+        "__rmul__": [
+          false,
+          false
+        ],
+        "capitalize": [
+          false,
+          false
+        ],
+        "casefold": [
+          false,
+          false
+        ],
+        "center": [
+          false,
+          false
+        ],
+        "count": [
+          false,
+          false
+        ],
+        "encode": [
+          false,
+          false
+        ],
+        "endswith": [
+          false,
+          false
+        ],
+        "expandtabs": [
+          false,
+          false
+        ],
+        "find": [
+          false,
+          false
+        ],
+        "format": [
+          false,
+          false
+        ],
+        "format_map": [
+          false,
+          false
+        ],
+        "index": [
+          false,
+          false
+        ],
+        "isalnum": [
+          false,
+          false
+        ],
+        "isalpha": [
+          false,
+          false
+        ],
+        "isascii": [
+          false,
+          false
+        ],
+        "isdecimal": [
+          false,
+          false
+        ],
+        "isdigit": [
+          false,
+          false
+        ],
+        "isidentifier": [
+          false,
+          false
+        ],
+        "islower": [
+          false,
+          false
+        ],
+        "isnumeric": [
+          false,
+          false
+        ],
+        "isprintable": [
+          false,
+          false
+        ],
+        "isspace": [
+          false,
+          false
+        ],
+        "istitle": [
+          false,
+          false
+        ],
+        "isupper": [
+          false,
+          false
+        ],
+        "join": [
+          false,
+          false
+        ],
+        "ljust": [
+          false,
+          false
+        ],
+        "lower": [
+          false,
+          false
+        ],
+        "lstrip": [
+          false,
+          false
+        ],
+        "maketrans": [
+          false,
+          false
+        ],
+        "partition": [
+          false,
+          false
+        ],
+        "removeprefix": [
+          false,
+          false
+        ],
+        "removesuffix": [
+          false,
+          false
+        ],
+        "replace": [
+          false,
+          false
+        ],
+        "rfind": [
+          false,
+          false
+        ],
+        "rindex": [
+          false,
+          false
+        ],
+        "rjust": [
+          false,
+          false
+        ],
+        "rpartition": [
+          false,
+          false
+        ],
+        "rsplit": [
+          false,
+          false
+        ],
+        "rstrip": [
+          false,
+          false
+        ],
+        "split": [
+          false,
+          false
+        ],
+        "splitlines": [
+          false,
+          false
+        ],
+        "startswith": [
+          false,
+          false
+        ],
+        "strip": [
+          false,
+          false
+        ],
+        "swapcase": [
+          false,
+          false
+        ],
+        "title": [
+          false,
+          false
+        ],
+        "translate": [
+          false,
+          false
+        ],
+        "upper": [
+          false,
+          false
+        ],
+        "zfill": [
+          false,
+          false
+        ]
+      },
+      "meta_fallback_to_any": false,
+      "metaclass_fullname": "abc.ABCMeta",
+      "mro": [
+        "builtins.str",
+        "typing.Sequence",
+        "typing.Reversible",
+        "typing.Collection",
+        "typing.Iterable",
+        "typing.Container",
+        "builtins.object"
+      ],
+      "name": "str",
+      "promote_bytes": [],
+      "protocol_members": [
+        "__contains__",
+        "__iter__",
+        "__len__",
+        "__reversed__"
+      ],
+      "tuple_type": null,
+      "type_var_raw_ids": [],
+      "type_var_tuple_fallback": null,
+      "type_var_tuple_prefix": null,
+      "type_var_tuple_suffix": null,
+      "type_var_upper_bounds": [],
+      "type_vars": [],
+      "type_vars_with_variance": []
+    },
+    {
+      "alt_promote_fullname": null,
+      "bases": [
+        "5057"
+      ],
+      "enum_members": [],
+      "fallback_to_any": false,
+      "fullname": "builtins.type",
+      "has_param_spec_type": false,
+      "has_type_var_tuple_type": false,
+      "is_abstract": false,
+      "is_enum": false,
+      "is_named_tuple": false,
+      "is_newtype": false,
+      "is_protocol": false,
+      "member_definers": {
+        "__annotations__": [
+          2,
+          "builtins.type"
+        ],
+        "__base__": [
+          1,
+          "builtins.type"
+        ],
+        "__bases__": [
+          2,
+          "builtins.type"
+        ],
+        "__basicsize__": [
+          1,
+          "builtins.type"
+        ],
+        "__call__": [
+          0,
+          "builtins.type"
+        ],
+        "__dict__": [
+          2,
+          "builtins.type"
+        ],
+        "__dictoffset__": [
+          1,
+          "builtins.type"
+        ],
+        "__flags__": [
+          1,
+          "builtins.type"
+        ],
+        "__init__": [
+          0,
+          "builtins.type"
+        ],
+        "__instancecheck__": [
+          0,
+          "builtins.type"
+        ],
+        "__itemsize__": [
+          1,
+          "builtins.type"
+        ],
+        "__module__": [
+          2,
+          "builtins.type"
+        ],
+        "__mro__": [
+          1,
+          "builtins.type"
+        ],
+        "__name__": [
+          2,
+          "builtins.type"
+        ],
+        "__new__": [
+          0,
+          "builtins.type"
+        ],
+        "__or__": [
+          0,
+          "builtins.type"
+        ],
+        "__prepare__": [
+          1,
+          "builtins.type"
+        ],
+        "__qualname__": [
+          2,
+          "builtins.type"
+        ],
+        "__ror__": [
+          0,
+          "builtins.type"
+        ],
+        "__subclasscheck__": [
+          0,
+          "builtins.type"
+        ],
+        "__subclasses__": [
+          0,
+          "builtins.type"
+        ],
+        "__text_signature__": [
+          1,
+          "builtins.type"
+        ],
+        "__type_params__": [
+          2,
+          "builtins.type"
+        ],
+        "__weakrefoffset__": [
+          1,
+          "builtins.type"
+        ],
+        "mro": [
+          0,
+          "builtins.type"
+        ]
+      },
+      "member_info": {
+        "__annotations__": [
+          false,
+          false
+        ],
+        "__base__": [
+          false,
+          false
+        ],
+        "__bases__": [
+          false,
+          false
+        ],
+        "__basicsize__": [
+          false,
+          false
+        ],
+        "__call__": [
+          false,
+          false
+        ],
+        "__dict__": [
+          false,
+          false
+        ],
+        "__dictoffset__": [
+          false,
+          false
+        ],
+        "__flags__": [
+          false,
+          false
+        ],
+        "__init__": [
+          false,
+          false
+        ],
+        "__instancecheck__": [
+          false,
+          false
+        ],
+        "__itemsize__": [
+          false,
+          false
+        ],
+        "__module__": [
+          false,
+          false
+        ],
+        "__mro__": [
+          false,
+          false
+        ],
+        "__name__": [
+          false,
+          false
+        ],
+        "__new__": [
+          false,
+          false
+        ],
+        "__or__": [
+          false,
+          false
+        ],
+        "__prepare__": [
+          false,
+          false
+        ],
+        "__qualname__": [
+          false,
+          false
+        ],
+        "__ror__": [
+          false,
+          false
+        ],
+        "__subclasscheck__": [
+          false,
+          false
+        ],
+        "__subclasses__": [
+          false,
+          false
+        ],
+        "__text_signature__": [
+          false,
+          false
+        ],
+        "__type_params__": [
+          false,
+          false
+        ],
+        "__weakrefoffset__": [
+          false,
+          false
+        ],
+        "mro": [
+          false,
+          false
+        ]
+      },
+      "meta_fallback_to_any": false,
+      "metaclass_fullname": "builtins.type",
+      "mro": [
+        "builtins.type",
+        "builtins.object"
+      ],
+      "name": "type",
+      "promote_bytes": [],
+      "protocol_members": [],
+      "tuple_type": null,
+      "type_var_raw_ids": [],
+      "type_var_tuple_fallback": null,
+      "type_var_tuple_prefix": null,
+      "type_var_tuple_suffix": null,
+      "type_var_upper_bounds": [],
+      "type_vars": [],
+      "type_vars_with_variance": []
+    }
+  ]
+}
