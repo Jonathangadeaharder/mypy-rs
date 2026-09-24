@@ -1245,7 +1245,10 @@ mod tests {
             rvalue_unpack: Some(0),
             ..RvalueCountFacts::default()
         };
-        assert_eq!(check_rvalue_count(&facts), RvalueCount::UnpackAsymmetricWarn);
+        assert_eq!(
+            check_rvalue_count(&facts),
+            RvalueCount::UnpackAsymmetricWarn
+        );
     }
 
     // -- is_valid_inferred_type --------------------------------------------
@@ -1281,7 +1284,10 @@ mod tests {
         let facts = InferredTypeFacts::default();
         let aliases = AliasContext::empty();
         let never = Type::UninhabitedType { ambiguous: false };
-        assert_eq!(is_valid_inferred_type(&never, &facts, &aliases), Some(false));
+        assert_eq!(
+            is_valid_inferred_type(&never, &facts, &aliases),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1385,12 +1391,18 @@ mod tests {
     fn a_tuple_handler_binds_every_item() {
         let tup = Type::TupleType {
             partial_fallback: Box::new(instance("builtins.tuple")),
-            items: vec![instance("builtins.ValueError"), instance("builtins.KeyError")],
+            items: vec![
+                instance("builtins.ValueError"),
+                instance("builtins.KeyError"),
+            ],
             implicit: false,
         };
         assert_eq!(
             get_types_from_except_handler(&tup, true),
-            vec![instance("builtins.ValueError"), instance("builtins.KeyError")]
+            vec![
+                instance("builtins.ValueError"),
+                instance("builtins.KeyError")
+            ]
         );
     }
 

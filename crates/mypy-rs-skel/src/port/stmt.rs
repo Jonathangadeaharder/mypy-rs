@@ -123,12 +123,12 @@ impl<'a> StmtContext<'a> {
     /// verdict means the kernel declined, which for a covered file means
     /// the fixture closure broke: an internal error, never a pass.
     fn sub(&self, left: &Type, right: &Type, line: usize) -> Result<bool, CheckError> {
+        let path = self.path;
         match is_subtype(left, right, self.subtype, self.resolver) {
             Some(verdict) => Ok(verdict),
             None => Err(CheckError::Internal(format!(
-                "{}:{line}: skeleton internal error: the kernel deferred a subtype \
-                 check; the fixture closure no longer covers the corpus",
-                self.path
+                "{path}:{line}: skeleton internal error: the kernel deferred a subtype \
+                 check; the fixture closure no longer covers the corpus"
             ))),
         }
     }
@@ -186,16 +186,20 @@ pub fn check_return(
     col: usize,
 ) -> Result<Option<Diagnostic>, CheckError> {
     let Some(sig) = enclosing else {
-        return Err(out_of_subset(ctx.path, line, "a return statement outside a function"));
+        return Err(out_of_subset(
+            ctx.path,
+            line,
+            "a return statement outside a function",
+        ));
     };
     let facts = return_stmt_facts(&sig.ret);
     match kernel::check_return_stmt(returned, &sig.ret, &facts) {
         kernel::ReturnOutcome::CheckSubtype => {
             let Some(got) = returned else {
+                let path = ctx.path;
                 return Err(CheckError::Internal(format!(
-                    "{}:{line}: skeleton internal error: the kernel asked for a \
-                     returned-value subtype check on an empty return",
-                    ctx.path
+                    "{path}:{line}: skeleton internal error: the kernel asked for a \
+                     returned-value subtype check on an empty return"
                 )));
             };
             if ctx.sub(got, &sig.ret, line)? {
@@ -221,20 +225,24 @@ pub fn check_return(
         kernel::ReturnOutcome::EmptyFail => ctx.rendered(
             line,
             col,
-            "error: Return value expected  [return-value]".to_string(),
+            String::from("error: Return value expected  [return-value]"),
             "a missing return value is outside the supported error classes",
         ),
         kernel::ReturnOutcome::DeclaredNoneFail => ctx.rendered(
             line,
             col,
-            "error: No return value expected  [return-value]".to_string(),
+            String::from("error: No return value expected  [return-value]"),
             "a returned value in a None function is outside the supported error classes",
         ),
         // Unreachable for the facts `return_stmt_facts` supplies: the subset
         // has no async generators and `warn_return_any` is off. Rejecting
         // loudly is the plan's rule-6 behaviour if that ever changes.
         kernel::ReturnOutcome::AsyncGeneratorFail | kernel::ReturnOutcome::WarnReturnAny => {
-            Err(out_of_subset(ctx.path, line, "a return outside the supported outcomes"))
+            Err(out_of_subset(
+                ctx.path,
+                line,
+                "a return outside the supported outcomes",
+            ))
         }
     }
 }
@@ -349,10 +357,9 @@ pub fn operator_assignment_method(
 ) -> (bool, String) {
     let method = op.dunders().0;
     let in_ops = op_has_inplace_method(op.symbol());
+    let inplace_name = kernel::inplace_method_name(method);
     let has_inplace = match target {
-        Type::Instance { type_ref, .. } => {
-            probe.has_readable_member(type_ref, &kernel::inplace_method_name(method))
-        }
+        Type::Instance { type_ref, .. } => probe.has_readable_member(type_ref, &inplace_name),
         _ => false,
     };
     kernel::infer_operator_assignment_method(in_ops, has_inplace, method)
@@ -384,7 +391,8 @@ mod tests {
 
     impl Harness {
         fn new() -> Harness {
-            let fixtures = crate::fixtures::Fixtures::load().expect("the fixtures must parse");
+            let fixtures = crate::fixtures::Fixtures::load()
+                .expect("the fixtures must parse");
             Harness {
                 resolver: fixtures.resolver,
                 subtype: SubtypeContext {
@@ -423,7 +431,8 @@ mod tests {
         let ctx = h.ctx(true);
         let def = sig(instance("builtins.int", Vec::new()));
         let got = instance("builtins.int", Vec::new());
-        let diag = check_return(&ctx, Some(&def), Some(&got), 3, 12).expect("decidable");
+        let diag = check_return(&ctx, Some(&def), Some(&got), 3, 12)
+            .expect("decidable");
         assert!(diag.is_none());
     }
 
@@ -450,7 +459,8 @@ mod tests {
         let h = Harness::new();
         let ctx = h.ctx(true);
         let got = instance("builtins.int", Vec::new());
-        let err = check_return(&ctx, None, Some(&got), 1, 1).expect_err("must reject");
+        let err = check_return(&ctx, None, Some(&got), 1, 1)
+            .expect_err("must reject");
         match err {
             CheckError::Input(message) => assert!(
                 message.contains("a return statement outside a function"),
@@ -468,7 +478,8 @@ mod tests {
         let diag = check_return(&ctx, Some(&def), None, 4, 5)
             .expect("decidable")
             .expect("a diagnostic");
-        assert_eq!(diag.message, "error: Return value expected  [return-value]");
+        let expected = "error: Return value expected  [return-value]";
+        assert_eq!(diag.message, expected);
     }
 
     #[test]
@@ -476,7 +487,8 @@ mod tests {
         let h = Harness::new();
         let ctx = h.ctx(true);
         let def = none_sig();
-        let diag = check_return(&ctx, Some(&def), None, 2, 5).expect("decidable");
+        let diag = check_return(&ctx, Some(&def), None, 2, 5)
+            .expect("decidable");
         assert!(diag.is_none());
     }
 
@@ -486,7 +498,8 @@ mod tests {
         let ctx = h.ctx(true);
         let def = none_sig();
         let got = Type::NoneType;
-        let diag = check_return(&ctx, Some(&def), Some(&got), 2, 5).expect("decidable");
+        let diag = check_return(&ctx, Some(&def), Some(&got), 2, 5)
+            .expect("decidable");
         assert!(diag.is_none());
     }
 
@@ -508,7 +521,8 @@ mod tests {
         let ctx = h.ctx(false);
         let def = sig(instance("builtins.int", Vec::new()));
         let got = instance("builtins.str", Vec::new());
-        let err = check_return(&ctx, Some(&def), Some(&got), 3, 12).expect_err("must reject");
+        let err = check_return(&ctx, Some(&def), Some(&got), 3, 12)
+            .expect_err("must reject");
         assert!(matches!(err, CheckError::Input(_)));
     }
 
@@ -608,12 +622,16 @@ mod tests {
 
     #[test]
     fn the_inplace_table_matches_the_mypy_operator_set() {
-        let inplace = ["+", "-", "*", "/", "%", "//", "**", "@", "&", "|", "^", "<<", ">>"];
-        for symbol in inplace {
-            assert!(op_has_inplace_method(symbol), "{symbol} admits an inplace form");
+        // mypy/operators.py:37-51, the thirteen spellings with an inplace form.
+        let inplace = "+ - * / % // ** @ & | ^ << >>";
+        for symbol in inplace.split(' ') {
+            assert!(
+                op_has_inplace_method(symbol),
+                "{symbol} admits an inplace form"
+            );
         }
-        let plain = ["<", "<=", "==", "!=", ">", ">=", "and", "or"];
-        for symbol in plain {
+        let plain = "< <= == != > >= and or";
+        for symbol in plain.split(' ') {
             assert!(!op_has_inplace_method(symbol), "{symbol} does not");
         }
     }
